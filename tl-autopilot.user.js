@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TL挂机助手
 // @namespace    https://github.com/YatsukiRenka/tl-idle-helper
-// @version      0.2.9
+// @version      0.2.10
 // @author       YatsukiRenka（基于 doai 的原作与 JimChan 的衍生版）
 // @description  日常、挂机、成长、装备回收、宝石与工艺；串行动作、资源预算、原页面战斗及每日版本检查。
 // @match        https://tl.jayczee.top/*
@@ -971,15 +971,15 @@
         null
       );
     }
+    function farmMap(map) {
+      return !!map && num(map.mapType) !== 1 && map.show !== false &&
+        costs(map).length === 0 && monsters(map).length > 0 &&
+        ![20050, 20051, 20052, 20060, 20061, 20070].includes(num(map.id));
+    }
     function normalMap(s, prefs, penalty = 0) {
       const eligible = array(s.maps).filter(
         (m) =>
-          num(m.mapType) !== 1 &&
-          m.show !== false &&
-          num(m.reqLevel) <= num(s.role.level) &&
-          costs(m).length === 0 &&
-          monsters(m).length &&
-          ![20050, 20051, 20052, 20070].includes(num(m.id)),
+          farmMap(m) && num(m.reqLevel) <= num(s.role.level),
       );
       if (prefs.battle.mapId)
         return eligible.find((m) => num(m.id) === num(prefs.battle.mapId)) || null;
@@ -1621,9 +1621,13 @@
               .sort((a, b) => equipmentScore(b, s, p) - equipmentScore(a, s, p))[0];
             if (best) backups.add(num(best.id));
           }
+        // A sale cannot be undone, so no equipment is sold while the combat score has no data
+        // and the ranking of backups would rest on the fallback weights.
+        const provisional = p.gear.scoring === 'combat' && combatWeights(s, p) === null;
         const sellable = array(s.equipments)
           .filter(
             (e) =>
+              !provisional &&
               !e.isEquipped &&
               e.equipTmpl &&
               !e.hiddenWeapon && num(e.equipTmpl.slotType) !== 12 &&
@@ -2213,6 +2217,7 @@
       gemCharm,
       roleMap,
       townFor,
+      farmMap,
       normalMap,
       potionEffect,
       potionChoices,
@@ -2379,7 +2384,12 @@
         },
       };
     }
-    function mergeTargets(targets, mapId, slots) {
+    function farmTargets(targets, maps) {
+      return P.farmMap(P.array(maps).find((map) => P.num(map.id) === P.num(targets?.mapId)))
+        ? Array.from(targets?.list?.values() || []) : [];
+    }
+    function mergeTargets(targets, mapId, slots, allowed = true) {
+      if (!allowed) return false;
       // A packet without monsters (town, idle) must not wipe the last fought map's data.
       const found = slots.filter((slot) => slot && ['MONSTER', 'LEADER', 'BOSS'].includes(slot.category) &&
         slot.base && typeof slot.base === 'object');
@@ -2525,7 +2535,8 @@
           const type = packet.type;
           if (type === 'COMBAT_STATE' && Array.isArray(packet.data?.monsterSlots) &&
               mergeTargets(this.cache.targets, P.num(this.character()?.role?.mapId),
-                packet.data.monsterSlots))
+                packet.data.monsterSlots, P.farmMap(P.array(this.character()?.maps).find(
+                  (map) => P.num(map.id) === P.num(this.character()?.role?.mapId)))))
             writeStorage(PREFIX + ':targets', { mapId: this.cache.targets.mapId,
               list: Array.from(this.cache.targets.list) });
           if (
@@ -2799,7 +2810,7 @@
           shopItems: copy(shop?.items) || [],
           potionTemplates: this.cache.potions,
           finalAttributes: copy(c.finalAttributes),
-          monsters: Array.from(this.cache.targets.list.values()),
+          monsters: farmTargets(this.cache.targets, c.maps),
           maxAttrs: { hp: P.num(c.finalAttributes?.hp), mp: P.num(c.finalAttributes?.mp) },
           activityStatus: this.cache.activityStatus,
           forgePreviews: this.cache.forgePreviews,
@@ -3246,7 +3257,7 @@
               role: c.role,
               skills: copy(c.skills),
               finalAttributes: copy(c.finalAttributes),
-              monsters: Array.from(this.controller.bridge.cache.targets?.list?.values() || []),
+              monsters: farmTargets(this.controller.bridge.cache.targets, c.maps),
               equipments: c.equipments,
               warehouseEquips: c.warehouseEquips,
               equipSets: c.equipSets,
@@ -3717,7 +3728,7 @@
             active: s?.pets?.pets.find((entry) => entry.pet.id === s.pets.activePetId) || null,
             eggs: s ? P.petEggs(s).reduce((sum, item) => sum + P.num(item.count), 0) : null,
             list: s?.pets?.pets || null },
-          version: '0.2.9',
+          version: '0.2.10',
         };
       }
       received(type, packet) {
@@ -4227,7 +4238,7 @@
     class Checker {
       constructor(controller) {
         this.controller = controller;
-        this.currentVersion = '0.2.9';
+        this.currentVersion = '0.2.10';
         this.busy = false;
         this.onChange = () => {};
         this.timer = null;
@@ -4395,7 +4406,7 @@
         });
         document.documentElement.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: 'open' });
-        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.2.9</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.2.10</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
         this.root.addEventListener('click', (e) => {
           const b = e.target.closest('button');
           if (!b) return;
