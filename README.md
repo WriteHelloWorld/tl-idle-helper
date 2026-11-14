@@ -11,6 +11,8 @@ TL挂机助手是网页游戏「天龙八部挂机版」（`jayczee.top` 的 tl�
 
 在此基础上，本脚本增加了实战评分、仓库、比武天梯、暗器、珍兽、逛摊排序等功能，详见[功能介绍](#功能介绍)。
 
+本仓库以 [MIT 许可](LICENSE) 发布。
+
 ## 如何使用
 
 1. 安装浏览器扩展 [Tampermonkey](https://www.tampermonkey.net/)。Chrome 和 Edge 还需要在扩展管理页打开“开发者模式”，否则 Tampermonkey 不能运行脚本。
