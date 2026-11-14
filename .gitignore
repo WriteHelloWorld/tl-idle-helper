@@ -1,0 +1,5 @@
+# Local development data: live game captures, upstream copies, and tests that depend on them.
+_codex/
+upstream/
+original/
+test/
