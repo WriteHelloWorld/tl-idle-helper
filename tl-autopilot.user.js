@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         TL挂机助手
 // @namespace    https://github.com/YatsukiRenka/tl-idle-helper
-// @version      0.2.8
+// @version      0.2.9
 // @author       YatsukiRenka（基于 doai 的原作与 JimChan 的衍生版）
-// @description  日常、挂机、成长、装备回收、宝石与工艺；串行动作、资源预算、原页面战斗及每日GF版本提醒。
+// @description  日常、挂机、成长、装备回收、宝石与工艺；串行动作、资源预算、原页面战斗及每日版本检查。
 // @match        https://tl.jayczee.top/*
 // @match        https://tl2.jayczee.top/*
+// @match        https://tl3.jayczee.top/*
 // @run-at       document-start
 // @sandbox      raw
 // @grant        none
@@ -77,6 +78,7 @@
       exchange: 'npc_yuci_exchange',
       zl: 'npc_zenlong',
       camp: 'npc_xiaowei',
+      wushuang: 'npc_wushuang',
     };
     // Native TailorShop/YuciExchangeDialog recipes, verified in the post-migration frontend.
     const TAILOR_DEFENSE = [
@@ -108,6 +110,8 @@
         campRuns: 5,
         bear: true,
         bearRuns: 1,
+        tianlingClaim: true,
+        tianlingUse: false,
       },
       pets: { enabled: true, summon: true, claim: true, hatch: false, hatchMutant: false,
         keepMinAverage: 118, feed: false, feedKeepExp: 0, refreshMinutes: 10 },
@@ -190,7 +194,7 @@
         reloadAfterSeconds: 120,
         maxReloadsPerHour: 2,
       },
-      updates: { checkDaily: true, remind: true },
+      updates: { checkDaily: true, remind: true, autoApply: true },
     };
     const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
     const integer = (v, d = 0) => Math.floor(num(v, d));
@@ -1064,6 +1068,7 @@
         ops: {},
         arena: { attempts: 0, lost: [] },
         activities: { zl: 0, camp: 0, bear: 0 },
+        tianlingUsedAt: 0,
         petHatched: [],
         keptEquipIds: [],
       };
@@ -1346,7 +1351,27 @@
           );
       }
       if (p.activities.enabled) {
-        const state = s.activityStatus || {};
+        const state = s.activityStatus || {},
+          doubleExp = parse(role.settings, null)?.doubleExp;
+        // doubleExp.lastClaim is the date of the last claim; once it is today nothing is asked.
+        if (p.activities.tianlingClaim && doubleExp?.lastClaim !== ledger.day) {
+          if (!state.wushuang)
+            add(action('WUSHUANG_STATUS', {}, '查询天灵丹领取状态', 'read', { readOnly: true }));
+          else if (!state.wushuang.claimedToday)
+            add(action('WUSHUANG_CLAIM', {}, '领取今日天灵丹', 'activity', {
+              requiresTown: true,
+              npc: NPC.wushuang,
+            }));
+        }
+        if (p.activities.tianlingUse && p.battle.enabled &&
+            num(doubleExp?.buffExpireTime) <= now &&
+            now - num(ledger.tianlingUsedAt) >= 7200000) {
+          const stacks = array(s.bagItems).filter((item) => materialId(item) === 51003 && bagUsable(s, item));
+          const pill = stacks.find((item) => !!item.isBound) || stacks[0];
+          if (pill)
+            add(action('USE_ITEM', { bagItemId: pill.id, count: 1 },
+              '使用天灵丹（双倍经验 2 小时）', 'activity', { doubleExp: true }));
+        }
         if (
           p.activities.zl &&
           num(role.level) >= 15 &&
@@ -2244,6 +2269,8 @@
       'SMITHY_FORGE',
       'CRAFT_EQUIP',
       'YUCI_EXCHANGE',
+      'WUSHUANG_STATUS',
+      'WUSHUANG_CLAIM',
       'ZL_STATUS',
       'ZL_CLAIM_TOKEN',
       'ZL_ENTER',
@@ -2369,11 +2396,13 @@
       }
       return changed;
     }
-    // USE_ITEM is allowed only for hatching a pet egg; every other item use stays with the player.
+    // USE_ITEM is allowed only for pet hatching or double experience; other uses stay with the player.
     function requestAllowed(action) {
-      return ALLOWED.has(action?.type) || (action?.type === 'USE_ITEM' && action.petHatch === true);
+      return ALLOWED.has(action?.type) || (action?.type === 'USE_ITEM' && (action.petHatch === true || action.doubleExp === true));
     }
     function matchesResponse(waiter, packet) {
+      if (waiter.doubleExp && (packet.success ?? packet.code === 200) &&
+          !packet.data?.effects?.some((effect) => effect.type === 'DOUBLE_EXP_BUFF')) return false;
       return packet.type === waiter.responseType && (!(['ARENA_COMMAND', 'PET_COMMAND'].includes(waiter.type) || waiter.petHatch) ||
         packet.data?.requestId === waiter.requestId);
     }
@@ -2545,6 +2574,11 @@
           ) {
             this.cache.activityStatus.camp = copy(packet.data);
             (this.cache.activityStamp || (this.cache.activityStamp = {})).camp = Date.now();
+          }
+          if (type === 'WUSHUANG_STATUS_RESPONSE' && packet.data &&
+              typeof packet.data.claimedToday !== 'undefined') {
+            this.cache.activityStatus.wushuang = copy(packet.data);
+            (this.cache.activityStamp || (this.cache.activityStamp = {})).wushuang = Date.now();
           }
           const data = packet.data;
           if (type === 'PET_RESPONSE' && data?.state)
@@ -2777,7 +2811,7 @@
         return false;
       }
       expireActivityStatus() {
-        for (const key of ['zl', 'camp'])
+        for (const key of ['zl', 'camp', 'wushuang'])
           if (
             this.cache.activityStatus[key] &&
             Date.now() - P.num(this.cache.activityStamp?.[key]) > 300000
@@ -2811,6 +2845,7 @@
           'SMITHY_FORGE',
           'CRAFT_EQUIP',
           'YUCI_EXCHANGE',
+          'WUSHUANG_CLAIM',
           'ZL_CLAIM_TOKEN',
           'ZL_ENTER',
           'CAMP_ENTER',
@@ -2893,6 +2928,7 @@
             responseType: action.responseType || action.type + '_RESPONSE',
             requestId: action.payload.requestId,
             petHatch: action.petHatch,
+            doubleExp: action.doubleExp,
             resolve,
             reject,
             interference: false,
@@ -3129,6 +3165,9 @@
       drawTip(el, info, item) {
         const row = el.querySelector('.tooltip-row');
         if (!info || !row) return;
+        const gamePower = [...el.querySelectorAll('.tooltip-power')]
+          .find((node) => !node.className.split(/\s+/).includes('tl-tip-score'));
+        if (gamePower) return this.drawGameTip(el, gamePower, info, item);
         const sibling = row.nextElementSibling,
           anchor = sibling?.textContent.trim().startsWith('收益') ? sibling : row,
           key = JSON.stringify([item, info]),
@@ -3163,6 +3202,34 @@
           arrow(power, info.powerUp);
           if (!info.pending) arrow(line, info.combatUp);
         }
+      }
+      drawGameTip(el, power, info, item) {
+        const key = JSON.stringify([item, info]),
+          lines = el.querySelectorAll('.tl-tip-score'),
+          line = lines[0],
+          powerArrows = power.querySelectorAll('.tl-tip-arrow');
+        if (lines.length === 1 && line._tipKey === key && power.nextElementSibling === line &&
+            powerArrows.length === (info.compare ? 1 : 0) &&
+            line.querySelectorAll('.tl-tip-arrow').length === (info.compare && !info.pending ? 1 : 0)) return;
+        for (const node of el.querySelectorAll('.tl-tip-score, .tl-tip-arrow')) node.remove();
+        const score = document.createElement('div');
+        score.className = power.className + ' tl-tip-score';
+        for (const attr of power.attributes)
+          if (attr.name.startsWith('data-v-')) score.setAttribute(attr.name, attr.value);
+        score.textContent = '实战评分: ' + (info.pending ? '待战斗数据' : info.score.toLocaleString());
+        score.title = info.title;
+        score._tipKey = key;
+        power.parentNode.insertBefore(score, power.nextSibling);
+        if (!info.compare) return;
+        this.tipArrow(power, info.powerUp);
+        if (!info.pending) this.tipArrow(score, info.combatUp);
+      }
+      tipArrow(parent, up) {
+        const span = document.createElement('span');
+        span.className = 'tl-tip-arrow';
+        span.textContent = up ? ' △' : ' ▽';
+        span.style.color = up ? '#69f0ae' : '#ef5350';
+        parent.appendChild(span);
       }
       profileScore(stats, state, prefs) {
         const weights = P.combatWeights(state, MarketScore.scorePrefs(prefs, 'combat'));
@@ -3650,7 +3717,7 @@
             active: s?.pets?.pets.find((entry) => entry.pet.id === s.pets.activePetId) || null,
             eggs: s ? P.petEggs(s).reduce((sum, item) => sum + P.num(item.count), 0) : null,
             list: s?.pets?.pets || null },
-          version: '0.2.8',
+          version: '0.2.9',
         };
       }
       received(type, packet) {
@@ -3661,6 +3728,10 @@
           this.reason = this.enabled ? '连接恢复，重新读取角色与计划' : '角色已就绪';
           if (this.enabled) this.log('角色快照已恢复，继续核对托管计划');
         }
+        if (type === 'WUSHUANG_CLAIM_RESPONSE' && packet.success)
+          this.bridge.cache.activityStatus.wushuang = {
+            ...this.bridge.cache.activityStatus.wushuang, claimedToday: true,
+          };
         if (type === 'ZL_CLAIM_TOKEN_RESPONSE' && packet.success)
           delete this.bridge.cache.activityStatus.zl;
         if (type === 'ZL_ENTER_RESPONSE' && packet.success)
@@ -3719,6 +3790,11 @@
         this.action = a;
         this.reason = a.label;
         this.charge(a);
+        // Stamped before sending: an unanswered request must not lead to a second pill.
+        if (a.doubleExp) {
+          this.ledger.tianlingUsedAt = Date.now();
+          this.saveLedger();
+        }
         this.log(a.label);
         this.paint();
         try {
@@ -3749,6 +3825,10 @@
             P.recordExperience(this.ledger, a.type, extraExp);
           }
           const success = result.success ?? result.code === 200;
+          if (!success && a.doubleExp) {
+            this.ledger.tianlingUsedAt = 0;
+            this.saveLedger();
+          }
           if (success && a.type === 'PET_COMMAND' && ['lock', 'release'].includes(a.payload.action))
             this.ledger.petHatched = (this.ledger.petHatched || []).filter((id) => id !== a.payload.petId);
           this.cleanPetLedger(after.pets);
@@ -3911,6 +3991,7 @@
           return;
         }
         if (this.busy || now - this.lastLocal < 1200) return;
+        if (this.maybeApplyUpdate(now)) return;
         if (P.num(s.role.mapId) === 20070 || s.trial?.run) {
           const prefs = s.trial?.run ? { ...this.prefs,
             hidden: { ...this.prefs.hidden, enabled: true } } : this.prefs;
@@ -4070,6 +4151,19 @@
         } else this.reason = '原游戏正在战斗：' + (map?.name || s.role.mapId);
         this.paint();
       }
+      maybeApplyUpdate(now) {
+        if (!this.prefs.updates.autoApply || !this.enabled || !this.prefs.resumeAfterReload ||
+          this.activity || this.arenaPending || P.num(this.bridge.state()?.role.mapId) === 20070 ||
+          !this.updates || !TLUpdates.shouldApply(
+            readStorage(TLUpdates.KEY, {}), this.updates.currentVersion, now)) return false;
+        // Whether Tampermonkey has installed the new version is not visible from here, so a reload is
+        // tried once at once, then every 6 hours, 5 times per version.
+        this.updates.markApply(now);
+        writeStorage(RUNNING, true);
+        this.log('发现新版本 v' + this.updates.status().latestVersion + '，刷新页面以启用');
+        location.reload();
+        return true;
+      }
       maybeReload(now) {
         if (
           !this.prefs.reconnect.autoReload ||
@@ -4100,9 +4194,9 @@
   const TLUpdates = (() => {
     const DAY = 24 * 60 * 60 * 1000,
       KEY = TLRuntime.PREFIX + ':updates',
-      PAGE = 'https://greasyfork.org/scripts/604931',
-      API = PAGE + '.json',
-      NOTES = 'https://tl-idle-autopilot.pages.dev/release-notes.json';
+      PAGE = 'https://github.com/YatsukiRenka/tl-idle-helper/releases',
+      API = 'https://api.github.com/repos/YatsukiRenka/tl-idle-helper/releases/latest',
+      INSTALL = 'https://raw.githubusercontent.com/YatsukiRenka/tl-idle-helper/main/tl-autopilot.user.js';
     const valid = (v) => typeof v === 'string' && /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(v);
     function compare(left, right) {
       if (!valid(left) || !valid(right)) throw new Error('版本格式无法识别');
@@ -4111,10 +4205,29 @@
       for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return Math.sign(a[i] - b[i]);
       return 0;
     }
+    function parseNotes(body) {
+      if (typeof body !== 'string') return null;
+      const sections = [];
+      let section;
+      for (const line of body.split(/\r?\n/)) {
+        if (line.startsWith('## ')) {
+          section = { title: line.slice(3).slice(0, 20), items: [] };
+          sections.push(section);
+        } else if (line.startsWith('- ') && section && section.items.length < 12)
+          section.items.push(line.slice(2).slice(0, 200));
+      }
+      const kept = sections.filter((s) => s.items.length).slice(0, 3);
+      return kept.length ? { sections: kept } : null;
+    }
+    function shouldApply(cache, currentVersion, now) {
+      return valid(cache.version) && compare(cache.version, currentVersion) > 0 &&
+        (cache.applyVersion !== cache.version ||
+          (cache.applyTries < 5 && now - cache.applyAt >= 6 * 60 * 60 * 1000));
+    }
     class Checker {
       constructor(controller) {
         this.controller = controller;
-        this.currentVersion = '0.1.5';
+        this.currentVersion = '0.2.9';
         this.busy = false;
         this.onChange = () => {};
         this.timer = null;
@@ -4134,6 +4247,12 @@
           error: cache.error || this.localError,
           dismissed: cache.dismissedVersion === cache.version,
           page: PAGE,
+          installUrl: INSTALL,
+          apply: {
+            tries: cache.applyVersion === cache.version ? cache.applyTries || 0 : 0,
+            lastAt: cache.applyVersion === cache.version ? cache.applyAt || null : null,
+            exhausted: cache.applyVersion === cache.version && cache.applyTries >= 5,
+          },
         };
       }
       start() {
@@ -4153,9 +4272,17 @@
         TLRuntime.writeStorage(KEY, cache);
         this.onChange();
       }
-      async check() {
+      markApply(now) {
+        const cache = TLRuntime.readStorage(KEY, {});
+        cache.applyTries = cache.applyVersion === cache.version ? cache.applyTries + 1 : 1;
+        cache.applyVersion = cache.version;
+        cache.applyAt = now;
+        TLRuntime.writeStorage(KEY, cache);
+        this.onChange();
+      }
+      async check(force) {
         const prior = TLRuntime.readStorage(KEY, {});
-        if (prior.checkedAt && Date.now() - prior.checkedAt < DAY) return this.status();
+        if (prior.checkedAt && Date.now() - prior.checkedAt < (force === true ? 60000 : DAY)) return this.status();
         if (this.busy) return this.status();
         if (!navigator.locks?.request) {
           TLRuntime.writeStorage(KEY, {
@@ -4169,7 +4296,7 @@
         await navigator.locks.request(KEY, { ifAvailable: true }, async (lock) => {
           if (!lock) return;
           const cache = TLRuntime.readStorage(KEY, {});
-          if (cache.checkedAt && Date.now() - cache.checkedAt < DAY) return;
+          if (cache.checkedAt && Date.now() - cache.checkedAt < (force === true ? 60000 : DAY)) return;
           this.busy = true;
           const next = { ...cache, checkedAt: Date.now(), error: '' };
           TLRuntime.writeStorage(KEY, next);
@@ -4187,41 +4314,21 @@
               cache: 'no-store',
               signal: AbortSignal.timeout(8000),
             });
-            if (!response.ok) throw new Error('Greasy Fork暂无法访问');
-            const data = await response.json();
-            if (
-              Number(data.id) !== 604931 ||
-              data.namespace !== 'local.tl-idle.autopilot' ||
-              !valid(data.version)
-            )
-              throw new Error('Greasy Fork版本信息格式异常');
-            next.version = data.version;
-            next.notes = null;
-            if (compare(data.version, this.currentVersion) > 0) {
-              try {
-                const r = await fetch(NOTES, {
-                  credentials: 'omit',
-                  cache: 'no-store',
-                  signal: AbortSignal.timeout(8000),
-                });
-                if (r.ok) {
-                  const list = await r.json();
-                  const note = Array.isArray(list)
-                    ? list.find((n) => n.version === data.version)
-                    : null;
-                  if (note && typeof note.title === 'string' && Array.isArray(note.changes))
-                    next.notes = {
-                      title: note.title.slice(0, 80),
-                      changes: note.changes
-                        .filter((c) => typeof c === 'string')
-                        .slice(0, 3)
-                        .map((c) => c.slice(0, 160)),
-                    };
-                }
-              } catch {}
-            }
+            if (!response.ok) throw new Error('GitHub 暂无法访问');
+            let data;
+            try { data = await response.json(); }
+            catch { throw new Error('GitHub 版本信息格式异常'); }
+            if (!data || typeof data.tag_name !== 'string' ||
+              !/^v\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(data.tag_name) ||
+              data.draft === true || data.prerelease === true ||
+              typeof data.html_url !== 'string' || !data.html_url.startsWith(PAGE + '/'))
+              throw new Error('GitHub 版本信息格式异常');
+            next.version = data.tag_name.slice(1);
+            const notes = parseNotes(data.body);
+            next.notes = notes ? { title: 'v' + next.version + ' 更新内容', sections: notes.sections } : null;
           } catch (error) {
-            next.error = TLRuntime.safeMessage(error.message || '更新检查未完成');
+            next.error = error.message === 'GitHub 版本信息格式异常'
+              ? error.message : 'GitHub 暂无法访问';
           } finally {
             TLRuntime.writeStorage(KEY, next);
             this.busy = false;
@@ -4231,7 +4338,7 @@
         return this.status();
       }
     }
-    return { Checker, compare, DAY, KEY, PAGE };
+    return { Checker, compare, parseNotes, shouldApply, DAY, KEY, PAGE };
   })();
 
   ('use strict');
@@ -4288,7 +4395,7 @@
         });
         document.documentElement.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: 'open' });
-        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.2.8</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.2.9</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
         this.root.addEventListener('click', (e) => {
           const b = e.target.closest('button');
           if (!b) return;
@@ -4354,11 +4461,13 @@
           const action = e.target.closest('button')?.dataset.action;
           if (action === 'checkUpdate')
             this.controller.updates
-              ?.check()
+              ?.check(true)
               .then(() => this.renderBody())
               .catch(() => {});
           else if (action === 'openUpdate')
-            window.open('https://greasyfork.org/scripts/604931', '_blank', 'noopener,noreferrer');
+            window.open(this.controller.updates.status().page, '_blank', 'noopener,noreferrer');
+          else if (action === 'installUpdate')
+            window.open(this.controller.updates.status().installUrl, '_blank', 'noopener,noreferrer');
           else if (action === 'dismissUpdate') {
             this.controller.updates?.dismiss();
             this.renderBody();
@@ -4404,6 +4513,8 @@
             f('伪宋军每日最多进入', 'activities.campRuns', { max: 5 }) +
             f('熊林', 'activities.bear') +
             f('熊林每日最多进入', 'activities.bearRuns') +
+            f('每日领取天灵丹（需回洛阳）', 'activities.tianlingClaim') +
+            f('没有双倍经验时自动使用天灵丹', 'activities.tianlingUse') +
             '<div class="hint">珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合原游戏返回的资格数据核对。</div></div><div class="section"><h3>比武天梯</h3>' +
             f('自动比武（总开关）', 'arena.enabled') +
             f('每日点赞', 'arena.like') +
@@ -4580,8 +4691,9 @@
           this.updateKey = JSON.stringify(u);
           html =
             '<h3>版本与更新</h3>' +
-            f('每天检查GF公开最新版', 'updates.checkDaily') +
+            f('每天检查 GitHub 上的最新版本', 'updates.checkDaily') +
             f('发现新版本时提醒', 'updates.remind') +
+            f('发现新版本后自动刷新页面启用', 'updates.autoApply') +
             this.updateHTML(u);
         }
         this.root.querySelector('.body').innerHTML = html;
@@ -4603,8 +4715,8 @@
           : '<div class="hint">暂无动作记录。</div>';
       }
       updateHTML(u) {
-        const changes = Array.isArray(u.notes?.changes) ? u.notes.changes : [];
-        return `<div class="update-summary"><div class="notice">当前运行 v${esc(u.currentVersion)}${u.latestVersion ? ' · GF公开版本 v' + esc(u.latestVersion) : ''}${u.newer ? '<br>发现新版本，更新后刷新游戏启用。' : ''}</div><div class="hint">自用版基于 GF v0.1.5。GF 出新版本后需要重新合并自用改动；从 GF 安装的是另一个脚本，会和自用版同时运行，需要停用其中一个。</div>${u.notes ? `<h3>${esc(u.notes.title)}</h3><ul>${changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : u.newer ? '<div class="hint">更新内容暂未读取，可在GF页面查看。</div>' : ''}<div class="hint">${u.busy ? '正在读取公开版本信息' : u.error ? esc(u.error) : u.checkedAt ? '最近检查：' + esc(new Date(u.checkedAt).toLocaleString()) : '尚未检查公开版本'}${u.nextCheckAt ? '<br>下次可检查：' + esc(new Date(u.nextCheckAt).toLocaleString()) : ''}<br>脚本检查最多每24小时一次，期间使用已有结果。</div><div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开GF脚本页</button>${u.newer ? '<button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : ''}</div><div class="section"><h3>选择自动更新</h3><div class="hint">在油猴管理面板打开本脚本的设置，启用“检查更新”。实际自动安装由油猴执行；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。</div></div></div>`;
+        const sections = Array.isArray(u.notes?.sections) ? u.notes.sections : [];
+        return `<div class="update-summary"><div class="notice">当前运行 v${esc(u.currentVersion)}${u.latestVersion ? ' · GitHub 最新版本 v' + esc(u.latestVersion) : ''}${u.newer ? '<br>发现新版本。' : ''}</div><div class="hint">新版本由 Tampermonkey 自动安装（默认每天检查一次），页面刷新后生效。托管运行并开启“页面刷新后恢复托管”时，脚本发现新版本会自动刷新页面：立即一次，之后每 6 小时一次，每个版本最多 5 次。想立即更新，点“安装新版本”，在 Tampermonkey 页面确认后刷新游戏。</div>${u.newer && u.apply?.exhausted ? '<div class="hint">已自动刷新 5 次仍是旧版本，请点“安装新版本”。</div>' : ''}${u.notes ? `<h3>${esc(u.notes.title)}</h3>${sections.map((s) => `<div class="hint"><strong>${esc(s.title)}</strong></div><ul>${s.items.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`).join('')}` : u.newer ? '<div class="hint">更新内容暂未读取，可在发布页查看。</div>' : ''}<div class="hint">${u.busy ? '正在读取公开版本信息' : u.error ? esc(u.error) : u.checkedAt ? '最近检查：' + esc(new Date(u.checkedAt).toLocaleString()) : '尚未检查公开版本'}${u.nextCheckAt ? '<br>下次可检查：' + esc(new Date(u.nextCheckAt).toLocaleString()) : ''}<br>自动检查每天一次，手动检查间隔至少 60 秒。</div><div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开发布页</button>${u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : ''}</div><div class="section"><h3>选择自动更新</h3><div class="hint">在油猴管理面板打开本脚本的设置，启用“检查更新”。实际自动安装由油猴执行；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。</div></div></div>`;
       }
       paint() {
         if (!this.root) return;
@@ -4683,7 +4795,8 @@
   if (
     location.protocol === 'https:' &&
     ((location.hostname === 'tl.jayczee.top' && location.port === '1212') ||
-      (location.hostname === 'tl2.jayczee.top' && location.port === '11212')) &&
+      (location.hostname === 'tl2.jayczee.top' && location.port === '11212') ||
+      (location.hostname === 'tl3.jayczee.top' && location.port === '11212')) &&
     window.top === window &&
     !window.__TL_AUTOPILOT_INSTALLED__
   ) {
