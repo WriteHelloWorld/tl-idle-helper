@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TL挂机助手
 // @namespace    https://github.com/YatsukiRenka/tl-idle-helper
-// @version      0.2.12
+// @version      0.2.13
 // @author       YatsukiRenka（基于 doai 的原作与 JimChan 的衍生版）
 // @description  日常、挂机、成长、装备回收、宝石与工艺；串行动作、资源预算、原页面战斗及每日版本检查。
 // @match        https://tl.jayczee.top/*
@@ -176,7 +176,7 @@
         minEnhanceSuccess: 90,
         smelt: true,
         allowSmeltEquipped: false,
-        investChunk: 100000,
+        investChunk: 5000000,
         repair: true,
         forge: true,
         artifactIds: [],
@@ -260,6 +260,7 @@
       p.warehouse.minQuality = Math.min(5, Math.max(1, integer(p.warehouse.minQuality, 3)));
       p.gems.maxHoles = Math.min(3, integer(p.gems.maxHoles, 1));
       p.gems.maxLevel = Math.min(6, Math.max(1, integer(p.gems.maxLevel, 3)));
+      p.smithy.investChunk = Math.max(1000000, integer(p.smithy.investChunk));
       p.smithy.targetEnhance = Math.min(9, integer(p.smithy.targetEnhance, 3));
       p.potions.hpThreshold = Math.max(10, Math.min(80, integer(p.potions.hpThreshold, 50)));
       p.potions.mpThreshold = Math.max(10, Math.min(80, integer(p.potions.mpThreshold, 50)));
@@ -1953,18 +1954,19 @@
             else {
               const amount = Math.min(
                 remaining,
-                p.smithy.investChunk,
                 Math.max(0, num(role.currentExp) - p.budget.expReserve),
                 experienceBudget(p, ledger, 'smelt').remaining,
               );
-              if (amount > 0)
+              // The server accepts the investment during battle. Each answer is a full character
+              // snapshot, so exp is invested only once investChunk has accumulated.
+              if (amount >= Math.min(remaining, p.smithy.investChunk))
                 add(
                   action(
                     'SMITHY_SMELT_INVEST',
                     { expAmount: Math.floor(amount) },
                     '投入冶炼经验 ' + Math.floor(amount),
                     'smithy',
-                    { expCost: Math.floor(amount), requiresTown: true, npc: NPC.smithy },
+                    { expCost: Math.floor(amount), inBattle: true },
                   ),
                 );
             }
@@ -3758,7 +3760,7 @@
             active: s?.pets?.pets.find((entry) => entry.pet.id === s.pets.activePetId) || null,
             eggs: s ? P.petEggs(s).reduce((sum, item) => sum + P.num(item.count), 0) : null,
             list: s?.pets?.pets || null },
-          version: '0.2.12',
+          version: '0.2.13',
         };
       }
       received(type, packet) {
@@ -4304,7 +4306,7 @@
     class Checker {
       constructor(controller) {
         this.controller = controller;
-        this.currentVersion = '0.2.12';
+        this.currentVersion = '0.2.13';
         this.busy = false;
         this.onChange = () => {};
         this.timer = null;
@@ -4474,7 +4476,7 @@
         });
         document.documentElement.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: 'open' });
-        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.2.12</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.2.13</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
         this.root.addEventListener('click', (e) => {
           const b = e.target.closest('button');
           if (!b) return;
@@ -4685,7 +4687,7 @@
             f('最低强化成功率 %', 'smithy.minEnhanceSuccess', { max: 100 }) +
             f('神器冶炼', 'smithy.smelt') +
             f('允许投入当前穿戴武器', 'smithy.allowSmeltEquipped') +
-            f('每次投入经验', 'smithy.investChunk') +
+            f('攒够多少经验投入一次（挂机中直接投入，不回城）', 'smithy.investChunk') +
             f('神节与神符匹配修复', 'smithy.repair') +
             f('完整神节打造神器', 'smithy.forge') +
             f('目标神器ID（留空自动评分）', 'smithy.artifactIds') +
