@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TL挂机助手
 // @namespace    https://github.com/YatsukiRenka/tl-idle-helper
-// @version      0.2.11
+// @version      0.2.12
 // @author       YatsukiRenka（基于 doai 的原作与 JimChan 的衍生版）
 // @description  日常、挂机、成长、装备回收、宝石与工艺；串行动作、资源预算、原页面战斗及每日版本检查。
 // @match        https://tl.jayczee.top/*
@@ -118,7 +118,7 @@
       pets: { enabled: true, summon: true, claim: true, hatch: false, hatchMutant: false,
         keepMinAverage: 118, feed: false, feedKeepExp: 0, refreshMinutes: 10 },
       arena: { enabled: true, like: true, claim: true, challenge: true, maxPerDay: 10,
-        maxPowerRatio: 1.1, refreshMinutes: 30 },
+        maxPowerRatio: 1.1, refreshMinutes: 30, rushMinutes: 10 },
       hidden: { enabled: true, wash: true, washQuality: true, inbox: true, feed: false,
         maxLevel: 100, keepExp: 0, refreshMinutes: 30 },
       potions: {
@@ -250,6 +250,7 @@
           for (const [k, v] of Object.entries(section))
             if (typeof v === 'number') section[k] = Math.max(0, num(v));
       p.arena.maxPerDay = integer(p.arena.maxPerDay);
+      p.arena.rushMinutes = Math.max(0, Math.min(120, integer(p.arena.rushMinutes)));
       p.arena.maxPowerRatio = Math.max(0.5, Math.min(3, p.arena.maxPowerRatio));
       for (const section of [p.arena, p.hidden])
         section.refreshMinutes = Math.max(5, Math.min(240, section.refreshMinutes));
@@ -1314,6 +1315,13 @@
       return array(s.bagItems).filter((item) => num(item.count) > 0 &&
         String(item.itemTmpl?.useEffect || '').includes('HATCH_PET'));
     }
+    function arenaRush(prefs, now = Date.now()) {
+      // Ranks settle at 00:00 UTC+8.
+      const left = 86400000 - (now + 28800000) % 86400000;
+      const arena = prefs?.arena;
+      return !!(arena && arena.enabled && arena.challenge && arena.rushMinutes > 0 &&
+        left <= arena.rushMinutes * 60000);
+    }
     function plans(s, prefs, ledger, now = Date.now()) {
       const p = config(prefs),
         out = [];
@@ -1509,7 +1517,8 @@
             responseType: 'ARENA_RESPONSE', ...options,
           });
         if (p.arena.enabled) {
-          if (!board || now - arena.at >= p.arena.refreshMinutes * 60000 ||
+          const rush = arenaRush(p, now);
+          if (!board || now - arena.at >= (rush ? 30000 : p.arena.refreshMinutes * 60000) ||
               board.date !== ledger.day) {
             // Rank-based paging is unverified in the live game.
             const page = num(board?.ownRank) > 21 ? Math.floor((board.ownRank - 2) / 20) : 0;
@@ -1525,7 +1534,7 @@
               num(r.combatPower) <= num(s.combatPower) * p.arena.maxPowerRatio &&
               !daily.lost.includes(r.snapshotId)).sort((a, b) => a.rank - b.rank)[0];
             if (townSafe && p.arena.challenge && !s.arenaMatch?.active && target &&
-                (!p.arena.maxPerDay || daily.attempts < p.arena.maxPerDay)) {
+                (rush || !p.arena.maxPerDay || daily.attempts < p.arena.maxPerDay)) {
               const ready = arena.token && now - arena.tokenAt < 60000;
               add(arenaAction(ready ? 'challenge' : 'open', {
                 nearby: true, ...(ready ? { token: arena.token, targetId: target.roleId,
@@ -2248,6 +2257,7 @@
       skillProgress,
       allowed,
       plans,
+      arenaRush,
       signature,
     };
   })();
@@ -3748,7 +3758,7 @@
             active: s?.pets?.pets.find((entry) => entry.pet.id === s.pets.activePetId) || null,
             eggs: s ? P.petEggs(s).reduce((sum, item) => sum + P.num(item.count), 0) : null,
             list: s?.pets?.pets || null },
-          version: '0.2.11',
+          version: '0.2.12',
         };
       }
       received(type, packet) {
@@ -4104,8 +4114,11 @@
           this.lastDeathKey = '';
           this.bridge.cache.activityStatus = {};
         }
-        let plans = P.plans(s, this.prefs, this.ledger).filter(
+        const rushTown = P.arenaRush(this.prefs, now) && P.num(s.role.level) >= 50
+          ? P.townFor(s, P.NPC.arena) : null;
+        let plans = P.plans(s, this.prefs, this.ledger, now).filter(
           (a) =>
+            (!rushTown || !a.activity) &&
             (this.suppressed.get(a.key) || 0) < now &&
             (!(a.type === 'UPDATE_SETTINGS') || now - this.lastSettings > 15000),
         );
@@ -4157,6 +4170,26 @@
           return;
         }
         this.idleSince = 0;
+        if (rushTown && !special) {
+          this.reason = '比武结算前驻守「' + rushTown.name + '」，等待可挑战对手';
+          if (runtime.stage !== 'idle') {
+            this.bridge.setBattle(false);
+            this.lastLocal = now;
+          } else if (P.num(rushTown.id) !== P.num(s.role.mapId)) {
+            await this.execute({
+              kind: 'request',
+              type: 'ENTER_MAP',
+              payload: { mapId: P.num(rushTown.id) },
+              label: '比武结算前返回「' + rushTown.name + '」',
+              family: 'travel',
+              moneyCost: 0,
+              expCost: 0,
+              key: 'town:' + rushTown.id,
+            });
+          }
+          this.paint();
+          return;
+        }
         if (!this.prefs.battle.enabled) {
           this.reason = '当前没有可执行的成长/经济动作';
           this.paint();
@@ -4196,7 +4229,7 @@
         this.paint();
       }
       maybeApplyUpdate(now) {
-        if (!this.prefs.updates.autoApply || !this.enabled || !this.prefs.resumeAfterReload ||
+        if (P.arenaRush(this.prefs, now) || !this.prefs.updates.autoApply || !this.enabled || !this.prefs.resumeAfterReload ||
           this.activity || this.arenaPending || P.num(this.bridge.state()?.role.mapId) === 20070 ||
           !this.updates || !TLUpdates.shouldApply(
             readStorage(TLUpdates.KEY, {}), this.updates.currentVersion, now)) return false;
@@ -4271,7 +4304,7 @@
     class Checker {
       constructor(controller) {
         this.controller = controller;
-        this.currentVersion = '0.2.11';
+        this.currentVersion = '0.2.12';
         this.busy = false;
         this.onChange = () => {};
         this.timer = null;
@@ -4441,7 +4474,7 @@
         });
         document.documentElement.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: 'open' });
-        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.2.11</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.2.12</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
         this.root.addEventListener('click', (e) => {
           const b = e.target.closest('button');
           if (!b) return;
@@ -4570,7 +4603,8 @@
             f('每日挑战次数上限（0 不限）', 'arena.maxPerDay') +
             f('只挑战战力不超过自己 × 倍数的对手', 'arena.maxPowerRatio') +
             f('比武榜刷新间隔（分钟）', 'arena.refreshMinutes') +
-            '<div class="hint">挑战需要回洛阳找比武校尉，会中断挂机。点赞和领奖不中断。</div></div>';
+            f('结算前冲榜分钟数（0 关闭）', 'arena.rushMinutes') +
+            '<div class="hint">挑战需要回洛阳找比武校尉，会中断挂机。点赞和领奖不中断。每天 0 点（东八区）结算前的这段时间，托管回洛阳驻守并连续挑战：榜单每 30 秒刷新一次，不受每日挑战次数上限限制，期间不进副本。</div></div>';
         }
         if (this.section === 'growth')
           html =
