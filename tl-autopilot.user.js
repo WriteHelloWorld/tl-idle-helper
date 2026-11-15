@@ -113,6 +113,7 @@
         bearRuns: 1,
         tianlingClaim: true,
         lotteryDraw: true,
+        lotteryBatch: 12,
         tianlingUse: false,
       },
       pets: { enabled: true, summon: true, claim: true, hatch: false, hatchMutant: false,
@@ -249,6 +250,7 @@
         if (section && typeof section === 'object' && !Array.isArray(section))
           for (const [k, v] of Object.entries(section))
             if (typeof v === 'number') section[k] = Math.max(0, num(v));
+      p.activities.lotteryBatch = Math.max(1, Math.min(100, integer(p.activities.lotteryBatch)));
       p.arena.maxPerDay = integer(p.arena.maxPerDay);
       p.arena.rushMinutes = Math.max(0, Math.min(120, integer(p.arena.rushMinutes)));
       p.arena.maxPowerRatio = Math.max(0.5, Math.min(3, p.arena.maxPowerRatio));
@@ -1388,7 +1390,15 @@
             add(action('ONLINE_LOTTERY_COMMAND', { action: 'open', page: 0 }, '查询在线抽奖次数', 'read', {
               readOnly: true, responseType: 'ONLINE_LOTTERY_RESPONSE',
             }));
-          else if (s.lottery.enabled && num(s.lottery.balance) > 0)
+          // One chance arrives per 30 minutes online and a draw needs a town trip, so chances
+          // are drawn in batches. Whether the balance survives 00:00 UTC+8 is unverified,
+          // so the last 30 minutes of the day draw whatever is left.
+          else if (s.lottery.enabled && num(s.lottery.balance) > 0 && !arenaRush(p, now) &&
+              (num(s.lottery.balance) >= p.activities.lotteryBatch ||
+                (num(s.lottery.dailyLimit) > 0 &&
+                  num(s.lottery.grantedToday) >= num(s.lottery.dailyLimit)) ||
+                num(role.mapId) === num(townFor(s, NPC.lottery).id) ||
+                86400000 - (now + 28800000) % 86400000 <= 1800000))
             add(action('ONLINE_LOTTERY_COMMAND', { action: 'draw' },
               '快活叁在线抽奖（剩余 ' + s.lottery.balance + ' 次）', 'activity', {
                 requiresTown: true, npc: NPC.lottery, responseType: 'ONLINE_LOTTERY_RESPONSE',
@@ -1528,9 +1538,15 @@
             const row = array(board.rows).find((r) => r.canLike);
             if (p.arena.like && !board.liked && row)
               add(arenaAction('like', { targetId: row.roleId, date: board.date }, { inBattle: true }));
-            if (p.arena.claim && num(board.reward?.count) > 0 && !board.reward.claimed)
-              add(arenaAction('claim', { date: board.date }, { inBattle: true }));
             const daily = ledger.arena || { attempts: 0, lost: [] };
+            // The server accepts a claim only from the NPC dialog, with the token of `open`.
+            if (townSafe && !daily.claimFailed && p.arena.claim &&
+                num(board.reward?.count) > 0 && !board.reward.claimed) {
+              const ready = arena.token && now - arena.tokenAt < 60000;
+              add(arenaAction(ready ? 'claim' : 'open', {
+                nearby: true, ...(ready ? { token: arena.token, date: board.date } : {}),
+              }, { requiresTown: true, npc: NPC.arena }));
+            }
             const target = array(board.rows).filter((r) => r.canChallenge && !r.busy &&
               num(r.combatPower) <= num(s.combatPower) * p.arena.maxPowerRatio &&
               !daily.lost.includes(r.snapshotId)).sort((a, b) => a.rank - b.rank)[0];
@@ -3811,6 +3827,7 @@
           this.reason = '此角色已在另一标签页托管';
           return;
         }
+        const arenaClaim = a.type === 'ARENA_COMMAND' && a.payload.action === 'claim';
         const lotteryDraw = a.type === 'ONLINE_LOTTERY_COMMAND' && a.payload.action === 'draw';
         const trialAction = a.type === 'TRIAL_COMMAND' && a.payload.action !== 'status',
           trialSignature = () => JSON.stringify(['revision', 'balances', 'inbox', 'weapon', 'level']
@@ -3876,6 +3893,12 @@
           if (success && a.type === 'PET_COMMAND' && ['lock', 'release'].includes(a.payload.action))
             this.ledger.petHatched = (this.ledger.petHatched || []).filter((id) => id !== a.payload.petId);
           this.cleanPetLedger(after.pets);
+          if (arenaClaim) {
+            if (this.bridge.cache.arena) this.bridge.cache.arena.token = '';
+            // The action key holds the token, so a refusal is remembered in the ledger:
+            // a refused claim costs one town trip a day at most.
+            if (!success) this.ledger.arena.claimFailed = true;
+          }
           if (a.type === 'ARENA_COMMAND' && a.payload.action === 'challenge') {
             if (this.bridge.cache.arena) this.bridge.cache.arena.token = '';
             if (success && result.data?.battle) {
@@ -3942,10 +3965,11 @@
             this.saveLedger();
             return;
           }
-          // A lottery request can cost no more than one chance, so an unanswered one must not stop the autopilot.
-          if (a.type === 'ONLINE_LOTTERY_COMMAND') {
+          // A lottery request costs at most one chance; an unanswered arena claim costs nothing and must not stop the autopilot.
+          if (a.type === 'ONLINE_LOTTERY_COMMAND' || arenaClaim) {
             this.log(safeMessage(e.message), 'warning');
-            this.suppress(a, 1800000);
+            if (arenaClaim) this.ledger.arena.claimFailed = true;
+            else this.suppress(a, 1800000);
             this.saveLedger();
             return;
           }
@@ -4597,16 +4621,17 @@
             f('每日领取天灵丹（需回洛阳）', 'activities.tianlingClaim') +
             f('没有双倍经验时自动使用天灵丹', 'activities.tianlingUse') +
             f('自动抽取在线抽奖次数（需回苏州）', 'activities.lotteryDraw') +
+            f('攒够多少次抽一次（当天次数发完时也会抽）', 'activities.lotteryBatch') +
             '<div class="hint">珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合原游戏返回的资格数据核对。</div></div><div class="section"><h3>比武天梯</h3>' +
             f('自动比武（总开关）', 'arena.enabled') +
             f('每日点赞', 'arena.like') +
-            f('领取名次奖励', 'arena.claim') +
+            f('领取名次奖励（需回洛阳）', 'arena.claim') +
             f('自动挑战（需回洛阳）', 'arena.challenge') +
             f('每日挑战次数上限（0 不限）', 'arena.maxPerDay') +
             f('只挑战战力不超过自己 × 倍数的对手', 'arena.maxPowerRatio') +
             f('比武榜刷新间隔（分钟）', 'arena.refreshMinutes') +
             f('结算前冲榜分钟数（0 关闭）', 'arena.rushMinutes') +
-            '<div class="hint">挑战需要回洛阳找比武校尉，会中断挂机。点赞和领奖不中断。每天 0 点（东八区）结算前的这段时间，托管回洛阳驻守并连续挑战：榜单每 30 秒刷新一次，不受每日挑战次数上限限制，期间不进副本。</div></div>';
+            '<div class="hint">挑战和领奖需要回洛阳找比武校尉，会中断挂机。点赞不中断。每天 0 点（东八区）结算前的这段时间，托管回洛阳驻守并连续挑战：榜单每 30 秒刷新一次，不受每日挑战次数上限限制，期间不进副本。</div></div>';
         }
         if (this.section === 'growth')
           html =
