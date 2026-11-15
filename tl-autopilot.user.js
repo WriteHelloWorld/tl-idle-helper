@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TL挂机助手
 // @namespace    https://github.com/YatsukiRenka/tl-idle-helper
-// @version      0.2.10
+// @version      0.2.11
 // @author       YatsukiRenka（基于 doai 的原作与 JimChan 的衍生版）
 // @description  日常、挂机、成长、装备回收、宝石与工艺；串行动作、资源预算、原页面战斗及每日版本检查。
 // @match        https://tl.jayczee.top/*
@@ -79,6 +79,7 @@
       zl: 'npc_zenlong',
       camp: 'npc_xiaowei',
       wushuang: 'npc_wushuang',
+      lottery: 'npc_kuaihuosan',
     };
     // Native TailorShop/YuciExchangeDialog recipes, verified in the post-migration frontend.
     const TAILOR_DEFENSE = [
@@ -111,6 +112,7 @@
         bear: true,
         bearRuns: 1,
         tianlingClaim: true,
+        lotteryDraw: true,
         tianlingUse: false,
       },
       pets: { enabled: true, summon: true, claim: true, hatch: false, hatchMutant: false,
@@ -1372,6 +1374,17 @@
             add(action('USE_ITEM', { bagItemId: pill.id, count: 1 },
               '使用天灵丹（双倍经验 2 小时）', 'activity', { doubleExp: true }));
         }
+        if (p.activities.lotteryDraw && townFor(s, NPC.lottery)) {
+          if (!s.lottery || now - s.lottery.at > 600000)
+            add(action('ONLINE_LOTTERY_COMMAND', { action: 'open', page: 0 }, '查询在线抽奖次数', 'read', {
+              readOnly: true, responseType: 'ONLINE_LOTTERY_RESPONSE',
+            }));
+          else if (s.lottery.enabled && num(s.lottery.balance) > 0)
+            add(action('ONLINE_LOTTERY_COMMAND', { action: 'draw' },
+              '快活叁在线抽奖（剩余 ' + s.lottery.balance + ' 次）', 'activity', {
+                requiresTown: true, npc: NPC.lottery, responseType: 'ONLINE_LOTTERY_RESPONSE',
+              }));
+        }
         if (
           p.activities.zl &&
           num(role.level) >= 15 &&
@@ -2282,6 +2295,7 @@
       'CAMP_STATUS',
       'CAMP_ENTER',
       'BEAR_ENTER',
+      'ONLINE_LOTTERY_COMMAND',
     ]);
     const readStorage = (key, fallback) => {
       try {
@@ -2413,7 +2427,7 @@
     function matchesResponse(waiter, packet) {
       if (waiter.doubleExp && (packet.success ?? packet.code === 200) &&
           !packet.data?.effects?.some((effect) => effect.type === 'DOUBLE_EXP_BUFF')) return false;
-      return packet.type === waiter.responseType && (!(['ARENA_COMMAND', 'PET_COMMAND'].includes(waiter.type) || waiter.petHatch) ||
+      return packet.type === waiter.responseType && (!(['ARENA_COMMAND', 'PET_COMMAND', 'ONLINE_LOTTERY_COMMAND'].includes(waiter.type) || waiter.petHatch) ||
         packet.data?.requestId === waiter.requestId);
     }
     class Bridge {
@@ -2553,6 +2567,7 @@
             this.cache.activityStatus = {};
             this.cache.forgePreviews = {};
             this.cache.pets = null;
+            this.cache.lottery = null;
             this.cache.arena = null;
             this.cache.arenaMatch = null;
             this.cache.trial = null;
@@ -2592,6 +2607,10 @@
             (this.cache.activityStamp || (this.cache.activityStamp = {})).wushuang = Date.now();
           }
           const data = packet.data;
+          const lottery = type === 'ONLINE_LOTTERY_STATE' ? data :
+            type === 'ONLINE_LOTTERY_RESPONSE' ? data?.state : null;
+          if (lottery && typeof lottery.balance !== 'undefined')
+            this.cache.lottery = { ...copy(lottery), at: Date.now() };
           if (type === 'PET_RESPONSE' && data?.state)
             this.cache.pets = { state: copy(data.state), at: Date.now() };
           if (type === 'ARENA_RESPONSE' && data) {
@@ -2794,6 +2813,7 @@
           role,
           pets: this.cache.pets ? { ...copy(this.cache.pets.state), at: this.cache.pets.at } : null,
           arena: this.cache.arena || null,
+          lottery: this.cache.lottery || null,
           arenaMatch: this.cache.arenaMatch || null,
           trial: this.cache.trial ? { ...this.cache.trial.trial, at: this.cache.trial.at } : null,
           combatPower: c.combatPower,
@@ -2863,7 +2883,7 @@
           'BEAR_ENTER',
         ];
         const nested = [
-          'ARENA_RESPONSE', 'PET_RESPONSE', 'TRIAL_RESPONSE',
+          'ARENA_RESPONSE', 'PET_RESPONSE', 'TRIAL_RESPONSE', 'ONLINE_LOTTERY_RESPONSE',
           'USE_ITEM_RESPONSE',
           'CALC_MONSTER_DROP_RESPONSE',
           'CALC_MAP_DROP_RESPONSE',
@@ -2925,7 +2945,7 @@
             this.sending = false;
           }
         }
-        if (['ARENA_COMMAND', 'PET_COMMAND', 'TRIAL_COMMAND'].includes(action.type) || action.petHatch)
+        if (['ARENA_COMMAND', 'PET_COMMAND', 'TRIAL_COMMAND', 'ONLINE_LOTTERY_COMMAND'].includes(action.type) || action.petHatch)
           action.payload = { ...action.payload, requestId:
             globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
               .replace(/[xy]/g, (c) => {
@@ -3728,7 +3748,7 @@
             active: s?.pets?.pets.find((entry) => entry.pet.id === s.pets.activePetId) || null,
             eggs: s ? P.petEggs(s).reduce((sum, item) => sum + P.num(item.count), 0) : null,
             list: s?.pets?.pets || null },
-          version: '0.2.10',
+          version: '0.2.11',
         };
       }
       received(type, packet) {
@@ -3779,6 +3799,7 @@
           this.reason = '此角色已在另一标签页托管';
           return;
         }
+        const lotteryDraw = a.type === 'ONLINE_LOTTERY_COMMAND' && a.payload.action === 'draw';
         const trialAction = a.type === 'TRIAL_COMMAND' && a.payload.action !== 'status',
           trialSignature = () => JSON.stringify(['revision', 'balances', 'inbox', 'weapon', 'level']
             .map((key) => this.bridge.cache.trial?.trial?.[key])),
@@ -3880,10 +3901,15 @@
             this.log('自动回复策略已应用');
           } else if (!success) {
             this.log(a.label + '：' + (result.message || '操作未成功'), 'warning');
-            this.suppress(a, 300000);
+            // A full bag must not cause a town trip every five minutes.
+            this.suppress(a, lotteryDraw ? 1800000 : 300000);
           } else {
             this.log(a.label + '：完成', 'success');
-            if (!a.readOnly && !a.activity &&
+            const reward = lotteryDraw && result.data?.receipt?.reward;
+            if (reward) this.log('抽奖获得：' + (['GOLD', 'GIFT'].includes(reward.kind)
+              ? P.num(reward.amount).toLocaleString() + ' ' + reward.name
+              : reward.name + ' ×' + reward.count + (reward.bound ? '（绑定）' : '（不绑定）')), 'success');
+            if (!lotteryDraw && !a.readOnly && !a.activity &&
                 !(a.family === 'arena' && ['open', 'list', 'challenge'].includes(a.payload.action)) &&
                 (a.type === 'PET_COMMAND' ? petBefore === petSignature() :
                   trialAction ? trialBefore === trialSignature() : P.signature(before) === P.signature(after))) {
@@ -3901,6 +3927,13 @@
           if (a.family === 'pet' && String(e.message).includes('请先结束战斗')) {
             this.log(safeMessage(e.message), 'warning');
             this.suppress(a, 300000);
+            this.saveLedger();
+            return;
+          }
+          // A lottery request can cost no more than one chance, so an unanswered one must not stop the autopilot.
+          if (a.type === 'ONLINE_LOTTERY_COMMAND') {
+            this.log(safeMessage(e.message), 'warning');
+            this.suppress(a, 1800000);
             this.saveLedger();
             return;
           }
@@ -4238,7 +4271,7 @@
     class Checker {
       constructor(controller) {
         this.controller = controller;
-        this.currentVersion = '0.2.10';
+        this.currentVersion = '0.2.11';
         this.busy = false;
         this.onChange = () => {};
         this.timer = null;
@@ -4268,9 +4301,11 @@
       }
       start() {
         if (this.timer) return;
+        // check() fetches at most once a day. A daily interval would delay a check until almost
+        // two days after the last one, so the interval is one hour.
         this.timer = setInterval(() => {
           if (this.controller.prefs.updates.checkDaily) this.check().catch(() => {});
-        }, DAY);
+        }, 60 * 60 * 1000);
         if (this.controller.prefs.updates.checkDaily) this.check().catch(() => {});
       }
       stop() {
@@ -4406,7 +4441,7 @@
         });
         document.documentElement.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: 'open' });
-        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.2.10</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.2.11</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
         this.root.addEventListener('click', (e) => {
           const b = e.target.closest('button');
           if (!b) return;
@@ -4526,6 +4561,7 @@
             f('熊林每日最多进入', 'activities.bearRuns') +
             f('每日领取天灵丹（需回洛阳）', 'activities.tianlingClaim') +
             f('没有双倍经验时自动使用天灵丹', 'activities.tianlingUse') +
+            f('自动抽取在线抽奖次数（需回苏州）', 'activities.lotteryDraw') +
             '<div class="hint">珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合原游戏返回的资格数据核对。</div></div><div class="section"><h3>比武天梯</h3>' +
             f('自动比武（总开关）', 'arena.enabled') +
             f('每日点赞', 'arena.like') +
