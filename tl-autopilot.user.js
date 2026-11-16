@@ -348,7 +348,59 @@
       return Object.entries(values).reduce((sum, [k, n]) => sum + num(n) * num(weights[k]), 0);
     }
     function equipmentScore(eq, state, prefs) {
-      return scoreStats(equipmentStats(eq, state?.gemInfos), gearWeights(state, prefs));
+      const weights = gearWeights(state, prefs), ctx = combatContext(state, prefs);
+      const fallback = () => scoreStats(equipmentStats(eq, state?.gemInfos), weights);
+      if (!ctx || !ctx.weights) return fallback();
+      const worn = wornBaseline(state, ctx), slot = num(template(eq).slotType);
+      if (!worn.slots.has(slot)) {
+        const rest = worn.items.filter((e) => num(template(e).slotType) !== slot);
+        worn.slots.set(slot, { rest, value: combatValue(equipmentValues(rest, state, ctx), ctx) });
+      }
+      const base = worn.slots.get(slot);
+      const after = combatValue(equipmentValues(base.rest.concat(eq), state, ctx), ctx);
+      return positiveValue(base.value) && positiveValue(after) ?
+        ctx.scale * Math.log(after / base.value) : fallback();
+    }
+    const positiveValue = (value) => Number.isFinite(value) && value > 0;
+    function gemScoreOrder(state, prefs, tie = () => 0) {
+      const scores = new Map();
+      const score = (gem) => {
+        if (!scores.has(gem)) scores.set(gem, statScore({
+          [GEM_ATTR[gem.itemTmpl.subType]]: num(gem.itemTmpl.value),
+        }, state, prefs));
+        return scores.get(gem);
+      };
+      return (a, b) => score(b) - score(a) || tie(a, b);
+    }
+    function statScore(values, state, prefs) {
+      const weights = gearWeights(state, prefs), ctx = combatContext(state, prefs);
+      if (!ctx || !ctx.weights) return scoreStats(values, weights);
+      const next = { ...ctx.me };
+      for (const k of Object.keys(WEIGHTS))
+        next[k] = Math.max(0, next[k] + num(values[k]) * (ctx.statMult[k] ?? 1));
+      const after = combatValue(next, ctx);
+      return positiveValue(ctx.value) && positiveValue(after) ?
+        ctx.scale * Math.log(after / ctx.value) : scoreStats(values, weights);
+    }
+    function sumEquipment(items, state) {
+      const out = {};
+      for (const item of items) addStats(out, equipmentStats(item, state.gemInfos));
+      return out;
+    }
+    function wornBaseline(state, ctx) {
+      if (ctx.worn) return ctx.worn;
+      const items = array(state.equipments).filter((e) => !!e.isEquipped);
+      ctx.worn = { items, stats: sumEquipment(items, state),
+        sets: setEffects(items, state), slots: new Map() };
+      return ctx.worn;
+    }
+    function equipmentValues(items, state, ctx) {
+      const old = wornBaseline(state, ctx), next = sumEquipment(items, state);
+      const sets = setEffects(items, state), values = { ...ctx.me };
+      for (const k of Object.keys(WEIGHTS))
+        values[k] = Math.max(0, values[k] + (num(next[k]) - num(old.stats[k])) *
+          (ctx.statMult[k] ?? 1) + num(sets[k]) - num(old.sets[k]));
+      return values;
     }
     function setEffects(eqs, state) {
       const out = {}, worn = new Set(eqs.map((e) => num(e.tmplId || template(e).id)));
@@ -470,6 +522,8 @@
       const base = combatValue(ctx.me, ctx);
       const delta = (k) => Math.log(combatValue({ ...ctx.me, [k]: ctx.me[k] + 1 }, ctx) / base);
       const ext = delta('extAtk');
+      ctx.value = base;
+      ctx.scale = 4 / ext;
       ctx.weights = ext > 0 && Number.isFinite(ext) ? Object.fromEntries(
         Object.keys(WEIGHTS).map((k) => [k, k === 'mp' ? 0 : 4 * delta(k) / ext])) : null;
       return ctx.weights;
@@ -489,17 +543,7 @@
       if (prefs.gear.scoring === 'combat') {
         const ctx = combatContext(state, prefs);
         if (!ctx) return { current: 0, after: 0, gain: 0, percent: 0, pending: true };
-        const sum = (list) => {
-          const out = {};
-          for (const e of list) addStats(out, equipmentStats(e, state.gemInfos));
-          return out;
-        };
-        const oldEquip = sum(equipped), newEquip = sum(next);
-        const oldSet = setEffects(equipped, state), newSet = setEffects(next, state);
-        const values = { ...ctx.me };
-        for (const k of Object.keys(WEIGHTS))
-          values[k] = Math.max(0, values[k] + (num(newEquip[k]) - num(oldEquip[k])) *
-            (ctx.statMult[k] ?? 1) + num(newSet[k]) - num(oldSet[k]));
+        const values = equipmentValues(next, state, ctx);
         const current = combatValue(ctx.me, ctx), after = combatValue(values, ctx);
         const beforeParts = combatParts(ctx.me, ctx), afterParts = combatParts(values, ctx);
         const percent = (a, b) => a > 0 ? (b - a) / a * 100 : b > 0 ? 100 : 0;
@@ -1886,11 +1930,7 @@
                 num(b.itemTmpl.gemLevel) <= p.gems.maxLevel &&
                 types.includes(b.itemTmpl.gemType),
             )
-            .sort(
-              (a, b) =>
-                num(b.itemTmpl.value) * num(gearWeights(s, p)[GEM_ATTR[num(b.itemTmpl.subType)]]) -
-                num(a.itemTmpl.value) * num(gearWeights(s, p)[GEM_ATTR[num(a.itemTmpl.subType)]]),
-            );
+            .sort(gemScoreOrder(s, p));
           if (p.gems.inlay && all.includes(0))
             for (const gem of candidates) {
               if (occupied.some((g) => g.gemType === gem.itemTmpl.gemType)) continue;
@@ -2279,7 +2319,7 @@
       if (mode === 'GEM_INLAY') {
         const fitting = (e) => gems.filter((b) => (ATTACK_SLOTS.concat(12).includes(num(template(e).slotType)) ? GEM_TYPES.attack : DEFENSE_SLOTS.includes(num(template(e).slotType)) ? GEM_TYPES.defense : []).includes(b.itemTmpl.gemType))
           .filter((b) => !slots(e).some((n) => gemTemplate(s, n)?.gemType === b.itemTmpl.gemType))
-          .sort((a, b) => num(b.itemTmpl.value) * num(gearWeights(s, p)[GEM_ATTR[b.itemTmpl.subType]]) - num(a.itemTmpl.value) * num(gearWeights(s, p)[GEM_ATTR[a.itemTmpl.subType]]) || bound(a, b));
+          .sort(gemScoreOrder(s, p, bound));
         const eq = current.selectedEquip && slots(current.selectedEquip).includes(0) ? current.selectedEquip : equipped.find((e) => slots(e).includes(0) && fitting(e).length);
         const gem = eq && fitting(eq)[0];
         return gem ? result([eq !== current.selectedEquip && eq, gem, find(5053, 5052)]) : result([], '没有可镶嵌的宝石或空孔');
@@ -2334,7 +2374,7 @@
       }
       if (kind === 'material' && mode === 'GEM_DRILL') return bags.filter((b) => num(b.itemTmpl.functionType) === 2 && (!eq || materialSupports(b, '装备', num(template(eq).reqLevel))));
       if (kind === 'gem' && mode === 'GEM_INLAY') return gems.filter((b) => !eq || ((ATTACK_SLOTS.concat(12).includes(num(template(eq).slotType)) ? GEM_TYPES.attack : GEM_TYPES.defense).includes(b.itemTmpl.gemType) && !slots(eq).some((n) => gemTemplate(s, n)?.gemType === b.itemTmpl.gemType)))
-        .sort((a, b) => num(b.itemTmpl.value) * num(gearWeights(s, p)[GEM_ATTR[b.itemTmpl.subType]]) - num(a.itemTmpl.value) * num(gearWeights(s, p)[GEM_ATTR[a.itemTmpl.subType]]) || bound(a, b));
+        .sort(gemScoreOrder(s, p, bound));
       if (kind === 'gem' && mode === 'GEM_SYNTH') {
         const total = (b) => gems.filter((v) => id(v) === id(b)).reduce((n, v) => n + num(v.count), 0);
         return gems.filter((b) => level(b) < 6).sort((a, b) => Number(total(b) >= 2) - Number(total(a) >= 2) || Math.min(5, total(b)) - Math.min(5, total(a)) || level(a) - level(b) || id(a) - id(b) || bound(a, b));
@@ -2375,7 +2415,7 @@
       slots,
       lookup,
       template,
-      setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights,
+      setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
       equipmentStats,
       scoreStats,
       equipmentScore,
