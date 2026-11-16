@@ -1060,6 +1060,7 @@
           weight: num(v.count) / total / maps.length }));
       }) };
     }
+    const SUSTAIN_LINE = 0.5, LOW_HP_SHARE = 0.05, HP_LINE = 0.35;
     function survivalWeight(totals, healPerSecond) {
       if (!totals || totals.battle < 1800000 || !Number.isFinite(healPerSecond) || healPerSecond <= 0) return null;
       const clamp = (v) => Math.max(0, Math.min(1, v));
@@ -1068,8 +1069,10 @@
       const income = num(totals.gold) + num(totals.sell);
       const share = count && income ? clamp(num(totals.potion) * num(totals.hpPotions) / count / income) : 0;
       const ratio = clamp(num(totals.hpLost) / (totals.battle / 1000) / healPerSecond);
-      return { weight: Math.round(clamp(Math.max(share + ratio, deaths > 0 ? 0.5 : 0)) * 20) / 20,
-        share, ratio, deaths, hours };
+      const low = num(totals.low) / totals.battle;
+      const danger = Math.max(clamp((ratio - SUSTAIN_LINE) / (1 - SUSTAIN_LINE)), clamp(low / LOW_HP_SHARE), deaths > 0 ? 0.5 : 0);
+      return { weight: Math.round(clamp(share + danger) * 100) / 100,
+        share, ratio, low, deaths, hours, danger, safe: danger === 0 };
     }
     function healPerSecond(s) {
       return potionEffect(potionChoices(s, 'HP')[0], 'HP') / 3;
@@ -1086,8 +1089,8 @@
         s.source === 'map' ? '最近挂机地图 ' + s.mapNames.join('、') : '等待怪物数据';
       const percent = (v) => (v * 100).toFixed(v * 100 < 10 ? 1 : 0);
       const v = s.survival;
-      const detail = s.auto ? '自动：药费占收入 ' + percent(v.share) + '%，掉血占回血能力 ' +
-        percent(v.ratio) + '%，近 ' + v.hours.toFixed(1) + ' 战斗小时' + (v.deaths > 0 ? '，有阵亡' : '') :
+      const detail = s.auto ? '自动·' + (v.safe ? '安全' : '吃紧') + '：药费占收入 ' + percent(v.share) + '%，掉血占回血能力 ' +
+        percent(v.ratio) + '%，低血量时间 ' + percent(v.low || 0) + '%，近 ' + v.hours.toFixed(1) + ' 战斗小时' + (v.deaths > 0 ? '，有阵亡' : '') :
         s.autoDefense ? '数据不足，用手动值' : '手动';
       return '评分参照：' + target + ' · 生存权重 ' + s.weight + '（' + detail + '）';
     }
@@ -2486,7 +2489,7 @@
       slots,
       lookup,
       template,
-      poolMaps, scoreTargets, survivalWeight, healPerSecond, scoringStatus, scoringText,
+      poolMaps, scoreTargets, survivalWeight, healPerSecond, scoringStatus, scoringText, SUSTAIN_LINE, LOW_HP_SHARE, HP_LINE,
       setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
       equipmentStats,
       scoreStats,
@@ -2717,7 +2720,7 @@
       return packet.type === waiter.responseType && (!(['ARENA_COMMAND', 'PET_COMMAND', 'ONLINE_LOTTERY_COMMAND'].includes(waiter.type) || waiter.petHatch) ||
         packet.data?.requestId === waiter.requestId);
     }
-    const statsFields = 'wall battle exp expBase gold sell potion hpPotions mpPotions kills deaths hpLost mpUsed'.split(' ');
+    const statsFields = 'wall battle exp expBase gold sell potion hpPotions mpPotions kills deaths hpLost mpUsed low'.split(' ');
     const statsTotals = () => Object.fromEntries(statsFields.map((k) => [k, 0]));
     const statsNumber = (value) => {
       const n = Number(value) || 0, a = Math.abs(n);
@@ -2740,8 +2743,8 @@
         const saved = read();
         if (saved?.version === 1 && saved.buckets && typeof saved.buckets === 'object' && !Array.isArray(saved.buckets) &&
           Object.entries(saved.buckets).every(([key, b]) => key.split(':').length === 2 &&
-            key.split(':').every((v) => v !== '' && Number.isInteger(Number(v))) && b && statsFields.every((k) => Number.isFinite(b[k]) && b[k] >= 0)))
-          this.buckets = JSON.parse(JSON.stringify(saved.buckets));
+            key.split(':').every((v) => v !== '' && Number.isInteger(Number(v))) && b && statsFields.every((k) => k === 'low' && b[k] === undefined || Number.isFinite(b[k]) && b[k] >= 0)))
+          this.buckets = Object.fromEntries(Object.entries(saved.buckets).map(([k, b]) => [k, { ...b, low: b.low ?? 0 }]));
         this.prune();
       }
       prune() {
@@ -2750,7 +2753,7 @@
           if (Number(key.split(':')[0]) < hour - 71) delete this.buckets[key];
       }
       pressure(isFarmMap) {
-        const totals = Object.fromEntries('battle hpLost gold sell potion hpPotions mpPotions deaths'.split(' ').map((k) => [k, 0]));
+        const totals = Object.fromEntries('battle hpLost gold sell potion hpPotions mpPotions deaths low'.split(' ').map((k) => [k, 0]));
         const hours = [...new Set(Object.keys(this.buckets).map((k) => Number(k.split(':')[0])))].sort((a, b) => b - a);
         for (const hour of hours) {
           const buckets = Object.entries(this.buckets).filter(([k]) => Number(k.split(':')[0]) === hour && isFarmMap(Number(k.split(':')[1])));
@@ -2829,7 +2832,8 @@
         if (effects.length) b.potion += context.potionPrice((d.message || '').replace(/^使用了 /, ''));
       }
       combat(d, b) {
-        if (d.stage === 'running' && d.player?.base.hp > 0 && d.player.currentHp / d.player.base.hp < 0.35) this.lastLowHpAt = d.serverTime;
+        const low = d.player?.base.hp > 0 && d.player.currentHp / d.player.base.hp < P.HP_LINE;
+        if (d.stage === 'running' && low) this.lastLowHpAt = d.serverTime;
         const p = this.previous;
         this.previous = d.stage === 'running' && d.player ? d : null;
         if (!this.previous || !p || p.sessionId !== d.sessionId) return;
@@ -2838,6 +2842,7 @@
         const hpLost = Math.max(0, p.player.currentHp - d.player.currentHp);
         const mpUsed = Math.max(0, p.player.currentMp - d.player.currentMp);
         b.battle += dt;
+        if (low) b.low += dt;
         b.hpLost += hpLost;
         b.mpUsed += mpUsed;
         this.window.push({ time: d.serverTime, dt, hpLost, mpUsed, currentHp: d.player.currentHp,
@@ -5346,7 +5351,7 @@
             f('背包和仓库图标显示的评分', 'market.bagScoreType', { choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
             f('装备详情和人物面板显示实战评分', 'market.tipScore') +
             f('逛摊按脚本排序', 'market.sort', { choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }) +
-            '<div class="hint">评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。自动生存权重 = 生命药费占金币收入的比例 + 每秒掉血占最强生命药回血速度的比例；近 6 个战斗小时内有阵亡时不低于 0.5；战斗数据不足 30 分钟时用手动值。实战评分每 100 分约等于整体实战能力的 1%；人物面板的实战评分是全身装备的合计贡献，换一件装备后它的变化等于两件装备的分数差。</div>' +
+            '<div class="hint">评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。自动生存权重按门槛计算：安全时只等于生命药费占金币收入的比例（接近 0，防御和抗性几乎不加分）；每秒掉血超过最强生命药回血速度的一半、血量低于 35% 的时间变多、或近 6 个战斗小时内有阵亡时，权重迅速升高，最高为 1。战斗数据不足 30 分钟时用手动值。实战评分每 100 分约等于整体实战能力的 1%；人物面板的实战评分是全身装备的合计贡献，换一件装备后它的变化等于两件装备的分数差。</div>' +
             (status.scoring.mode !== 'combat' ? '' : '<div class="hint">' + esc(TLPolicy.scoringText(status.scoring)) + '</div>') +
             (status.scoring.mode !== 'combat' ? '' : '<div class="hint">' +
               (status.scoring.weights ? '当前实战权重：' +
@@ -5534,7 +5539,7 @@
             ['击杀金币', fmt(b.gold)], ['出售收入', fmt(b.sell)], ['药费', fmt(b.potion)],
             ['净金币', fmt(net) + ' · ' + rate(net, b.wall) + '/时'],
             ['战斗占比', (b.wall ? b.battle / b.wall * 100 : 0).toFixed(1) + '%'],
-            ['击杀', fmt(b.kills)], ['阵亡', fmt(b.deaths)], ['用药', '生命 ' + fmt(b.hpPotions) + ' · 内力 ' + fmt(b.mpPotions)]];
+            ['击杀', fmt(b.kills)], ['阵亡', fmt(b.deaths)], ['低血量', duration(b.low)], ['用药', '生命 ' + fmt(b.hpPotions) + ' · 内力 ' + fmt(b.mpPotions)]];
           return '<h3>' + title + '</h3>' + rows.map(([label, value]) => `<div class="budget-card"><span>${label}</span><span>${value}</span></div>`).join('');
         };
         const rows = stats.summary.maps.map((b) => {

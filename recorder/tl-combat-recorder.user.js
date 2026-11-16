@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name TL战斗数据记录器
 // @namespace https://github.com/YatsukiRenka/tl-idle-helper
-// @version 0.1.0
+// @version 0.1.1
 // @description 本地记录自身战斗数据用于评分校准，不上传任何数据。
 // @match https://tl.jayczee.top/*
 // @match https://tl2.jayczee.top/*
@@ -19,6 +19,8 @@
   const ATTRS = 'hp mp extAtk intAtk extDef intDef critRate critDef avoidance precision iceAtk fireAtk poisonAtk holyAtk iceDef fireDef poisonDef holyDef'.split(' ');
   const fields = 'battle buff dbl kills rewards exp gold dealt taken deaths potHp potMp healHp healMp'.split(' ');
   const clone = x => JSON.parse(JSON.stringify(x));
+  const dangerDefaults = { low: 0, mid: 0, hpSum: 0, hpMin: 1, b3: 0, b10: 0, hpMax: 0, pt: 0 };
+  const round = n => Math.round(n * 10000) / 10000;
   const empty = () => ({ version: 1, configs: {}, skills: {}, monsters: {}, hours: {}, floats: {} });
   const nums = x => ATTRS.map((k, i) => Number(Array.isArray(x) ? x[i] : x?.[k]) || 0);
   const keyOf = m => [m.templateId, m.level, m.category].join(':');
@@ -48,6 +50,7 @@
       this.previous = this.sig = this.exp = undefined;
       this.skill = '';
       try { const d = this.read(this.storageKey()); this.data = valid(d) ? clone(d) : empty(); } catch { this.data = empty(); }
+      for (const [k, b] of Object.entries(this.data.hours)) this.data.hours[k] = { ...dangerDefaults, ...b };
     }
     storageKey() { return 'tl-combat-recorder-v1:' + this.roleId; }
     config(s, c) {
@@ -61,7 +64,9 @@
     }
     bucket(t, c) {
       const k = [Math.floor(t / 3600000), c.mapId, this.sig].join('|');
-      return this.data.hours[k] ||= { ...Object.fromEntries(fields.map(f => [f, 0])), o: [0, 0, 0, 0, 0], i: [0, 0, 0, 0, 0], k: {} };
+      const b = this.data.hours[k] ||= { ...dangerDefaults, ...Object.fromEntries(fields.map(f => [f, 0])), o: [0, 0, 0, 0, 0], i: [0, 0, 0, 0, 0], k: {} };
+      b.pt = c.potionThreshold || 0;
+      return b;
     }
     packet(p, c) {
       if (!c || c.roleId == null || !p) return;
@@ -71,15 +76,28 @@
       if (this.now() - this.lastWrite >= 300000) this.flush();
     }
     state(s, c) {
-      if (s.stage !== 'running' || !s.player) { this.previous = undefined; return; }
+      if (s.stage !== 'running' || !s.player) { this.previous = undefined; this.losses = []; return; }
       const prev = this.previous;
       if (prev?.sessionId === s.sessionId && s.sequence <= prev.sequence) return;
-      if (prev?.sessionId !== s.sessionId) this.skill = '';
+      if (prev?.sessionId !== s.sessionId) { this.skill = ''; this.losses = []; }
       this.config(s, c);
       const b = this.bucket(s.serverTime, c);
+      this.danger(s, prev, b);
       if (prev?.sessionId === s.sessionId) this.delta(prev, s, c, b);
       this.floating(s, prev?.sessionId === s.sessionId ? prev : null, b);
       this.previous = clone(s);
+    }
+    danger(s, prev, b) {
+      const max = s.player.base.hp, fraction = s.player.currentHp / max;
+      if (!(max > 0)) return;
+      b.hpMin = round(Math.min(b.hpMin, fraction)); b.hpMax = Math.max(b.hpMax, max);
+      if (prev?.sessionId !== s.sessionId) return;
+      const dt = Math.min(5000, s.serverTime - prev.serverTime);
+      if (!(dt > 0)) return;
+      b.low += fraction < 0.35 ? dt : 0; b.mid += fraction < 0.6 ? dt : 0; b.hpSum += dt * fraction;
+      this.losses.push({ time: s.serverTime, loss: Math.max(0, prev.player.currentHp - s.player.currentHp) });
+      this.losses = this.losses.filter(x => x.time > s.serverTime - 10000);
+      for (const seconds of [3, 10]) b['b' + seconds] = round(Math.max(b['b' + seconds], this.losses.filter(x => x.time > s.serverTime - seconds * 1000).reduce((n, x) => n + x.loss, 0) / max));
     }
     delta(prev, s, c, b) {
       const dt = Math.min(5000, s.serverTime - prev.serverTime);
@@ -171,7 +189,7 @@
       const hours = Object.keys(this.data.hours), configs = Object.values(this.data.configs);
       return { battleHours: Object.values(this.data.hours).reduce((n, b) => n + b.battle, 0) / 3600000, configs: configs.length, hours: hours.length, samples: configs.reduce((n, c) => n + c.out.length + c.in.length, 0), bytes: JSON.stringify(this.data).length, since: hours.length ? Math.min(...hours.map(k => Number(k.split('|')[0]))) * 3600000 : null };
     }
-    exportData(meta) { return { format: 'tl-combat-data', version: 1, recorder: '0.1.0', exportedAt: this.now(), ...meta, data: clone(this.data) }; }
+    exportData(meta) { return { format: 'tl-combat-data', version: 1, recorder: '0.1.1', exportedAt: this.now(), ...meta, data: clone(this.data) }; }
   }
   if (typeof module !== 'undefined') { module.exports = { Recorder, ATTRS, hash }; return; }
   if (window.__TL_COMBAT_RECORDER__) return;
@@ -184,7 +202,7 @@
     const s = document.querySelector('#app')?.__vue_app__?.config.globalProperties.$pinia?._s?.get('character');
     if (s?.role?.id == null) return null;
     let settings = {}; try { settings = JSON.parse(s.role.settings || '{}'); } catch {}
-    return { roleId: s.role.id, level: s.role.level, sect: s.role.sect, mapId: s.role.mapId, doubleExp: settings.doubleExp?.buffExpireTime > Date.now(), attrs: nums(s.finalAttributes), maps: s.maps || [] };
+    return { roleId: s.role.id, level: s.role.level, sect: s.role.sect, mapId: s.role.mapId, potionThreshold: settings.hp?.enabled ? settings.hp.threshold : 0, doubleExp: settings.doubleExp?.buffExpireTime > Date.now(), attrs: nums(s.finalAttributes), maps: s.maps || [] };
   }
   const attached = new WeakSet(), Native = window.WebSocket;
   function attach(socket) {
