@@ -349,6 +349,16 @@
     function scoreStats(values, weights = WEIGHTS) {
       return Object.entries(values).reduce((sum, [k, n]) => sum + num(n) * num(weights[k]), 0);
     }
+    const SCORE_UNIT = 10000;
+    function characterScore(stats, state, prefs) {
+      if (!array(state?.monsters).length) return null;
+      const weights = gearWeights(state, prefs), ctx = combatContext(state, prefs);
+      const values = Object.fromEntries(Object.keys(WEIGHTS).map((k) => [k, num(stats?.[k])]));
+      if (!ctx || !ctx.weights) return scoreStats(values, weights);
+      const value = combatValue(values, ctx), bare = combatValue(equipmentValues([], state, ctx), ctx);
+      return positiveValue(value) && positiveValue(bare) ?
+        SCORE_UNIT * Math.log(value / bare) : scoreStats(values, weights) * SCORE_UNIT / ctx.scale;
+    }
     function equipmentScore(eq, state, prefs) {
       const weights = gearWeights(state, prefs), ctx = combatContext(state, prefs);
       const fallback = () => scoreStats(equipmentStats(eq, state?.gemInfos), weights);
@@ -361,7 +371,7 @@
       const base = worn.slots.get(slot);
       const after = combatValue(equipmentValues(base.rest.concat(eq), state, ctx), ctx);
       return positiveValue(base.value) && positiveValue(after) ?
-        ctx.scale * Math.log(after / base.value) : fallback();
+        SCORE_UNIT * Math.log(after / base.value) : fallback() * SCORE_UNIT / ctx.scale;
     }
     const positiveValue = (value) => Number.isFinite(value) && value > 0;
     function gemScoreOrder(state, prefs, tie = () => 0) {
@@ -382,7 +392,7 @@
         next[k] = Math.max(0, next[k] + num(values[k]) * (ctx.statMult[k] ?? 1));
       const after = combatValue(next, ctx);
       return positiveValue(ctx.value) && positiveValue(after) ?
-        ctx.scale * Math.log(after / ctx.value) : scoreStats(values, weights);
+        SCORE_UNIT * Math.log(after / ctx.value) : scoreStats(values, weights) * SCORE_UNIT / ctx.scale;
     }
     function sumEquipment(items, state) {
       const out = {};
@@ -2480,7 +2490,7 @@
       setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
       equipmentStats,
       scoreStats,
-      equipmentScore,
+      equipmentScore, characterScore, SCORE_UNIT,
       projectedGain,
       countItem,
       bagItem,
@@ -3732,11 +3742,10 @@
         parent.appendChild(span);
       }
       profileScore(stats, state, prefs) {
-        const weights = P.combatWeights(state, MarketScore.scorePrefs(prefs, 'combat'));
+        const value = P.characterScore(stats, state, MarketScore.scorePrefs(prefs, 'combat'));
         return {
-          score: weights === null ? 0 : Math.round(P.scoreStats(
-            Object.fromEntries(Object.keys(P.WEIGHTS).map((key) => [key, stats?.[key] || 0])), weights)),
-          pending: weights === null,
+          score: Math.round(value),
+          pending: value === null,
         };
       }
       state() {
@@ -5337,7 +5346,7 @@
             f('背包和仓库图标显示的评分', 'market.bagScoreType', { choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
             f('装备详情和人物面板显示实战评分', 'market.tipScore') +
             f('逛摊按脚本排序', 'market.sort', { choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }) +
-            '<div class="hint">评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。自动生存权重 = 生命药费占金币收入的比例 + 每秒掉血占最强生命药回血速度的比例；近 6 个战斗小时内有阵亡时不低于 0.5；战斗数据不足 30 分钟时用手动值。</div>' +
+            '<div class="hint">评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。自动生存权重 = 生命药费占金币收入的比例 + 每秒掉血占最强生命药回血速度的比例；近 6 个战斗小时内有阵亡时不低于 0.5；战斗数据不足 30 分钟时用手动值。实战评分每 100 分约等于整体实战能力的 1%；人物面板的实战评分是全身装备的合计贡献，换一件装备后它的变化等于两件装备的分数差。</div>' +
             (status.scoring.mode !== 'combat' ? '' : '<div class="hint">' + esc(TLPolicy.scoringText(status.scoring)) + '</div>') +
             (status.scoring.mode !== 'combat' ? '' : '<div class="hint">' +
               (status.scoring.weights ? '当前实战权重：' +
