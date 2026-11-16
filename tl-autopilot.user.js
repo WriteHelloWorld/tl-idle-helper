@@ -1391,14 +1391,12 @@
               readOnly: true, responseType: 'ONLINE_LOTTERY_RESPONSE',
             }));
           // One chance arrives per 30 minutes online and a draw needs a town trip, so chances
-          // are drawn in batches. Whether the balance survives 00:00 UTC+8 is unverified,
-          // so the last 30 minutes of the day draw whatever is left.
+          // are drawn in batches. The game rules keep an unused balance across days.
           else if (s.lottery.enabled && num(s.lottery.balance) > 0 && !arenaRush(p, now) &&
               (num(s.lottery.balance) >= p.activities.lotteryBatch ||
                 (num(s.lottery.dailyLimit) > 0 &&
                   num(s.lottery.grantedToday) >= num(s.lottery.dailyLimit)) ||
-                num(role.mapId) === num(townFor(s, NPC.lottery).id) ||
-                86400000 - (now + 28800000) % 86400000 <= 1800000))
+                num(role.mapId) === num(townFor(s, NPC.lottery).id)))
             add(action('ONLINE_LOTTERY_COMMAND', { action: 'draw' },
               '快活叁在线抽奖（剩余 ' + s.lottery.balance + ' 次）', 'activity', {
                 requiresTown: true, npc: NPC.lottery, responseType: 'ONLINE_LOTTERY_RESPONSE',
