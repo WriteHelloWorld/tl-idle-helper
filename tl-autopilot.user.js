@@ -127,6 +127,7 @@
         hpThreshold: 50,
         mpThreshold: 50,
         autoChoose: true,
+        autoThreshold: false,
         order: 'fit',
         hpPriority: [],
         mpPriority: [],
@@ -266,7 +267,7 @@
       p.smithy.targetEnhance = Math.min(9, integer(p.smithy.targetEnhance, 3));
       p.potions.hpThreshold = Math.max(10, Math.min(80, integer(p.potions.hpThreshold, 50)));
       p.potions.mpThreshold = Math.max(10, Math.min(80, integer(p.potions.mpThreshold, 50)));
-      if (!['fit', 'weak', 'strong'].includes(p.potions.order)) p.potions.order = 'fit';
+      if (!['fit', 'weak', 'strong', 'smart'].includes(p.potions.order)) p.potions.order = 'fit';
       return p;
     }
     const camel = (k) => {
@@ -1025,11 +1026,42 @@
         short = strong.filter((t) => heal(t) < gap);
       return enough.concat(short);
     }
-    function potionSettings(s, p) {
+    function potionPick(s, p, attr, now = Date.now()) {
+      const key = attr === 'HP' ? 'hp' : 'mp';
+      if (p.potions.order !== 'smart' || !p.potions.autoChoose || p.potions[key + 'Priority'].length) return null;
+      const candidates = potionChoices(s, attr).flatMap((template) => {
+        const offer = array(s.shopItems).find((i) => num(i.itemId) === num(template.id) &&
+          (i.currencyType == null || num(i.currencyType) === 1) && num(i.price) > 0);
+        const heal = potionEffect(template, attr);
+        return offer ? [{ template, perSecond: heal / 3, efficiency: heal / num(offer.price) }] : [];
+      });
+      if (!candidates.length) return null;
+      const rates = s.combat, strongest = candidates[0], need = num(rates?.[attr === 'HP' ? 'hpLossPerSec' : 'mpUsePerSec']);
+      const result = (c, reason) => ({ template: c.template, need, perSecond: c.perSecond, reason });
+      if (!rates || rates.mapId !== s.role.mapId || rates.seconds < 120) return result(strongest, '数据不足');
+      if (attr === 'HP' && ((rates.lastLowHpAt > 0 && now - rates.lastLowHpAt < 600000) ||
+        (rates.lastDeathAt > 0 && now - rates.lastDeathAt < 1800000))) return result(strongest, '血量过低或刚阵亡，改用最强药');
+      const best = candidates.filter((c) => c.perSecond >= 1.25 * need)
+        .sort((a, b) => b.efficiency - a.efficiency || b.perSecond - a.perSecond)[0] || strongest;
+      const current = candidates.find((c) => num(c.template.id) === num(parse(s.role.settings, {})[key]?.priority?.[0]));
+      return result(current && current.perSecond >= 1.05 * need && current.efficiency >= best.efficiency ? current : best, '按实测消耗选择');
+    }
+    function potionThreshold(s, p, now = Date.now()) {
+      const rates = s.combat, configured = p.potions.hpThreshold;
+      if (!p.potions.autoThreshold || !rates || rates.mapId !== s.role.mapId || rates.seconds < 120) return configured;
+      const hp = parse(s.role.settings, {}).hp || {}, pick = potionPick(s, p, 'HP', now);
+      const template = pick?.template || array(hp.priority).map((id) => potionChoices(s, 'HP').find((t) => num(t.id) === num(id) && countItem(s, id) > 0)).find(Boolean);
+      const healPct = rates.maxHp > 0 ? potionEffect(template, 'HP') / rates.maxHp * 100 : 0;
+      const needed = rates.lastDeathAt > 0 && now - rates.lastDeathAt < 1800000 ? 80 : Math.ceil((2 * rates.worstLoss10Pct - 3 * healPct + 10) / 5) * 5;
+      const target = Math.min(80, Math.max(10, configured, needed));
+      return hp.threshold >= target && hp.threshold <= target + 10 && hp.threshold >= configured ? hp.threshold : target;
+    }
+    function potionSettings(s, p, now = Date.now()) {
       const make = (attr) => {
         const explicit = attr === 'HP' ? p.potions.hpPriority : p.potions.mpPriority,
           eligible = new Set(potionChoices(s, attr).map((t) => num(t.id)));
-        const selected = explicit.length
+        const pick = potionPick(s, p, attr, now);
+        const selected = pick ? [pick.template, ...potionChoices(s, attr)].filter((t) => countItem(s, t.id) > 0).map((t) => num(t.id)) : explicit.length
           ? explicit
           : p.potions.autoChoose
             ? potionOrder(
@@ -1045,7 +1077,7 @@
           .slice(0, 6);
       };
       return {
-        hp: { enabled: p.potions.enabled, threshold: p.potions.hpThreshold, priority: make('HP') },
+        hp: { enabled: p.potions.enabled, threshold: potionThreshold(s, p, now), priority: make('HP') },
         mp: { enabled: p.potions.enabled, threshold: p.potions.mpThreshold, priority: make('MP') },
       };
     }
@@ -1341,7 +1373,7 @@
       if (p.potions.enabled) {
         if (!array(s.potionTemplates).length)
           add(action('GET_POTION_LIST', {}, '获取药品目录', 'read', { readOnly: true }));
-        const setting = potionSettings(s, p);
+        const setting = potionSettings(s, p, now);
         const current = parse(role.settings, null);
         if (
           !current || typeof current !== 'object' || Array.isArray(current) ||
@@ -1715,7 +1747,7 @@
       }
       if (p.shop.enabled) {
         for (const attr of ['HP', 'MP']) {
-          const t = potionChoices(s, attr).find((t) =>
+          const t = potionPick(s, p, attr, now)?.template || potionChoices(s, attr).find((t) =>
             array(s.shopItems).some(
               (i) =>
                 num(i.itemId) === num(t.id) &&
@@ -2261,6 +2293,8 @@
       potionEffect,
       potionChoices,
       potionSettings,
+      potionPick,
+      potionThreshold,
       potionOrder,
       skillCost,
       synthRate,
@@ -2456,6 +2490,166 @@
           !packet.data?.effects?.some((effect) => effect.type === 'DOUBLE_EXP_BUFF')) return false;
       return packet.type === waiter.responseType && (!(['ARENA_COMMAND', 'PET_COMMAND', 'ONLINE_LOTTERY_COMMAND'].includes(waiter.type) || waiter.petHatch) ||
         packet.data?.requestId === waiter.requestId);
+    }
+    const statsFields = 'wall battle exp expBase gold sell potion hpPotions mpPotions kills deaths hpLost mpUsed'.split(' ');
+    const statsTotals = () => Object.fromEntries(statsFields.map((k) => [k, 0]));
+    const statsNumber = (value) => {
+      const n = Number(value) || 0, a = Math.abs(n);
+      if (a >= 100000000) return (n / 100000000).toFixed(2) + '亿';
+      if (a >= 10000) return (n / 10000).toFixed(a >= 1000000 ? 1 : 2) + '万';
+      return Math.round(n).toLocaleString('zh-CN');
+    };
+    const statsDuration = (ms) => {
+      const m = Math.floor(ms / 60000);
+      return (m >= 60 ? Math.floor(m / 60) + '小时' : '') + m % 60 + '分';
+    };
+    class Stats {
+      constructor({ now, read, write }) {
+        this.now = now;
+        this.write = write;
+        this.buckets = {};
+        this.window = [];
+        this.lastTick = now();
+        this.lastWrite = now();
+        const saved = read();
+        if (saved?.version === 1 && saved.buckets && typeof saved.buckets === 'object' && !Array.isArray(saved.buckets) &&
+          Object.entries(saved.buckets).every(([key, b]) => key.split(':').length === 2 &&
+            key.split(':').every((v) => v !== '' && Number.isInteger(Number(v))) && b && statsFields.every((k) => Number.isFinite(b[k]) && b[k] >= 0)))
+          this.buckets = JSON.parse(JSON.stringify(saved.buckets));
+        this.prune();
+      }
+      prune() {
+        const hour = Math.floor(this.now() / 3600000);
+        for (const key of Object.keys(this.buckets))
+          if (Number(key.split(':')[0]) < hour - 71) delete this.buckets[key];
+      }
+      bucket(mapId) {
+        this.prune();
+        const key = Math.floor(this.now() / 3600000) + ':' + (mapId || 0);
+        return this.buckets[key] ||= statsTotals();
+      }
+      save() {
+        if (this.now() - this.lastWrite >= 60000) this.flush();
+      }
+      flush() {
+        this.prune();
+        this.write({ version: 1, buckets: JSON.parse(JSON.stringify(this.buckets)) });
+        this.lastWrite = this.now();
+      }
+      clear() {
+        this.lastLowHpAt = this.lastDeathAt = 0;
+        this.buckets = {};
+        this.window = [];
+        this.previous = null;
+        this.exp = this.money = undefined;
+        this.lastTick = this.now();
+        this.flush();
+      }
+      tick(mapId) {
+        this.bucket(mapId).wall += Math.max(0, Math.min(5000, this.now() - this.lastTick));
+        this.lastTick = this.now();
+        this.save();
+      }
+      death(mapId) {
+        if (mapId === this.mapId) this.lastDeathAt = this.now();
+        this.bucket(mapId).deaths++;
+        this.save();
+      }
+      record(packet, context) {
+        // Some packets carry the role of another player (player info, arena snapshots).
+        const d = packet.data || {}, sent = d.roleInfo?.role || d.role,
+          role = sent && (sent.id == null || sent.id === context.roleId) ? sent : null;
+        const b = this.bucket(context.mapId), ok = packet.success !== false && d.success !== false;
+        if (packet.type === 'COMBAT_REWARD' && ok) {
+          const exp = typeof role?.currentExp === 'number' && this.exp !== undefined ? Math.max(0, role.currentExp - this.exp) : 0;
+          b.kills++;
+          b.exp += exp;
+          b.expBase += exp / (context.doubleExp ? 2 : 1);
+          b.gold += (d.drops || []).filter((v) => v.name === '金币').reduce((sum, v) => sum + Number(v.count || 0), 0);
+        }
+        if (packet.type === 'USE_ITEM_RESPONSE' && ok) this.potions(d, context, b);
+        if (packet.type === 'SHOP_SELL_RESPONSE' && ok && this.money !== undefined)
+          b.sell += Math.max(0, Number(role?.money ?? this.money) - this.money);
+        if (this.mapId !== context.mapId) {
+          this.lastLowHpAt = this.lastDeathAt = 0;
+          this.mapId = context.mapId;
+          this.previous = null;
+          this.window = [];
+        }
+        if (packet.type === 'COMBAT_STATE') this.combat(d, b);
+        if (typeof role?.currentExp === 'number') {
+          this.exp = role.currentExp;
+          this.money = Number(role.money) || 0;
+        }
+        this.save();
+      }
+      potions(d, context, b) {
+        const effects = (d.effects || []).filter((v) => v.type === 'HEAL');
+        for (const effect of effects) {
+          if (effect.attr === 'HP') b.hpPotions++;
+          if (effect.attr === 'MP') b.mpPotions++;
+        }
+        if (effects.length) b.potion += context.potionPrice((d.message || '').replace(/^使用了 /, ''));
+      }
+      combat(d, b) {
+        if (d.stage === 'running' && d.player?.base.hp > 0 && d.player.currentHp / d.player.base.hp < 0.35) this.lastLowHpAt = d.serverTime;
+        const p = this.previous;
+        this.previous = d.stage === 'running' && d.player ? d : null;
+        if (!this.previous || !p || p.sessionId !== d.sessionId) return;
+        const dt = Math.min(5000, d.serverTime - p.serverTime);
+        if (!(dt > 0)) return;
+        const hpLost = Math.max(0, p.player.currentHp - d.player.currentHp);
+        const mpUsed = Math.max(0, p.player.currentMp - d.player.currentMp);
+        b.battle += dt;
+        b.hpLost += hpLost;
+        b.mpUsed += mpUsed;
+        this.window.push({ time: d.serverTime, dt, hpLost, mpUsed, currentHp: d.player.currentHp,
+          maxHp: d.player.base.hp, maxMp: d.player.base.mp });
+        this.trim();
+      }
+      trim() {
+        const end = Math.max(this.now(), this.window.at(-1)?.time || 0);
+        this.window = this.window.filter((v) => v.time > end - 600000);
+        return end;
+      }
+      rates() {
+        const end = this.trim(), w = this.window, last = w.at(-1);
+        const result = { mapId: 0, seconds: 0, hpLossPerSec: 0, mpUsePerSec: 0, worstLoss10Pct: 0, minHpPct: 0, maxHp: 0, maxMp: 0,
+          lastLowHpAt: this.lastLowHpAt || 0, lastDeathAt: this.lastDeathAt || 0 };
+        if (!last) return result;
+        result.mapId = this.mapId;
+        result.maxHp = last.maxHp;
+        result.maxMp = last.maxMp;
+        result.seconds = w.reduce((sum, v) => sum + v.dt, 0) / 1000;
+        result.hpLossPerSec = w.reduce((sum, v) => sum + v.hpLost, 0) / result.seconds;
+        result.mpUsePerSec = w.reduce((sum, v) => sum + v.mpUsed, 0) / result.seconds;
+        let start = 0, loss = 0, worst = 0;
+        for (let i = 0; i < w.length; i++) {
+          loss += w[i].hpLost;
+          while (w[start].time <= w[i].time - 10000) loss -= w[start++].hpLost;
+          worst = Math.max(worst, loss);
+        }
+        result.worstLoss10Pct = last.maxHp ? worst / last.maxHp * 100 : 0;
+        const recent = w.filter((v) => v.time > end - 60000 && v.maxHp > 0);
+        result.minHpPct = recent.length ? Math.min(...recent.map((v) => v.currentHp / v.maxHp * 100)) : 0;
+        return result;
+      }
+      summary() {
+        this.prune();
+        const hour = statsTotals(), previous = statsTotals(), today = statsTotals(), maps = {};
+        const h = Math.floor(this.now() / 3600000), date = new Date(this.now()).toDateString();
+        const add = (target, b) => statsFields.forEach((k) => target[k] += b[k]);
+        for (const [key, b] of Object.entries(this.buckets)) {
+          const [time, mapId] = key.split(':');
+          if (+time === h) add(hour, b);
+          if (+time === h - 1) add(previous, b);
+          if (new Date(+time * 3600000).toDateString() === date) add(today, b);
+          add(maps[mapId] ||= { ...statsTotals(), mapId: Number(mapId) }, b);
+        }
+        const recent = { ...hour };
+        if (hour.wall < 600000) add(recent, previous);
+        return { hour, previous, today, recent, maps: Object.values(maps).filter((b) => b.battle > 0).sort((a, b) => b.battle - a.battle) };
+      }
     }
     class Bridge {
       constructor(log) {
@@ -2667,6 +2861,7 @@
                 type,
               ),
             );
+          this.recordStats?.(packet);
           setTimeout(() => {
             try {
               this.syncState(packet);
@@ -2841,6 +3036,7 @@
           pets: this.cache.pets ? { ...copy(this.cache.pets.state), at: this.cache.pets.at } : null,
           arena: this.cache.arena || null,
           lottery: this.cache.lottery || null,
+          combat: this.statsRates?.() || null,
           arenaMatch: this.cache.arenaMatch || null,
           trial: this.cache.trial ? { ...this.cache.trial.trial, at: this.cache.trial.at } : null,
           combatPower: c.combatPower,
@@ -3525,6 +3721,20 @@
         this.reloads = readStorage(PREFIX + ':reloads', []);
         this.bridge = new Bridge((text, level) => this.log(text, level));
         this.bridge.onMessage = (type, packet) => this.received(type, packet);
+        this.bridge.recordStats = (packet) => {
+          const own = this.bridge.character()?.role,
+            sent = packet.data?.roleInfo?.role || packet.data?.role,
+            role = sent && (!own || sent.id === own.id) ? sent : own;
+          this.ensureStats(role?.id);
+          if (!role || !this.stats) return;
+          let settings = packet.type === 'COMBAT_REWARD' ? role.settings || {} : {};
+          try { if (typeof settings === 'string') settings = JSON.parse(settings); } catch { settings = {}; }
+          this.stats.record(packet, { roleId: role.id, mapId: role.mapId,
+            doubleExp: settings.doubleExp?.buffExpireTime > Date.now(),
+            potionPrice: (name) => Number(arraySafe(this.bridge.cache.potions).find((p) => p.name === name)?.price) || 0 });
+        };
+        this.bridge.statsRates = () => this.stats?.rates() || null;
+        window.addEventListener('pagehide', () => this.stats?.flush());
         this.bridge.onDisconnect = () => {
           this.reason = '等待原游戏重连';
           if (!this.prefs.reconnect.enabled) this.pause('连接中断，自动恢复已关闭');
@@ -3544,6 +3754,14 @@
         );
         this.installInteractionPause();
         this.market = new MarketScore(this);
+      }
+      ensureStats(id) {
+        if (!id || this.statsRoleId === id) return;
+        this.stats?.flush();
+        this.statsRoleId = id;
+        const key = PREFIX + ':stats:' + id;
+        this.stats = new Stats({ now: () => Date.now(), read: () => readStorage(key, null),
+          write: (value) => writeStorage(key, value) });
       }
       installInteractionPause() {
         for (const type of ['pointerdown', 'keydown'])
@@ -3735,6 +3953,12 @@
             });
         }
         return {
+          stats: this.stats ? { summary: this.stats.summary(), rates: this.stats.rates() } : null,
+          potions: Object.fromEntries(['HP', 'MP'].map((attr) => {
+            const pick = s?.role ? P.potionPick(s, this.prefs, attr, Date.now()) : null;
+            return [attr.toLowerCase(), pick ? { name: pick.template.name, need: pick.need, perSecond: pick.perSecond, reason: pick.reason } : null];
+          })),
+          threshold: s?.role ? P.potionThreshold(s, this.prefs, Date.now()) : this.prefs.potions.hpThreshold,
           enabled: this.enabled,
           connected: this.bridge.connected,
           ready: this.bridge.sessionReady,
@@ -4037,6 +4261,9 @@
       }
       async tick() {
         this.syncKeepAwake();
+        const statsRole = this.bridge?.character?.()?.role;
+        this.ensureStats(statsRole?.id);
+        if (statsRole) this.stats?.tick(statsRole.mapId);
         if (!this.enabled) {
           this.paint();
           return;
@@ -4105,6 +4332,7 @@
             this.lastDeathKey = key;
             this.deaths = this.deaths.filter((t) => now - t < 3600000);
             this.deaths.push(now);
+            this.stats?.death(s.role.mapId);
             this.penalty += 5;
             this.log('检测到阵亡，准备按游戏入口返城', 'warning');
           }
@@ -4287,7 +4515,7 @@
     }
     const arraySafe = (v) => (Array.isArray(v) ? v : []);
     return {
-      requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake,
+      Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake,
     };
   })();
   if (typeof module !== 'undefined' && module.exports) module.exports.TLRuntime = TLRuntime;
@@ -4454,6 +4682,7 @@
       );
     const groups = [
       ['status', '状态'],
+      ['stats', '统计'],
       ['battle', '挂机日常'],
       ['growth', '成长装备'],
       ['pets', '珍兽'],
@@ -4471,6 +4700,7 @@
       cur[ks.at(-1)] = value;
     };
     const BUDGET_CSS =
+      '.income-table{width:100%;border-collapse:collapse;font-size:12px}.income-table th,.income-table td{padding:4px;text-align:right}.income-table th:first-child,.income-table td:first-child{text-align:left}' +
       '.budgets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:12px;row-gap:4px;font-size:11px;color:#c3d4b7;line-height:1.55;margin-top:6px}.budgets span{display:block;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.budget-title{font-size:10px;color:#abc7a0}.level-reason{margin-top:6px;color:#e9d5a6;font-size:11px;line-height:1.65;overflow-wrap:anywhere}.tabs button.has-update{color:#f4d37a}.update-summary ul{padding-left:18px;margin:8px 0}.update-summary li{margin:5px 0}.update-summary .notice{margin-bottom:10px}@media(max-height:600px){.tabs{gap:1px}.tabs button{font-size:10px;padding:5px 2px}.summary{padding-top:5px}.budgets{margin-top:4px;row-gap:2px;line-height:1.4}.level-reason{margin-top:4px;line-height:1.5}}';
     const CSS = `:host{all:initial;font-family:"Microsoft YaHei","Segoe UI",sans-serif;color:#e9f0e4;font-size:12px}*{box-sizing:border-box}button,input,select,textarea{font:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid #e6c477;outline-offset:2px}.shell{width:390px;max-width:calc(100vw - 24px);background:#183a32f5;border:1px solid #73936d;border-radius:12px;box-shadow:0 8px 28px #0007;pointer-events:auto;overflow:hidden}.head{display:flex;justify-content:space-between;align-items:center;padding:13px 16px;border-bottom:1px solid #456149;background:#20483b}.head strong{color:#f4dfa3;font-size:14px;letter-spacing:.08em}.version{font-size:10px;color:#afc6ab;margin-top:4px}.head button{background:none;color:#d4ddc6;border:0;padding:5px}.controls{display:flex;gap:7px;padding:12px 14px 7px}.btn{padding:8px 13px;border-radius:6px;border:1px solid #71896b;background:#30543f;color:#edf4e7}.btn.primary{background:#dbb862;color:#283d24;border-color:#ecd58d;font-weight:700}.btn.warn{border-color:#8c7257;background:#4c4934}.controls .btn{flex:1;padding:8px 5px;font-size:11px}.summary{padding:7px 15px 12px;line-height:1.8;color:#d1e1c9}.status-line{display:flex;align-items:center;gap:8px;font-size:11px}.dot{width:7px;height:7px;background:#84977a;border-radius:50%;flex-shrink:0}.dot.on{background:#b9df8e}.reason{padding-top:6px;color:#e9d5a6;font-size:12px;overflow-wrap:anywhere}.stats{display:flex;gap:9px;flex-wrap:wrap;color:#abc7a0;font-size:11px;margin-top:6px}.tabs{display:flex;gap:3px;flex-wrap:wrap;padding:0 11px 9px;border-bottom:1px solid #3d5c42}.tabs button{border:0;background:none;color:#abc2a4;padding:6px 7px;border-radius:5px;font-size:11px}.tabs button.active{background:#476447;color:#f1dda2}.body{padding:15px;max-height:min(62vh,600px);overflow:auto;line-height:1.8}.body h3{font-size:12px;color:#eddaaa;margin:0 0 10px;letter-spacing:.03em}.hint{font-size:11px;color:#aeca9e;line-height:1.85;margin:5px 0 13px}.section{border-top:1px solid #3d5c42;padding-top:13px;margin-top:14px}.field{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:9px 0;color:#d1e0c8}.field span{max-width:69%;font-size:12px}.field input[type=number],.field input[type=text],.field select{width:112px;max-width:48%;border:1px solid #668060;background:#244432;color:#ebf1df;border-radius:5px;padding:5px 8px;min-height:30px}.field select.wide{width:200px;max-width:65%;font-size:11px}.field input[type=checkbox]{accent-color:#dcb85f;width:16px;height:16px;flex-shrink:0}.footer{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-top:1px solid #496449;background:#204335}.dirty{font-size:10px;color:#b6ceaa}.footer .btn{font-size:11px;padding:6px 15px}.plan{padding:10px 12px;border:1px solid #607858;background:#2b4b34;border-radius:7px;margin-bottom:8px;font-size:11px;color:#d4e3c7}.plan small{display:block;color:#acc29d;font-size:10px;margin-top:5px}.log{border-bottom:1px solid #355438;padding:8px 0;font-size:11px;color:#c7d9be;overflow-wrap:anywhere}.log time{font-size:10px;color:#98b18a;margin-right:7px}.log.success{color:#b8df91}.log.warning{color:#eed39c}textarea{width:100%;background:#183323;border:1px solid #668060;border-radius:6px;color:#dfeccf;padding:10px;font:11px/1.65 Consolas,monospace;min-height:230px;resize:vertical}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.actions .btn{font-size:11px}.launcher{display:none;background:#dbb862;color:#243b28;border:1px solid #ecd58d;border-radius:22px;padding:11px 16px;box-shadow:0 5px 17px #0006;font-weight:700;pointer-events:auto}.collapsed .shell{display:none}.collapsed .launcher{display:block}.notice{padding:10px 12px;background:#2e4d35;border-left:3px solid #d8b768;font-size:11px;color:#dfe2bd;margin-bottom:12px}.error{color:#ffd9a2;font-size:11px;min-height:17px}.budget-card{display:flex;justify-content:space-between;padding:9px 11px;background:#244734;border-radius:6px;margin:7px 0;font-size:11px;color:#c2d5b2}.shell{display:flex;flex-direction:column;max-height:calc(100vh - 24px)}.head,.controls,.summary,.tabs,.footer{flex-shrink:0}.body{min-height:0;flex:1}@media(max-height:600px){.summary .stats{display:none}.reason{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary{padding-bottom:8px}}@media(max-width:700px){.shell{width:350px}.body{max-height:52vh}.field span{font-size:11px}.head{padding:11px 14px}.tabs button{font-size:10px}.summary{padding-bottom:9px}}`;
     class Panel {
@@ -4514,6 +4744,10 @@
             return;
           }
           if (action === 'start') this.controller.start();
+          else if (action === 'clearStats' && confirm('清空全部收益统计？')) {
+            this.controller.stats?.clear();
+            this.renderBody();
+          }
           else if (action === 'pause') this.controller.pause();
           else if (action === 'stopBattle') this.controller.stopBattle();
           else if (action === 'save') {
@@ -4598,6 +4832,11 @@
           s = this.controller.bridge.state(),
           status = this.controller.status();
         let html = '';
+        if (this.section === 'stats') {
+          html = this.statsHTML(status.stats, s?.maps);
+          this.statsKey = html;
+          this.statsPaintAt = Date.now();
+        }
         if (this.section === 'status') {
           html = `<div class="notice">先在原游戏完成登录，然后开始托管。人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。</div><h3>已保存的资源策略</h3><div class="budget-card"><span>金币保留</span><span>${status.budget.moneyReserve.toLocaleString()}</span></div><div class="budget-card"><span>当日金币预算</span><span>${status.budget.moneyPerDay > 0 ? status.budget.moneyPerDay.toLocaleString() : '不限'}</span></div><div class="budget-card"><span>当日技能经验预算</span><span>${status.budget.skillExpPerDay > 0 ? status.budget.skillExpPerDay.toLocaleString() : '不限'}</span></div><div class="budget-card"><span>当日冶炼经验预算</span><span>${status.budget.smeltExpPerDay > 0 ? status.budget.smeltExpPerDay.toLocaleString() : '不限'}</span></div><div class="hint">默认保留强化、镶宝、星级、鉴定装备和套装部件；自动回收品质1的普通装备。宝石默认目标3级，强化默认目标+3。</div><div class="actions"><button class="btn" type="button" data-action="preview">预览下一步计划</button><button class="btn" type="button" data-action="diagnostics">导出当前诊断</button></div><div class="section"><h3>计划预览</h3>${this.previewPlans.length ? this.previewPlans.map((a) => `<div class="plan">${esc(a.label)}<small>预计金币 ${a.coinCost} · 经验 ${a.expCost}${a.requiresTown ? ' · 在对应城镇处理' : ''}</small></div>`).join('') : '<div class="hint">点击预览可查看当前角色满足条件的动作。</div>'}</div>`;
         }
@@ -4757,16 +4996,19 @@
             f('自动配置内置用药', 'potions.enabled') +
             f('生命回复阈值 %', 'potions.hpThreshold', { min: 10, max: 80 }) +
             f('内力回复阈值 %', 'potions.mpThreshold', { min: 10, max: 80 }) +
+            f('按实测掉血自动抬高生命阈值', 'potions.autoThreshold') +
             f('自动按药效选择优先级', 'potions.autoChoose') +
             f('用药顺序', 'potions.order', {
               choices: [
                 ['fit', '按缺口智能选择（推荐）'],
                 ['weak', '低级药优先（先清库存）'],
                 ['strong', '药效优先'],
+                ['smart', '智能（实测消耗下最省金币的药）'],
               ],
             }) +
             f('指定生命药模板ID', 'potions.hpPriority') +
             f('指定内力药模板ID', 'potions.mpPriority') +
+            '<div class="hint">回血量长期等于掉血量，阈值高低不改变吃药数量，只决定安全余量。智能顺序按实测的每秒掉血和耗蓝，选回复速度够用、每金币回复最多的药，并改买这种药；血量低于 35% 或阵亡后一段时间内改用最强的药。</div>' +
             '<div class="hint">游戏自动回复每次只用一颗药且有冷却。智能选择会按“最大值×(100%−阈值)”算出触发时的缺口，优先用刚好补满缺口的最小药，补不满的低级药排在后面兜底。填写指定模板ID时按填写顺序。</div></div>';
         if (this.section === 'budget')
           html =
@@ -4825,6 +5067,40 @@
         const sections = Array.isArray(u.notes?.sections) ? u.notes.sections : [];
         return `<div class="update-summary"><div class="notice">当前运行 v${esc(u.currentVersion)}${u.latestVersion ? ' · GitHub 最新版本 v' + esc(u.latestVersion) : ''}${u.newer ? '<br>发现新版本。' : ''}</div><div class="hint">新版本由 Tampermonkey 自动安装（默认每天检查一次），页面刷新后生效。托管运行并开启“页面刷新后恢复托管”时，脚本发现新版本会自动刷新页面：立即一次，之后每 6 小时一次，每个版本最多 5 次。想立即更新，点“安装新版本”，在 Tampermonkey 页面确认后刷新游戏。</div>${u.newer && u.apply?.exhausted ? '<div class="hint">已自动刷新 5 次仍是旧版本，请点“安装新版本”。</div>' : ''}${u.notes ? `<h3>${esc(u.notes.title)}</h3>${sections.map((s) => `<div class="hint"><strong>${esc(s.title)}</strong></div><ul>${s.items.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`).join('')}` : u.newer ? '<div class="hint">更新内容暂未读取，可在发布页查看。</div>' : ''}<div class="hint">${u.busy ? '正在读取公开版本信息' : u.error ? esc(u.error) : u.checkedAt ? '最近检查：' + esc(new Date(u.checkedAt).toLocaleString()) : '尚未检查公开版本'}${u.nextCheckAt ? '<br>下次可检查：' + esc(new Date(u.nextCheckAt).toLocaleString()) : ''}<br>自动检查每天一次，手动检查间隔至少 60 秒。</div><div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开发布页</button>${u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : ''}</div><div class="section"><h3>选择自动更新</h3><div class="hint">在油猴管理面板打开本脚本的设置，启用“检查更新”。实际自动安装由油猴执行；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。</div></div></div>`;
       }
+      statsHTML(stats, maps) {
+        if (!stats) return '<div class="hint">等待角色数据</div>';
+        const fmt = TLRuntime.statsNumber, duration = TLRuntime.statsDuration;
+        const rate = (n, time) => fmt(time ? n * 3600000 / time : 0);
+        const card = (title, b) => {
+          const net = b.gold + b.sell - b.potion;
+          const rows = [['经验', fmt(b.exp) + ' · ' + rate(b.exp, b.wall) + '/时'],
+            ['击杀金币', fmt(b.gold)], ['出售收入', fmt(b.sell)], ['药费', fmt(b.potion)],
+            ['净金币', fmt(net) + ' · ' + rate(net, b.wall) + '/时'],
+            ['战斗占比', (b.wall ? b.battle / b.wall * 100 : 0).toFixed(1) + '%'],
+            ['击杀', fmt(b.kills)], ['阵亡', fmt(b.deaths)], ['用药', '生命 ' + fmt(b.hpPotions) + ' · 内力 ' + fmt(b.mpPotions)]];
+          return '<h3>' + title + '</h3>' + rows.map(([label, value]) => `<div class="budget-card"><span>${label}</span><span>${value}</span></div>`).join('');
+        };
+        const rows = stats.summary.maps.map((b) => {
+          const name = (maps || []).find((m) => Number(m.id) === b.mapId)?.name || b.mapId;
+          return '<tr>' + [esc(name), duration(b.battle), rate(b.exp, b.battle), rate(b.expBase, b.battle),
+            rate(b.gold + b.sell, b.battle), rate(b.potion, b.battle), rate(b.gold + b.sell - b.potion, b.battle), fmt(b.deaths)]
+            .map((v) => '<td>' + v + '</td>').join('') + '</tr>';
+        }).join('');
+        const r = stats.rates;
+        const status = this.controller.status();
+        return card('近 1 小时', stats.summary.recent) + card('今日', stats.summary.today) + card('上一小时', stats.summary.previous) +
+          '<div class="section"><h3>按地图（近 72 小时）</h3><table class="income-table"><thead><tr>' +
+          ['地图', '战斗时长', '经验/时', '单倍经验/时', '金币/时', '药费/时', '净金币/时', '阵亡'].map((v) => '<th>' + v + '</th>').join('') +
+          '</tr></thead><tbody>' + rows + '</tbody></table></div><div class="hint">当前消耗：' +
+          (r.seconds < 60 ? '数据不足' : '每秒掉血 ' + fmt(r.hpLossPerSec) + ' · 每秒耗蓝 ' + fmt(r.mpUsePerSec) + ' · 10 秒最大掉血 ' + Math.round(r.worstLoss10Pct) + '% · 样本 ' + fmt(r.seconds) + ' 秒') +
+          ['hp', 'mp'].map((key) => {
+            const pick = status.potions[key];
+            return pick ? ' · ' + (key === 'hp' ? '生命药 ' : '内力药 ') + esc(pick.name) + '（回复 ' + fmt(pick.perSecond) + '/秒，需要 ' + fmt(pick.need) + '/秒）' : '';
+          }).join('') +
+          (this.controller.prefs.potions.autoThreshold ? ' · 生命阈值 ' + status.threshold + '%' : '') +
+          '</div><button class="btn" type="button" data-action="clearStats">清空统计</button>' +
+          '<div class="hint">经验按击杀前后的差值统计；“单倍经验”把天灵丹双倍时段折半，方便比较地图。每小时数值按在线时间折算，地图表按战斗时间折算。</div>';
+      }
       paint() {
         if (!this.root) return;
         const s = this.controller.status(),
@@ -4856,6 +5132,8 @@
         }
         if (this.section === 'updates' && !this.dirty && this.updateKey !== JSON.stringify(u))
           this.renderBody();
+        if (this.section === 'stats' && !this.dirty && Date.now() - this.statsPaintAt >= 5000 &&
+          this.statsKey !== this.statsHTML(s.stats, this.controller.bridge.state()?.maps)) this.renderBody();
         const card = (kind, label, value) =>
           `<div data-budget="${kind}"><span class="budget-title">${label}</span><span>${value}</span></div>`;
         this.root.querySelector('.summary').innerHTML =
@@ -4865,6 +5143,9 @@
         this.root.querySelector('.summary').innerHTML += `<div>珍兽：${s.pets.count ?? '?'} / ${s.pets.capacity ?? '?'} · ${s.pets.active ? '出战 ' + esc(s.pets.active.pet.name) + ' Lv.' + s.pets.active.pet.level : '未出战'} · 蛋 ${s.pets.eggs ?? '?'}</div>`;
         if (s.hidden) this.root.querySelector('.summary').innerHTML +=
           `<div>暗器：Lv.${s.hidden.level} · 品质 ${s.hidden.quality}% · 砂 ${s.hidden.sand} · 玉 ${s.hidden.jade} · 印 ${s.hidden.seals}</div>`;
+        const income = s.stats?.summary.recent;
+        if (income?.wall >= 60000) this.root.querySelector('.summary').innerHTML +=
+          `<div>收益：经验 ${TLRuntime.statsNumber(income.exp * 3600000 / income.wall)}/时 · 金币 ${TLRuntime.statsNumber((income.gold + income.sell) * 3600000 / income.wall)}/时 · 药费 ${TLRuntime.statsNumber(income.potion * 3600000 / income.wall)}/时</div>`;
         const old = this.root.querySelector('.legacy-experience-note');
         if (old) {
           old.hidden = !s.ledger?.unclassifiedExp;
