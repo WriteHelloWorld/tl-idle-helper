@@ -1549,7 +1549,8 @@
               num(r.combatPower) <= num(s.combatPower) * p.arena.maxPowerRatio &&
               !daily.lost.includes(r.snapshotId)).sort((a, b) => a.rank - b.rank)[0];
             if (townSafe && board.eligible !== false && p.arena.challenge &&
-                !s.arenaMatch?.active && target && (rush || !p.arena.maxPerDay || daily.attempts < p.arena.maxPerDay)) {
+                !s.arenaMatch?.active && target &&
+                (rush || !p.arena.maxPerDay || daily.attempts < p.arena.maxPerDay)) {
               const ready = arena.token && now - arena.tokenAt < 60000;
               add(arenaAction(ready ? 'challenge' : 'open', {
                 nearby: true, ...(ready ? { token: arena.token, targetId: target.roleId,
