@@ -142,7 +142,7 @@
         skillBeforeLevel: false,
       },
       gear: {
-        scoring: 'combat', defenseWeight: 0.5, enabled: true,
+        scoring: 'combat', targets: 'pool', autoDefense: true, defenseWeight: 0.5, enabled: true,
         minGainPercent: 1, allowBinding: true, fromWarehouse: true, weights: WEIGHTS,
       },
       market: { sort: 'off', showScore: true, bagScore: true, tipScore: true, scoreType: 'combat', bagScoreType: 'combat' },
@@ -247,6 +247,8 @@
       for (const key of ['scoreType', 'bagScoreType'])
         if (!['combat', 'power'].includes(p.market[key])) p.market[key] = 'combat';
       const defense = Number(p.gear.defenseWeight);
+      p.gear.targets = p.gear.targets === 'map' ? 'map' : 'pool';
+      p.gear.autoDefense = typeof p.gear.autoDefense === 'boolean' ? p.gear.autoDefense : true;
       p.gear.defenseWeight = Number.isFinite(defense) ? Math.max(0, Math.min(1, defense)) : 0.5;
       for (const section of Object.values(p))
         if (section && typeof section === 'object' && !Array.isArray(section))
@@ -481,8 +483,9 @@
       casts.push({ share: filler ? Math.max(0, 1 - used) : 1, bonus: filler ? bonus(filler) : {} });
       const normal = state.monsters.filter((m) => m.category === 'MONSTER');
       const ctx = { me, targets: (normal.length ? normal : state.monsters).map((m) =>
-        ({ level: num(m.level), base: m.base })), casts, buffs, elementMult, statMult,
-        defenseWeight: prefs.gear.defenseWeight };
+        ({ level: num(m.level), base: m.base, weight: m.weight })), casts, buffs, elementMult, statMult,
+        defenseWeight: prefs.gear.autoDefense && Number.isFinite(state.survival?.weight)
+          ? state.survival.weight : prefs.gear.defenseWeight };
       cache.set(prefs, ctx);
       return ctx;
     }
@@ -502,14 +505,16 @@
         return ratio(num(a.precision), num(d.avoidance)) *
           (main * (1 + 0.5 * critScale * ratio(num(a.critRate), num(d.critDef))) + elem);
       };
-      let out = 0, taken = 0;
+      let out = 0, taken = 0, weight = 0;
       for (const target of ctx.targets) {
+        const w = target.weight ?? 1;
+        weight += w;
         for (const cast of ctx.casts)
-          out += cast.share * damage(plus(me, cast.bonus), target.base,
+          out += w * cast.share * damage(plus(me, cast.bonus), target.base,
             ctx.me.level, target.level, ctx.elementMult);
-        taken += damage(target.base, me, target.level, ctx.me.level, {}, MONSTER_CRIT_SCALE);
+        taken += w * damage(target.base, me, target.level, ctx.me.level, {}, MONSTER_CRIT_SCALE);
       }
-      return { out: out / ctx.targets.length, taken: taken / ctx.targets.length, hp: me.hp };
+      return { out: out / weight, taken: taken / weight, hp: me.hp };
     }
     function combatValue(values, ctx) {
       const p = combatParts(values, ctx);
@@ -1029,6 +1034,53 @@
         costs(map).length === 0 && monsters(map).length > 0 &&
         ![20050, 20051, 20052, 20060, 20061, 20070].includes(num(map.id));
     }
+    function poolMaps(s) {
+      return array(s.maps).filter((m) => farmMap(m) && num(m.reqLevel) <= num(s.role?.level))
+        .sort((a, b) => num(b.reqLevel) - num(a.reqLevel) || num(a.id) - num(b.id)).slice(0, 6);
+    }
+    function scoreTargets(s, p, lastMap) {
+      const templates = s.monsterTemplates || new Map();
+      const maps = p.gear.targets === 'map' ? [] : poolMaps(s).filter((m) =>
+        array(m.monsters).length && m.monsters.every((v) => templates.has('MONSTER:' + v.monsterId)));
+      if (!maps.length) return { source: lastMap.length ? 'map' : 'none',
+        mapIds: lastMap.length ? [s.lastMapId] : [], list: lastMap };
+      return { source: 'pool', mapIds: maps.map((m) => m.id), list: maps.flatMap((m) => {
+        const total = m.monsters.reduce((n, v) => n + num(v.count), 0);
+        return m.monsters.map((v) => ({ ...templates.get('MONSTER:' + v.monsterId),
+          weight: num(v.count) / total / maps.length }));
+      }) };
+    }
+    function survivalWeight(totals, healPerSecond) {
+      if (!totals || totals.battle < 1800000 || !Number.isFinite(healPerSecond) || healPerSecond <= 0) return null;
+      const clamp = (v) => Math.max(0, Math.min(1, v));
+      const hours = totals.battle / 3600000, deaths = num(totals.deaths);
+      const count = num(totals.hpPotions) + num(totals.mpPotions);
+      const income = num(totals.gold) + num(totals.sell);
+      const share = count && income ? clamp(num(totals.potion) * num(totals.hpPotions) / count / income) : 0;
+      const ratio = clamp(num(totals.hpLost) / (totals.battle / 1000) / healPerSecond);
+      return { weight: Math.round(clamp(Math.max(share + ratio, deaths > 0 ? 0.5 : 0)) * 20) / 20,
+        share, ratio, deaths, hours };
+    }
+    function healPerSecond(s) {
+      return potionEffect(potionChoices(s, 'HP')[0], 'HP') / 3;
+    }
+    function scoringStatus(s, p) {
+      const survival = s?.survival || null;
+      const auto = !!p.gear.autoDefense && Number.isFinite(survival?.weight);
+      const source = s?.scoreTargets?.source || 'none', mapIds = s?.scoreTargets?.mapIds || [];
+      return { source, mapIds, mapNames: mapIds.map((id) => array(s.maps).find((m) => num(m.id) === num(id))?.name || String(id)),
+        weight: auto ? survival.weight : p.gear.defenseWeight, auto, survival, autoDefense: p.gear.autoDefense };
+    }
+    function scoringText(s) {
+      const target = s.source === 'pool' ? s.mapNames.join('、') :
+        s.source === 'map' ? '最近挂机地图 ' + s.mapNames.join('、') : '等待怪物数据';
+      const percent = (v) => (v * 100).toFixed(v * 100 < 10 ? 1 : 0);
+      const v = s.survival;
+      const detail = s.auto ? '自动：药费占收入 ' + percent(v.share) + '%，掉血占回血能力 ' +
+        percent(v.ratio) + '%，近 ' + v.hours.toFixed(1) + ' 战斗小时' + (v.deaths > 0 ? '，有阵亡' : '') :
+        s.autoDefense ? '数据不足，用手动值' : '手动';
+      return '评分参照：' + target + ' · 生存权重 ' + s.weight + '（' + detail + '）';
+    }
     function normalMap(s, prefs, penalty = 0) {
       const eligible = array(s.maps).filter(
         (m) =>
@@ -1416,9 +1468,18 @@
       };
       const role = s.role,
         equipped = array(s.equipments).filter((e) => !!e.isEquipped);
+      const pool = poolMaps(s);
+      if (p.gear.scoring === 'combat' && p.gear.targets === 'pool' && pool.length &&
+          // A monster the server does not return must not cause a request on every tick.
+          (now - num(s.monsterTemplatesAt) > 86400000 || (now - num(s.monsterTemplatesAt) > 1800000 && pool.some((m) =>
+            m.monsters.some((v) => !s.monsterTemplates?.has('MONSTER:' + v.monsterId)))))) {
+        const ids = [...new Set(pool.flatMap((m) => m.monsters.map((v) => v.monsterId)))];
+        add(action('GET_MONSTER_TMPL', { refs: ids.map((id) => ({ id, category: 'MONSTER' })) },
+          '读取怪物属性', 'read', { readOnly: true }));
+      }
+      if ((p.potions.enabled || p.gear.scoring === 'combat' && p.gear.autoDefense) && !array(s.potionTemplates).length)
+        add(action('GET_POTION_LIST', {}, '获取药品目录', 'read', { readOnly: true }));
       if (p.potions.enabled) {
-        if (!array(s.potionTemplates).length)
-          add(action('GET_POTION_LIST', {}, '获取药品目录', 'read', { readOnly: true }));
         const setting = potionSettings(s, p, now);
         const current = parse(role.settings, null);
         if (
@@ -2415,6 +2476,7 @@
       slots,
       lookup,
       template,
+      poolMaps, scoreTargets, survivalWeight, healPerSecond, scoringStatus, scoringText,
       setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
       equipmentStats,
       scoreStats,
@@ -2472,6 +2534,7 @@
       'LEVEL_UP',
       'UPGRADE_SKILL',
       'GET_POTION_LIST',
+      'GET_MONSTER_TMPL',
       'UPDATE_SETTINGS',
       'SHOP_BUY',
       'SHOP_SELL',
@@ -2603,6 +2666,15 @@
         },
       };
     }
+    function scoringState(c, bridge, prefs = P.DEFAULTS) {
+      const s = { role: c.role, maps: c.maps, bagItems: c.bagItems,
+        potionTemplates: bridge.cache.potions, monsterTemplates: bridge.cache.monsterTemplates,
+        lastMapId: bridge.cache.targets.mapId };
+      const selected = P.scoreTargets(s, prefs, farmTargets(bridge.cache.targets, c.maps));
+      return { monsters: selected.list, scoreTargets: { source: selected.source, mapIds: selected.mapIds },
+        monsterTemplates: s.monsterTemplates, monsterTemplatesAt: bridge.cache.monsterTemplatesAt,
+        survival: P.survivalWeight(bridge.pressure?.(c.maps), P.healPerSecond(s)) };
+    }
     function farmTargets(targets, maps) {
       return P.farmMap(P.array(maps).find((map) => P.num(map.id) === P.num(targets?.mapId)))
         ? Array.from(targets?.list?.values() || []) : [];
@@ -2666,6 +2738,17 @@
         const hour = Math.floor(this.now() / 3600000);
         for (const key of Object.keys(this.buckets))
           if (Number(key.split(':')[0]) < hour - 71) delete this.buckets[key];
+      }
+      pressure(isFarmMap) {
+        const totals = Object.fromEntries('battle hpLost gold sell potion hpPotions mpPotions deaths'.split(' ').map((k) => [k, 0]));
+        const hours = [...new Set(Object.keys(this.buckets).map((k) => Number(k.split(':')[0])))].sort((a, b) => b - a);
+        for (const hour of hours) {
+          const buckets = Object.entries(this.buckets).filter(([k]) => Number(k.split(':')[0]) === hour && isFarmMap(Number(k.split(':')[1])));
+          for (const [, bucket] of buckets)
+            for (const k of Object.keys(totals)) totals[k] += bucket[k];
+          if (totals.battle >= 21600000) break;
+        }
+        return totals;
       }
       bucket(mapId) {
         this.prune();
@@ -2808,6 +2891,16 @@
         this.manualUntil = 0;
         this.packetTypes = [];
         this.cache = { potions: [], activityStatus: {}, forgePreviews: {}, consignment: new Map() };
+        this.cache.monsterTemplates = new Map();
+        this.cache.monsterTemplatesAt = 0;
+        const monsters = readStorage(PREFIX + ':monsters', null);
+        if (Number.isFinite(monsters?.at) && Array.isArray(monsters.list) && monsters.list.every((e) =>
+          Array.isArray(e) && e.length === 2 && typeof e[0] === 'string' &&
+          typeof e[1]?.category === 'string' && Number.isFinite(e[1]?.level) &&
+          Object.keys(P.WEIGHTS).every((k) => Number.isFinite(e[1]?.base?.[k])))) {
+          this.cache.monsterTemplates = new Map(monsters.list);
+          this.cache.monsterTemplatesAt = monsters.at;
+        }
         const saved = readStorage(PREFIX + ':targets', null);
         this.cache.targets = { mapId: null, list: new Map() };
         if (saved && Number.isFinite(saved.mapId) && Array.isArray(saved.list) &&
@@ -2946,6 +3039,14 @@
             for (const item of packet.data.items)
               if (item && item.id != null) market.set(item.id, item);
             while (market.size > 4000) market.delete(market.keys().next().value);
+          }
+          if (type === 'GET_MONSTER_TMPL_RESPONSE' && packet.success && Array.isArray(packet.data)) {
+            for (const entry of packet.data.filter((e) => e.template))
+              this.cache.monsterTemplates.set(entry.category + ':' + entry.id, {
+                category: entry.category, level: P.num(entry.template.level),
+                base: Object.fromEntries(Object.keys(P.WEIGHTS).map((k) => [k, P.num(entry.template[k])])) });
+            this.cache.monsterTemplatesAt = Date.now();
+            writeStorage(PREFIX + ':monsters', { at: this.cache.monsterTemplatesAt, list: [...this.cache.monsterTemplates] });
           }
           if (type === 'GET_POTION_LIST_RESPONSE' && packet.success && Array.isArray(packet.data))
             this.cache.potions = copy(packet.data);
@@ -3198,7 +3299,7 @@
           shopItems: copy(shop?.items) || [],
           potionTemplates: this.cache.potions,
           finalAttributes: copy(c.finalAttributes),
-          monsters: farmTargets(this.cache.targets, c.maps),
+          ...scoringState(c, this, this.scoringPrefs?.() || P.DEFAULTS),
           maxAttrs: { hp: P.num(c.finalAttributes?.hp), mp: P.num(c.finalAttributes?.mp) },
           activityStatus: this.cache.activityStatus,
           forgePreviews: this.cache.forgePreviews,
@@ -3645,7 +3746,7 @@
               role: c.role,
               skills: copy(c.skills),
               finalAttributes: copy(c.finalAttributes),
-              monsters: farmTargets(this.controller.bridge.cache.targets, c.maps),
+              ...scoringState(c, this.controller.bridge, this.controller.prefs),
               equipments: c.equipments,
               warehouseEquips: c.warehouseEquips,
               equipSets: c.equipSets,
@@ -3879,6 +3980,8 @@
             potionPrice: (name) => Number(arraySafe(this.bridge.cache.potions).find((p) => p.name === name)?.price) || 0 });
         };
         this.bridge.statsRates = () => this.stats?.rates() || null;
+        this.bridge.scoringPrefs = () => this.prefs;
+        this.bridge.pressure = (maps) => this.stats?.pressure((id) => P.farmMap(P.array(maps).find((m) => P.num(m.id) === id)));
         window.addEventListener('pagehide', () => this.stats?.flush());
         this.bridge.onDisconnect = () => {
           this.reason = '等待原游戏重连';
@@ -4139,6 +4242,7 @@
           updates: this.updates ? this.updates.status() : null,
           logs: this.logs.slice(0, 40),
           scoring: { mode: this.prefs.gear.scoring,
+            ...P.scoringStatus(s, this.prefs),
             pending: this.prefs.gear.scoring === 'combat' && !P.combatWeights(s, this.prefs),
             weights: P.combatWeights(s, this.prefs) },
           pets: { count: s?.pets?.pets.length ?? null, capacity: s?.pets?.capacity ?? null,
@@ -4306,7 +4410,7 @@
           } else if (!success) {
             this.log(a.label + '：' + (result.message || '操作未成功'), 'warning');
             // A full bag must not cause a town trip every five minutes.
-            this.suppress(a, lotteryDraw ? 1800000 : 300000);
+            this.suppress(a, lotteryDraw || a.type === 'GET_MONSTER_TMPL' ? 1800000 : 300000);
           } else {
             this.log(a.label + '：完成', 'success');
             const reward = lotteryDraw && result.data?.receipt?.reward;
@@ -4335,7 +4439,7 @@
             return;
           }
           // A lottery request costs at most one chance; an unanswered arena claim costs nothing and must not stop the autopilot.
-          if (a.type === 'ONLINE_LOTTERY_COMMAND' || arenaClaim) {
+          if (a.type === 'ONLINE_LOTTERY_COMMAND' || a.type === 'GET_MONSTER_TMPL' || arenaClaim) {
             this.log(safeMessage(e.message), 'warning');
             if (arenaClaim) this.ledger.arena.claimFailed = true;
             else this.suppress(a, 1800000);
@@ -5221,7 +5325,9 @@
             '<div class="section"><h3>装备选择</h3>' +
             f('按评分自动穿戴', 'gear.enabled') +
             f('评分方式', 'gear.scoring', { choices: [['combat', '实战评分（按伤害公式，推荐）'], ['linear', '固定权重（同游戏战力）']] }) +
-            f('生存权重（0 只看输出，1 输出与生存并重）', 'gear.defenseWeight', { min: 0, max: 1, step: 0.1 }) +
+            f('评分参照的怪物', 'gear.targets', { choices: [['pool', '可进入的最高 6 张挂机地图（推荐）'], ['map', '只看最近挂机的地图']] }) +
+            f('按实测战况自动调整生存权重', 'gear.autoDefense') +
+            f('生存权重（自动关闭或数据不足时使用；0 只看输出，1 输出与生存并重）', 'gear.defenseWeight', { min: 0, max: 1, step: 0.1 }) +
             f('最低评分增益 %', 'gear.minGainPercent', { step: 0.1 }) +
             f('允许穿戴后绑定', 'gear.allowBinding') +
             f('自动穿戴时也从仓库取出更好的装备', 'gear.fromWarehouse') +
@@ -5231,7 +5337,8 @@
             f('背包和仓库图标显示的评分', 'market.bagScoreType', { choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
             f('装备详情和人物面板显示实战评分', 'market.tipScore') +
             f('逛摊按脚本排序', 'market.sort', { choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }) +
-            '<div class="hint">实战评分按实测伤害公式，对当前地图的怪物计算换装后的输出与生存变化；需要先打过一场战斗才有数据。固定权重可在高级JSON配置中调整。</div>' +
+            '<div class="hint">评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。自动生存权重 = 生命药费占金币收入的比例 + 每秒掉血占最强生命药回血速度的比例；近 6 个战斗小时内有阵亡时不低于 0.5；战斗数据不足 30 分钟时用手动值。</div>' +
+            (status.scoring.mode !== 'combat' ? '' : '<div class="hint">' + esc(TLPolicy.scoringText(status.scoring)) + '</div>') +
             (status.scoring.mode !== 'combat' ? '' : '<div class="hint">' +
               (status.scoring.weights ? '当前实战权重：' +
                 ['hp', 'extAtk', 'intAtk', 'extDef', 'intDef', 'critRate', 'critDef',
@@ -5479,6 +5586,7 @@
           `<div data-budget="${kind}"><span class="budget-title">${label}</span><span>${value}</span></div>`;
         this.root.querySelector('.summary').innerHTML =
           `<div class="status-line"><span class="dot ${s.ready ? 'on' : ''}"></span><span>${s.enabled ? '托管运行中' : '托管已暂停'} · ${s.ready ? '角色在线' : s.connected ? '等待角色' : '等待连接'}</span></div><div class="reason">${esc(s.reason)}</div><div class="stats">${s.role ? `<span>${esc(s.role.nickname)} · Lv.${s.role.level}</span><span>${esc(s.map)}</span><span>金币 ${fmt(s.role.money)}</span>` : '<span>登录后读取当前角色</span>'}</div>${s.ledger ? `<div class="budgets" aria-label="今日资源预算">${card('money', '今日金币支出', fmt(s.ledger.money) + ' / ' + (s.budget.moneyPerDay > 0 ? fmt(s.budget.moneyPerDay) : '不限'))}${card('exp', '今日经验总投入', fmt(s.ledger.exp))}${card('skill', '技能预算已用', fmt(s.experienceBudgets.skill.used) + ' / ' + (s.experienceBudgets.skill.unlimited ? '不限' : fmt(s.experienceBudgets.skill.limit)))}${card('smelt', '冶炼预算已用', fmt(s.experienceBudgets.smelt.used) + ' / ' + (s.experienceBudgets.smelt.unlimited ? '不限' : fmt(s.experienceBudgets.smelt.limit)))}</div>` : ''}${s.levelUp ? `<div class="level-reason" data-code="${esc(s.levelUp.code)}">${esc(s.levelUp.reason)}</div>` : ''}${s.skillUp ? `<div class="level-reason" data-code="${esc(s.skillUp.code)}">${esc(s.skillUp.reason)}</div>` : ''}`;
+        if (s.scoring.mode === 'combat') this.root.querySelector('.summary').innerHTML += '<div>' + esc(TLPolicy.scoringText(s.scoring)) + '</div>';
         if (s.arena) this.root.querySelector('.summary').innerHTML +=
           `<div>比武：第 ${esc(s.arena.rank)} 名 · 今日挑战 ${s.arena.attempts}/${this.controller.prefs.arena.maxPerDay || '不限'} · 点赞 ${s.arena.liked ? '已' : '未'}</div>`;
         this.root.querySelector('.summary').innerHTML += `<div>珍兽：${s.pets.count ?? '?'} / ${s.pets.capacity ?? '?'} · ${s.pets.active ? '出战 ' + esc(s.pets.active.pet.name) + ' Lv.' + s.pets.active.pet.level : '未出战'} · 蛋 ${s.pets.eggs ?? '?'}</div>`;
