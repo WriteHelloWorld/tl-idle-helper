@@ -1517,7 +1517,7 @@
             add(request('feed', { petId: active.pet.id, mode: 'one' }, { expCost: cost }));
         }
       }
-      if (num(role.level) >= 50) {
+      if (num(role.level) >= 30) {
         const arena = s.arena, board = arena?.board, trial = s.trial;
         const townSafe = ![20050, 20051, 20052, 20070].includes(num(role.mapId)) && !trial?.run;
         const arenaAction = (name, payload = {}, options = {}) =>
@@ -1538,7 +1538,7 @@
               add(arenaAction('like', { targetId: row.roleId, date: board.date }, { inBattle: true }));
             const daily = ledger.arena || { attempts: 0, lost: [] };
             // The server accepts a claim only from the NPC dialog, with the token of `open`.
-            if (townSafe && !daily.claimFailed && p.arena.claim &&
+            if (townSafe && board.eligible !== false && !daily.claimFailed && p.arena.claim &&
                 num(board.reward?.count) > 0 && !board.reward.claimed) {
               const ready = arena.token && now - arena.tokenAt < 60000;
               add(arenaAction(ready ? 'claim' : 'open', {
@@ -1548,8 +1548,8 @@
             const target = array(board.rows).filter((r) => r.canChallenge && !r.busy &&
               num(r.combatPower) <= num(s.combatPower) * p.arena.maxPowerRatio &&
               !daily.lost.includes(r.snapshotId)).sort((a, b) => a.rank - b.rank)[0];
-            if (townSafe && p.arena.challenge && !s.arenaMatch?.active && target &&
-                (rush || !p.arena.maxPerDay || daily.attempts < p.arena.maxPerDay)) {
+            if (townSafe && board.eligible !== false && p.arena.challenge &&
+                !s.arenaMatch?.active && target && (rush || !p.arena.maxPerDay || daily.attempts < p.arena.maxPerDay)) {
               const ready = arena.token && now - arena.tokenAt < 60000;
               add(arenaAction(ready ? 'challenge' : 'open', {
                 nearby: true, ...(ready ? { token: arena.token, targetId: target.roleId,
@@ -1558,7 +1558,7 @@
             }
           }
         }
-        if (p.hidden.enabled) {
+        if (num(role.level) >= 50 && p.hidden.enabled) {
           const request = (name, payload = {}, options = {}) =>
             action('TRIAL_COMMAND', { action: name,
               ...(trial ? { revision: trial.revision } : {}), ...payload },
@@ -4138,7 +4138,7 @@
           this.lastDeathKey = '';
           this.bridge.cache.activityStatus = {};
         }
-        const rushTown = P.arenaRush(this.prefs, now) && P.num(s.role.level) >= 50
+        const rushTown = P.arenaRush(this.prefs, now) && P.num(s.role.level) >= 30
           ? P.townFor(s, P.NPC.arena) : null;
         let plans = P.plans(s, this.prefs, this.ledger, now).filter(
           (a) =>
@@ -4629,7 +4629,7 @@
             f('只挑战战力不超过自己 × 倍数的对手', 'arena.maxPowerRatio') +
             f('比武榜刷新间隔（分钟）', 'arena.refreshMinutes') +
             f('结算前冲榜分钟数（0 关闭）', 'arena.rushMinutes') +
-            '<div class="hint">挑战和领奖需要回洛阳找比武校尉，会中断挂机。点赞不中断。每天 0 点（东八区）结算前的这段时间，托管回洛阳驻守并连续挑战：榜单每 30 秒刷新一次，不受每日挑战次数上限限制，期间不进副本。</div></div>';
+            '<div class="hint">比武 30 级开放。挑战和领奖需要回洛阳找比武校尉，会中断挂机。点赞不中断。每天 0 点（东八区）结算前的这段时间，托管回洛阳驻守并连续挑战：榜单每 30 秒刷新一次，不受每日挑战次数上限限制，期间不进副本。</div></div>';
         }
         if (this.section === 'growth')
           html =
