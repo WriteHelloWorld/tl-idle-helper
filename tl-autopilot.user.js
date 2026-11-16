@@ -91,6 +91,7 @@
     const EXCHANGE_SETS = ['御赐精纺套', '御赐熟铜套', '御赐精钢套', '御赐黄金套', '御赐混沌套'];
     const DEFAULTS = {
       version: 2,
+      fill: { enabled: true, refill: true },
       resumeAfterReload: false,
       keepAwake: true,
       tickMs: 1000,
@@ -556,6 +557,7 @@
     }
     const materialUsable = (s, bag, quantity = 1) =>
       bagUsable(s, bag, quantity) && num(bag.itemTmpl.type, 3) === 3;
+    const charmUsable = (s, bag) => bagUsable(s, bag) && [2, 3].includes(num(bag.itemTmpl.type, 3));
     const materialBag = (s, id) =>
       array(s.bagItems).find((b) => materialId(b) === num(id) && materialUsable(s, b));
     const materialCount = (s, id) =>
@@ -590,7 +592,7 @@
         num(gem.itemTmpl.gemLevel) <= 6 &&
         !!GEM_ATTR[num(gem.itemTmpl.subType)];
       if (
-        !materialUsable(s, bag) ||
+        !charmUsable(s, bag) ||
         !(embedded || gemUsable(s, gem)) ||
         !materialSupports(bag, '宝石', num(gem.itemTmpl.gemLevel))
       )
@@ -2254,7 +2256,109 @@
           .map((m) => [m.id, `${m.region || '未知区域'} · ${m.name}（Lv.${m.reqLevel}）`]),
       ];
     }
+    function fillPicks(mode, s, p, current = {}) {
+      const bound = (a, b) => Number(!!b.isBound) - Number(!!a.isBound);
+      const bags = array(s.bagItems).filter((b) => materialUsable(s, b)).sort(bound);
+      const charms = array(s.bagItems).filter((b) => charmUsable(s, b)).sort(bound);
+      const gems = array(s.bagItems).filter((b) => gemUsable(s, b)).sort(bound);
+      const eqs = array(s.equipments), equipped = eqs.filter((e) => e.isEquipped)
+        .sort((a, b) => num(template(a).slotType) - num(template(b).slotType));
+      const id = materialId, level = (b) => num(b?.itemTmpl?.gemLevel);
+      const find = (...ids) => ids.map((n) => charms.find((b) => id(b) === n)).find(Boolean);
+      const result = (items, message = '没有合适的装备或材料') => {
+        items = items.filter(Boolean);
+        return { items, message: items.length ? '已放入 ' + items.map((b) => b.itemTmpl?.name || template(b).name || String(b.id)).join('、') : message };
+      };
+      if (mode === 'GEM_DRILL') {
+        const eq = current.selectedEquip || equipped.filter((e) => slots(e).filter((n) => n >= 0).length < 3)
+          .sort((a, b) => slots(a).filter((n) => n >= 0).length - slots(b).filter((n) => n >= 0).length)[0];
+        const chosen = eq && drillMaterial({ ...s, bagItems: bags }, eq);
+        const material = chosen && bags.find((b) => drillMaterial({ ...s, bagItems: [b] }, eq) && drillRange(b.itemTmpl).max === drillRange(chosen.itemTmpl).max && num(b.itemTmpl.price) === num(chosen.itemTmpl.price));
+        return material ? result([eq, material]) : result([], '没有可用的打孔材料或装备');
+      }
+      if (mode === 'GEM_INLAY') {
+        const fitting = (e) => gems.filter((b) => (ATTACK_SLOTS.concat(12).includes(num(template(e).slotType)) ? GEM_TYPES.attack : DEFENSE_SLOTS.includes(num(template(e).slotType)) ? GEM_TYPES.defense : []).includes(b.itemTmpl.gemType))
+          .filter((b) => !slots(e).some((n) => gemTemplate(s, n)?.gemType === b.itemTmpl.gemType))
+          .sort((a, b) => num(b.itemTmpl.value) * num(gearWeights(s, p)[GEM_ATTR[b.itemTmpl.subType]]) - num(a.itemTmpl.value) * num(gearWeights(s, p)[GEM_ATTR[a.itemTmpl.subType]]) || bound(a, b));
+        const eq = current.selectedEquip && slots(current.selectedEquip).includes(0) ? current.selectedEquip : equipped.find((e) => slots(e).includes(0) && fitting(e).length);
+        const gem = eq && fitting(eq)[0];
+        return gem ? result([eq !== current.selectedEquip && eq, gem, find(5053, 5052)]) : result([], '没有可镶嵌的宝石或空孔');
+      }
+      if (mode === 'GEM_SYNTH') {
+        const selected = array(current.selectedSynthGems), groups = new Map();
+        for (const b of gems.filter((b) => level(b) < 6)) groups.set(id(b), (groups.get(id(b)) || []).concat(b));
+        const total = (group) => group.reduce((n, b) => n + num(b.count), 0);
+        const group = selected.length ? groups.get(id(selected[0])) : [...groups.values()].filter((g) => total(g) >= 2)
+          .sort((a, b) => Math.min(5, total(b)) - Math.min(5, total(a)) || level(a[0]) - level(b[0]) || id(a[0]) - id(b[0]))[0];
+        const units = (group || []).flatMap((b) => Array(Math.max(0, Math.min(5, num(b.count) - selected.filter((v) => v.id === b.id).length))).fill(b)).slice(0, Math.max(0, 5 - selected.length));
+        const gem = selected[0] || group?.[0];
+        return result(units.concat(gem && !current.selectedSynthCharm ? find(level(gem) <= 4 ? 5058 : 5059) : null));
+      }
+      if (mode === 'GEM_REMOVE') {
+        if (!current.selectedEquip) return result([], '请先放入装备并点选要摘除的宝石');
+        const low = gemTemplate(s, slots(current.selectedEquip)[current.selectedRemoveGemIndex])?.gemLevel === 1;
+        const remove = charms.filter((b) => b.itemTmpl.functionType === 4 || id(b) === 5069 || id(b) === 5055);
+        return result([low ? remove.find((b) => id(b) !== 5055) : remove.find((b) => id(b) === 5055) || remove[0]]);
+      }
+      if (mode === 'GEM_POLISH') {
+        const gem = gems.filter((b) => ['智慧宝石', '魅力宝石'].includes(b.itemTmpl.gemType) && !String(b.itemTmpl.name).startsWith('纯净')).sort((a, b) => level(b) - level(a))[0];
+        return result(gem ? [gem, charms.find((b) => id(b) === 5060 || b.itemTmpl.functionType === 5)] : []);
+      }
+      if (mode === 'SMITHY_APPRAISAL') return result([eqs.filter((e) => [1, 12].includes(num(template(e).slotType)) && num(template(e).reqLevel) >= 50 && !e.isAppraisal).sort((a, b) => Number(!!b.isEquipped) - Number(!!a.isEquipped))[0]], '没有未鉴定的50级以上武器');
+      if (mode === 'SMITHY_REINFORCE') return result([equipped.filter((e) => num(e.enhanceLevel) < 9 && (num(template(e).reqLevel) < 40 ? find(5050) : find(5051, 5079))).sort((a, b) => num(a.enhanceLevel) - num(b.enhanceLevel))[0]]);
+      if (mode === 'SMITHY_SMELT') return result([eqs.filter((e) => !e.isEquipped && num(template(e).slotType) === 1 && num(template(e).reqLevel) >= 50 && num(stats(e.appraisalStats).extScore) > 1500 && num(stats(e.appraisalStats).intScore) > 1500).sort((a, b) => num(template(a).reqLevel) - num(template(b).reqLevel))[0]], '没有可冶炼的完美资质武器（已穿戴的不会自动放入）');
+      if (mode === 'SMITHY_REPAIR') {
+        const complete = (b) => num(stats(b.extraData).repairs) >= 5;
+        const section = bags.filter((b) => id(b) >= 5032 && id(b) <= 5037 && (complete(b) || find(id(b) + 6))).sort((a, b) => id(b) - id(a))[0];
+        return result([section, section && !complete(section) && find(id(section) + 6)]);
+      }
+      if (mode === 'SMITHY_FORGE') return result([bags.find((b) => id(b) >= 5044 && id(b) <= 5049)]);
+      if (mode === 'TAILOR_ADD_MATERIAL') {
+        const min = current.family === 'mithril' ? 5017 : 5008;
+        return result([bags.filter((b) => id(b) >= min && id(b) <= min + 7).sort((a, b) => id(b) - id(a))[0]]);
+      }
+      return result([], '请先在窗口里选择功能页');
+    }
+    function slotChoices(mode, kind, s, p, current = {}) {
+      const bound = (a, b) => Number(!!b.isBound) - Number(!!a.isBound);
+      const worn = (a, b) => Number(!!b.isEquipped) - Number(!!a.isEquipped);
+      const level = (b) => num(b.itemTmpl?.gemLevel), id = materialId;
+      const bags = array(s.bagItems).filter((b) => materialUsable(s, b)).sort(bound);
+      const gems = array(s.bagItems).filter((b) => gemUsable(s, b)).sort(bound);
+      const eqs = array(s.equipments).slice().sort((a, b) => worn(a, b) || num(template(a).slotType) - num(template(b).slotType));
+      const eq = current.selectedEquip;
+      if (kind === 'equip') {
+        if (mode === 'GEM_DRILL') return eqs.filter((e) => slots(e).filter((n) => n >= 0).length < 3);
+        if (mode === 'GEM_INLAY') return eqs.filter((e) => slots(e).includes(0));
+        if (mode === 'GEM_REMOVE') return eqs.filter((e) => slots(e).some((n) => n > 0));
+      }
+      if (kind === 'material' && mode === 'GEM_DRILL') return bags.filter((b) => num(b.itemTmpl.functionType) === 2 && (!eq || materialSupports(b, '装备', num(template(eq).reqLevel))));
+      if (kind === 'gem' && mode === 'GEM_INLAY') return gems.filter((b) => !eq || ((ATTACK_SLOTS.concat(12).includes(num(template(eq).slotType)) ? GEM_TYPES.attack : GEM_TYPES.defense).includes(b.itemTmpl.gemType) && !slots(eq).some((n) => gemTemplate(s, n)?.gemType === b.itemTmpl.gemType)))
+        .sort((a, b) => num(b.itemTmpl.value) * num(gearWeights(s, p)[GEM_ATTR[b.itemTmpl.subType]]) - num(a.itemTmpl.value) * num(gearWeights(s, p)[GEM_ATTR[a.itemTmpl.subType]]) || bound(a, b));
+      if (kind === 'gem' && mode === 'GEM_SYNTH') {
+        const total = (b) => gems.filter((v) => id(v) === id(b)).reduce((n, v) => n + num(v.count), 0);
+        return gems.filter((b) => level(b) < 6).sort((a, b) => Number(total(b) >= 2) - Number(total(a) >= 2) || Math.min(5, total(b)) - Math.min(5, total(a)) || level(a) - level(b) || id(a) - id(b) || bound(a, b));
+      }
+      if (kind === 'gem' && mode === 'GEM_POLISH') return gems.filter((b) => ['智慧宝石', '魅力宝石'].includes(b.itemTmpl.gemType) && !String(b.itemTmpl.name).startsWith('纯净')).sort((a, b) => level(b) - level(a) || bound(a, b));
+      if (kind === 'charm') {
+        const fn = { GEM_INLAY: 1, GEM_SYNTH: 3, GEM_REMOVE: 4, GEM_POLISH: 5 }[mode];
+        const known = { GEM_INLAY: [5053, 5052], GEM_SYNTH: [5058, 5059], GEM_REMOVE: [5055, 5069], GEM_POLISH: [5060] }[mode] || [];
+        const low = eq && gemTemplate(s, slots(eq)[current.selectedRemoveGemIndex])?.gemLevel === 1;
+        const preferred = mode === 'GEM_SYNTH' && level(current.selectedSynthGems?.[0] || {}) === 5 ? 5059 : known[0];
+        return array(s.bagItems).filter((b) => charmUsable(s, b) && (known.includes(id(b)) || fn && num(b.itemTmpl.functionType) === fn) && !(mode === 'GEM_REMOVE' && low && id(b) === 5055))
+          .sort((a, b) => Number(id(b) === preferred) - Number(id(a) === preferred) || bound(a, b));
+      }
+      if (kind !== 'any') return [];
+      if (mode === 'SMITHY_APPRAISAL') return eqs.filter((e) => [1, 12].includes(num(template(e).slotType)) && num(template(e).reqLevel) >= 50).sort((a, b) => Number(!!a.isAppraisal) - Number(!!b.isAppraisal) || worn(a, b));
+      if (mode === 'SMITHY_REINFORCE') return eqs.filter((e) => num(e.enhanceLevel) < 9).sort((a, b) => worn(a, b) || num(a.enhanceLevel) - num(b.enhanceLevel));
+      if (mode === 'SMITHY_SMELT') return eqs.filter((e) => num(template(e).slotType) === 1 && num(template(e).reqLevel) >= 50 && num(stats(e.appraisalStats).extScore) > 1500 && num(stats(e.appraisalStats).intScore) > 1500).sort((a, b) => -worn(a, b) || num(template(a).reqLevel) - num(template(b).reqLevel));
+      if (mode === 'SMITHY_REPAIR') return bags.filter((b) => id(b) >= 5032 && id(b) <= 5043).sort((a, b) => id(b) - id(a));
+      if (mode === 'SMITHY_FORGE') return bags.filter((b) => id(b) >= 5044 && id(b) <= 5049);
+      if (mode === 'TAILOR_ADD_MATERIAL') return bags.filter((b) => id(b) >= 5008 && id(b) <= 5015 || id(b) >= 5017 && id(b) <= 5024).sort((a, b) => (id(b) >= 5017 ? id(b) - 5017 : id(b) - 5008) - (id(a) >= 5017 ? id(a) - 5017 : id(a) - 5008) || bound(a, b));
+      return [];
+    }
     return {
+      fillPicks, slotChoices, charmUsable, charmCompatible,
       WAREHOUSE_CAPACITY,
       mapChoices,
       DEFAULTS,
@@ -2862,6 +2966,7 @@
               ),
             );
           this.recordStats?.(packet);
+          this.filler?.response(packet);
           setTimeout(() => {
             try {
               this.syncState(packet);
@@ -3866,6 +3971,7 @@
       }
       updateConfig(value) {
         this.prefs = P.config(value);
+        this.filler?.schedule();
         writeStorage(CONFIG, this.prefs);
         this.timer.set(this.prefs.tickMs);
         this.lastSettings = 0;
@@ -4513,9 +4619,201 @@
         location.reload();
       }
     }
+    class Filler {
+      constructor(controller, doc = document) {
+        this.controller = controller;
+        this.doc = doc;
+        this.memory = {};
+        if (this.controller.bridge) this.controller.bridge.filler = this;
+      }
+      start() {
+        this.doc.addEventListener('click', (e) => this.slotClick(e), true);
+        this.doc.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.closePicker(); });
+        this.watch = setInterval(() => { this.subscribe(); this.checkPicker(); }, 300);
+        this.observer = new MutationObserver(() => this.schedule());
+        this.observer.observe(this.doc.documentElement, { subtree: true, childList: true });
+        this.scan();
+      }
+      schedule() {
+        if (this.timer) return;
+        this.timer = setTimeout(() => { this.timer = null; this.scan(); }, 300);
+      }
+      scan() {
+        this.subscribe();
+        this.checkPicker();
+        if (!this.controller.prefs.fill.enabled) {
+          this.doc.querySelectorAll('[data-tl-fill]').forEach((b) => b.remove());
+          return;
+        }
+        this.doc.querySelectorAll('div.gem-shop-window, div.smithy-shop-window, div.tailor-shop-window, section.pet-panel').forEach((root) => this.insert(root));
+      }
+      insert(root) {
+        const header = root.querySelector('div.game-header > div.d-flex.align-center') || root.closest('[class*="window"]')?.querySelector('div.game-header > div.d-flex.align-center');
+        if (!header || header.querySelector('[data-tl-fill]')) return;
+        const button = this.doc.createElement('button');
+        button.type = 'button';
+        button.className = 'tl-fill-btn';
+        button.setAttribute('data-tl-fill', '');
+        button.textContent = '一键放入';
+        button.style.cssText = 'font-size:12px;padding:2px 8px;margin-left:8px;border-radius:4px;cursor:pointer';
+        for (const event of ['mousedown', 'pointerdown']) button.addEventListener(event, (e) => e.stopPropagation());
+        button.addEventListener('click', () => root.matches('section.pet-panel') ? this.pet(root) : this.click());
+        header.appendChild(button);
+      }
+      closePicker() {
+        this.picker?.remove();
+        this.picker = null;
+      }
+      checkPicker() {
+        if (this.picker && (!this.controller.prefs.fill.enabled || !this.pickerRoot.isConnected || this.controller.bridge.stores().get('interaction')?.mode !== this.pickerMode)) this.closePicker();
+      }
+      slotClick(e) {
+        if (this.picker?.contains(e.target)) return;
+        this.closePicker();
+        if (e.button !== 0 || !this.controller.prefs.fill.enabled) return;
+        const slot = e.target.closest?.('.item-slot');
+        const root = slot?.closest('div.gem-shop-window, div.smithy-shop-window, div.tailor-shop-window');
+        if (!root || slot.matches('.remove-slot, .highlight-slot')) return;
+        if (root.matches('div.tailor-shop-window') && !slot.matches('.cursor-pointer')) return;
+        if (!root.matches('div.gem-shop-window')) return setTimeout(() => this.openPicker(slot, root, 'any'), 0);
+        const mode = this.controller.bridge.stores().get('interaction')?.mode;
+        const kind = slot.matches('.border-purple') ? 'equip' : slot.matches('.border-green') ? 'charm' : slot.matches('.small-slot') ? 'gem' : slot.matches('.border-blue') ? mode === 'GEM_DRILL' ? 'material' : 'gem' : null;
+        if (kind) this.openPicker(slot, root, kind);
+      }
+      openPicker(slot, root, kind) {
+        const c = this.controller, stores = c.bridge.stores(), mode = stores.get('interaction')?.mode;
+        if (!c.prefs.fill.enabled || !root.isConnected || !(kind === 'any' ? mode?.startsWith('SMITHY_') || mode === 'TAILOR_ADD_MATERIAL' : mode?.startsWith('GEM_'))) return;
+        this.closePicker();
+        const picker = this.doc.createElement('div'), rect = slot.getBoundingClientRect();
+        picker.style.cssText = 'position:absolute;z-index:2147482000;max-height:320px;overflow:auto;width:240px;background:rgba(20,20,24,0.96);border:1px solid #a88a4a;border-radius:4px;font-size:12px;color:#eee';
+        const view = this.doc.defaultView || globalThis;
+        picker.style.left = Math.max(0, Math.min(rect.left, view.innerWidth - 242)) + (view.scrollX || 0) + 'px';
+        picker.style.top = Math.max(0, Math.min(rect.bottom, view.innerHeight - 322)) + (view.scrollY || 0) + 'px';
+        const choices = P.slotChoices(mode, kind, c.bridge.state(), c.prefs, stores.get('gemInlay') || {});
+        for (const item of choices) picker.appendChild(this.choiceRow(item, mode));
+        if (!choices.length) picker.textContent = '背包里没有可放入的物品';
+        this.doc.body.appendChild(picker);
+        this.picker = picker; this.pickerRoot = root; this.pickerMode = mode;
+      }
+      choiceRow(item, mode) {
+        const row = this.doc.createElement('div'), t = item.itemTmpl || item.equipTmpl;
+        row.style.cssText = 'padding:6px;cursor:pointer;display:flex;align-items:center;gap:6px';
+        if (t.icon) {
+          const icon = this.doc.createElement('img');
+          icon.src = t.icon; icon.width = 24; icon.height = 24; row.appendChild(icon);
+        }
+        const label = this.doc.createElement('span');
+        label.textContent = t.name + (item.itemTmpl ? ' ×' + item.count + (item.isBound ? ' 绑定' : '') : (item.isEquipped ? ' 已穿戴' : '') + ' 孔 ' + P.slots(item).filter((n) => n >= 0).length + '/3 +' + P.num(item.enhanceLevel));
+        row.appendChild(label);
+        row.addEventListener('click', () => { this.choose(item, mode); this.closePicker(); });
+        return row;
+      }
+      choose(item, mode) {
+        const stores = this.controller.bridge.stores(), interaction = stores.get('interaction'), g = stores.get('gemInlay');
+        if (interaction?.mode !== mode) return;
+        if (mode !== 'GEM_SYNTH' || !item.itemTmpl?.gemLevel) return interaction.handleItemClick(this.live(item));
+        if (g.selectedSynthGems?.length && g.selectedSynthGems[0].itemId !== item.itemId) { g.clearSynthGems(); g.clearSynthCharm(); }
+        const selected = g.selectedSynthGems || [];
+        const count = Math.min(5 - selected.length, item.count - selected.filter((b) => b.id === item.id).length);
+        for (let n = 0; n < count; n++) if (interaction.handleItemClick(this.live(item)) === false) break;
+      }
+      subscribe() {
+        const g = this.controller.bridge?.stores().get('gemInlay');
+        if (!g || this.subscribed === g || !g.$subscribe) return;
+        this.subscribed = g;
+        g.$subscribe(() => this.remember(g), { flush: 'sync', detached: true });
+        this.remember(g);
+      }
+      remember(g) {
+        const fields = ['selectedDrillMaterial', 'selectedCharm', 'selectedSynthCharm', 'selectedRemoveCharm', 'selectedPolishGem', 'selectedPolishCharm', 'selectedSynthGems'];
+        for (const field of fields) this.rememberField(g, field);
+      }
+      rememberField(g, field) {
+        const value = field === 'selectedSynthGems' ? g[field]?.[0] : g[field];
+        if (value) { this.memory[field] = { itemId: value.itemId, name: value.itemTmpl?.name, count: field === 'selectedSynthGems' ? g[field].length : 1 }; return; }
+        const memory = this.memory[field];
+        if (!memory) return;
+        setTimeout(() => {
+          if (this.memory[field] === memory && Date.now() - (this.responseAt || 0) > 1500) delete this.memory[field];
+        }, 200);
+      }
+      response(packet) {
+        if (!/^GEM_.*_RESPONSE$/.test(packet.type)) return;
+        this.responseAt = Date.now();
+        if (packet.success === true) {
+          const memory = { ...this.memory };
+          setTimeout(() => this.refill(packet.type.replace('_RESPONSE', ''), memory), 100);
+        }
+      }
+      refill(mode, memory) {
+        const c = this.controller, stores = c.bridge.stores(), g = stores.get('gemInlay'), interaction = stores.get('interaction');
+        if (!c.prefs.fill.enabled || !c.prefs.fill.refill || interaction?.mode !== mode || !g || !this.doc.querySelector('div.gem-shop-window')) return;
+        const fields = { GEM_DRILL: ['selectedDrillMaterial'], GEM_INLAY: ['selectedCharm'], GEM_SYNTH: ['selectedSynthGems', 'selectedSynthCharm'], GEM_REMOVE: ['selectedRemoveCharm'], GEM_POLISH: ['selectedPolishGem', 'selectedPolishCharm'] }[mode] || [];
+        if (mode === 'GEM_DRILL' && (!g.selectedEquip || P.slots(g.selectedEquip).filter((n) => n >= 0).length >= 3)) return;
+        for (const field of fields) this.refillField(mode, field, memory[field], g, interaction);
+      }
+      refillField(mode, field, memory, g, interaction) {
+        if (!memory || (field === 'selectedSynthGems' ? g[field]?.length : g[field])) return;
+        const s = this.controller.bridge.state(), kind = field === 'selectedSynthGems' || field === 'selectedPolishGem' ? 'gem' : field === 'selectedDrillMaterial' ? 'material' : 'charm';
+        const all = P.slotChoices(mode, kind, s, this.controller.prefs, g).filter((b) => b.itemId === memory.itemId).sort((a, b) => Number(!!b.isBound) - Number(!!a.isBound));
+        if (!all.length) {
+          if (!memory.exhausted) this.controller.bridge.stores().get('ui')?.showMessage('「' + memory.name + '」已用完', 'info');
+          memory.exhausted = true; return;
+        }
+        if (field === 'selectedSynthCharm' && (!g.selectedSynthGems?.length || !P.charmCompatible(s, all[0], 'synth', g.selectedSynthGems[0]))) return;
+        const total = all.reduce((n, b) => n + b.count, 0);
+        if (field === 'selectedSynthGems' && total < 2) return;
+        let remaining = field === 'selectedSynthGems' ? Math.min(5, memory.count, total) : 1;
+        for (const item of all) {
+          const count = Math.min(remaining, item.count);
+          for (let n = 0; n < count; n++) if (interaction.handleItemClick(this.live(item)) === false) return;
+          remaining -= count;
+          if (!remaining) break;
+        }
+      }
+      click() {
+        const c = this.controller, stores = c.bridge.stores(), interaction = stores.get('interaction');
+        if (!interaction) return;
+        const current = stores.get('gemInlay') || {}, mode = interaction.mode, state = c.bridge.state();
+        if (mode === 'GEM_SYNTH' && !current.selectedSynthGems?.length) {
+          current.clearSynthGems?.();
+          current.clearSynthCharm?.();
+        }
+        let picks = P.fillPicks(mode, state, c.prefs, mode === 'TAILOR_ADD_MATERIAL' ? { family: null } : current);
+        if (mode === 'TAILOR_ADD_MATERIAL') {
+          if (picks.items.length && interaction.handleItemClick(this.live(picks.items[0])) !== false) return stores.get('ui')?.showMessage(picks.message, 'success');
+          picks = P.fillPicks(mode, state, c.prefs, { family: 'mithril' });
+        }
+        for (const item of picks.items) if (interaction.handleItemClick(this.live(item)) === false) return;
+        stores.get('ui')?.showMessage(picks.message, picks.items.length ? 'success' : 'warning');
+      }
+      // bridge.state() holds copies; the game windows keep the store's own objects.
+      live(item) {
+        const c = this.controller.bridge.character?.();
+        const list = item?.equipTmpl ? c?.equipments : c?.bagItems;
+        return (Array.isArray(list) && list.find((v) => v.id === item.id)) || item;
+      }
+      async pet(root) {
+        // This route is not exercised live.
+        const slot = root.querySelector('button.material-slot');
+        if (!slot) return this.controller.bridge.stores().get('ui')?.showMessage('请先选择珍兽并进入提升根骨或打书', 'warning');
+        const before = new Set(root.querySelectorAll('button'));
+        slot.click();
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const options = [...root.querySelectorAll('button')].filter((b) => !before.has(b));
+        if (slot.getAttribute('aria-label') !== '放入根骨丹') return options[0]?.click();
+        const bags = this.controller.bridge.state().bagItems || [];
+        const family = [5025, 5026, 5027].find((id) => options.some((b) => bags.some((item) => item.itemId === id && item.itemTmpl?.name && b.textContent.includes(item.itemTmpl.name))));
+        const candidates = bags.filter((b) => b.count > 0 && b.itemId === family);
+        const rank = Number(root.textContent.match(/根骨[^0-9]*([0-9]+)/)?.[1] || 0);
+        const needed = rank % 3 + 1;
+        const best = candidates.slice().sort((a, b) => Number(b.count >= needed) - Number(a.count >= needed) || (a.count >= needed && b.count >= needed ? Number(!!b.isBound) - Number(!!a.isBound) : b.count - a.count))[0];
+        options[candidates.indexOf(best)]?.click();
+      }
+    }
     const arraySafe = (v) => (Array.isArray(v) ? v : []);
     return {
-      Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake,
+      Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake,
     };
   })();
   if (typeof module !== 'undefined' && module.exports) module.exports.TLRuntime = TLRuntime;
@@ -4932,6 +5230,9 @@
         if (this.section === 'craft')
           html =
             '<h3>宝石策略</h3>' +
+            f('在游戏窗口显示“一键放入”按钮', 'fill.enabled') +
+            f('完成后自动补回同种符和材料', 'fill.refill') +
+            '<div class="hint">宝石、铁匠、裁缝窗口和云飘飘珍兽面板的标题栏出现“一键放入”：按当前功能页把最合适的装备、宝石、符和材料放进槽位，执行仍需自己点。镶嵌、打孔、合成、摘除、雕琢成功后，自动从背包补回刚用掉的同种符、打孔材料和宝石（合成、雕琢），直到用完。</div>' +
             f('启用宝石托管', 'gems.enabled') +
             f('自动打孔', 'gems.drill') +
             f('每件装备目标孔数', 'gems.maxHoles', { max: 3 }) +
@@ -5192,6 +5493,8 @@
     const controller = new TLRuntime.Controller();
     controller.updates = new TLUpdates.Checker(controller);
     const panel = new TLPanel.Panel(controller);
+    controller.filler = new TLRuntime.Filler(controller);
+    controller.filler.start();
     controller.updates.onChange = () => controller.paint();
     controller.updates.start();
     window.TLAutopilot = Object.freeze({
