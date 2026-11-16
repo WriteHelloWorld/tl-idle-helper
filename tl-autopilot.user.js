@@ -530,6 +530,15 @@
       const p = combatParts(values, ctx);
       return p.out * (p.taken > 0 && p.hp > 0 ? (p.hp / p.taken) ** ctx.defenseWeight : 1);
     }
+    const SCORE_ATTRIBUTES = Object.entries({ hp: '气血', extAtk: '外攻', intAtk: '内攻', extDef: '外防', intDef: '内防', critRate: '会心', critDef: '会防', avoidance: '闪避', precision: '命中', iceAtk: '冰攻', fireAtk: '火攻', poisonAtk: '毒攻', holyAtk: '玄攻', iceDef: '冰抗', fireDef: '火抗', poisonDef: '毒抗', holyDef: '玄抗' });
+    function scoringDetail(state, prefs) {
+      const ctx = combatContext(state, prefs);
+      if (!ctx) return null;
+      return { value: combatValue(ctx.me, ctx), parts: combatParts(ctx.me, ctx), weight: ctx.defenseWeight,
+        character: characterScore(state.finalAttributes, state, prefs),
+        rows: SCORE_ATTRIBUTES.map(([key, name]) => ({ key, name, current: ctx.me[key],
+          one: statScore({ [key]: 1 }, state, prefs), hundred: statScore({ [key]: 100 }, state, prefs) })) };
+    }
     function combatWeights(state, prefs) {
       const ctx = combatContext(state, prefs);
       if (!ctx) return null;
@@ -1070,9 +1079,10 @@
       const share = count && income ? clamp(num(totals.potion) * num(totals.hpPotions) / count / income) : 0;
       const ratio = clamp(num(totals.hpLost) / (totals.battle / 1000) / healPerSecond);
       const low = num(totals.low) / totals.battle;
-      const danger = Math.max(clamp((ratio - SUSTAIN_LINE) / (1 - SUSTAIN_LINE)), clamp(low / LOW_HP_SHARE), deaths > 0 ? 0.5 : 0);
+      const sustain = clamp((ratio - SUSTAIN_LINE) / (1 - SUSTAIN_LINE)), burst = clamp(low / LOW_HP_SHARE), death = deaths > 0 ? 0.5 : 0;
+      const danger = Math.max(sustain, burst, death);
       return { weight: Math.round(clamp(share + danger) * 100) / 100,
-        share, ratio, low, deaths, hours, danger, safe: danger === 0 };
+        share, ratio, low, deaths, hours, sustain, burst, death, danger, safe: danger === 0 };
     }
     function healPerSecond(s) {
       return potionEffect(potionChoices(s, 'HP')[0], 'HP') / 3;
@@ -2493,7 +2503,7 @@
       setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
       equipmentStats,
       scoreStats,
-      equipmentScore, characterScore, SCORE_UNIT,
+      equipmentScore, characterScore, SCORE_UNIT, MONSTER_CRIT_SCALE, scoringDetail, SCORE_ATTRIBUTES,
       projectedGain,
       countItem,
       bagItem,
@@ -5139,6 +5149,7 @@
     const groups = [
       ['status', '状态'],
       ['stats', '统计'],
+      ['score', '评分'],
       ['battle', '挂机日常'],
       ['growth', '成长装备'],
       ['pets', '珍兽'],
@@ -5293,6 +5304,11 @@
           this.statsKey = html;
           this.statsPaintAt = Date.now();
         }
+        if (this.section === 'score') {
+          html = this.scoreHTML(status, TLPolicy.scoringDetail(s, this.pending));
+          this.scoreKey = html;
+          this.scorePaintAt = Date.now();
+        }
         if (this.section === 'status') {
           html = `<div class="notice">先在原游戏完成登录，然后开始托管。人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。</div><h3>已保存的资源策略</h3><div class="budget-card"><span>金币保留</span><span>${status.budget.moneyReserve.toLocaleString()}</span></div><div class="budget-card"><span>当日金币预算</span><span>${status.budget.moneyPerDay > 0 ? status.budget.moneyPerDay.toLocaleString() : '不限'}</span></div><div class="budget-card"><span>当日技能经验预算</span><span>${status.budget.skillExpPerDay > 0 ? status.budget.skillExpPerDay.toLocaleString() : '不限'}</span></div><div class="budget-card"><span>当日冶炼经验预算</span><span>${status.budget.smeltExpPerDay > 0 ? status.budget.smeltExpPerDay.toLocaleString() : '不限'}</span></div><div class="hint">默认保留强化、镶宝、星级、鉴定装备和套装部件；自动回收品质1的普通装备。宝石默认目标3级，强化默认目标+3。</div><div class="actions"><button class="btn" type="button" data-action="preview">预览下一步计划</button><button class="btn" type="button" data-action="diagnostics">导出当前诊断</button></div><div class="section"><h3>计划预览</h3>${this.previewPlans.length ? this.previewPlans.map((a) => `<div class="plan">${esc(a.label)}<small>预计金币 ${a.coinCost} · 经验 ${a.expCost}${a.requiresTown ? ' · 在对应城镇处理' : ''}</small></div>`).join('') : '<div class="hint">点击预览可查看当前角色满足条件的动作。</div>'}</div>`;
         }
@@ -5338,30 +5354,10 @@
             f('优先技能模板ID（逗号分隔）', 'growth.skillPriority') +
             '<div class="section"><h3>装备选择</h3>' +
             f('按评分自动穿戴', 'gear.enabled') +
-            f('评分方式', 'gear.scoring', { choices: [['combat', '实战评分（按伤害公式，推荐）'], ['linear', '固定权重（同游戏战力）']] }) +
-            f('评分参照的怪物', 'gear.targets', { choices: [['pool', '可进入的最高 6 张挂机地图（推荐）'], ['map', '只看最近挂机的地图']] }) +
-            f('按实测战况自动调整生存权重', 'gear.autoDefense') +
-            f('生存权重（自动关闭或数据不足时使用；0 只看输出，1 输出与生存并重）', 'gear.defenseWeight', { min: 0, max: 1, step: 0.1 }) +
             f('最低评分增益 %', 'gear.minGainPercent', { step: 0.1 }) +
             f('允许穿戴后绑定', 'gear.allowBinding') +
             f('自动穿戴时也从仓库取出更好的装备', 'gear.fromWarehouse') +
-            f('逛摊淘宝显示装备评分', 'market.showScore') +
-            f('背包和仓库装备图标显示评分', 'market.bagScore') +
-            f('逛摊显示的评分', 'market.scoreType', { choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
-            f('背包和仓库图标显示的评分', 'market.bagScoreType', { choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
-            f('装备详情和人物面板显示实战评分', 'market.tipScore') +
-            f('逛摊按脚本排序', 'market.sort', { choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }) +
-            '<div class="hint">评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。自动生存权重按门槛计算：安全时只等于生命药费占金币收入的比例（接近 0，防御和抗性几乎不加分）；每秒掉血超过最强生命药回血速度的一半、血量低于 35% 的时间变多、或近 6 个战斗小时内有阵亡时，权重迅速升高，最高为 1。战斗数据不足 30 分钟时用手动值。实战评分每 100 分约等于整体实战能力的 1%；人物面板的实战评分是全身装备的合计贡献，换一件装备后它的变化等于两件装备的分数差。</div>' +
-            (status.scoring.mode !== 'combat' ? '' : '<div class="hint">' + esc(TLPolicy.scoringText(status.scoring)) + '</div>') +
-            (status.scoring.mode !== 'combat' ? '' : '<div class="hint">' +
-              (status.scoring.weights ? '当前实战权重：' +
-                ['hp', 'extAtk', 'intAtk', 'extDef', 'intDef', 'critRate', 'critDef',
-                  'avoidance', 'precision', 'iceAtk', 'fireAtk', 'poisonAtk', 'holyAtk',
-                  'iceDef', 'fireDef', 'poisonDef', 'holyDef'].map((k, i) =>
-                  ['气血', '外攻', '内攻', '外防', '内防', '会心', '会防', '闪避', '命中',
-                    '冰攻', '火攻', '毒攻', '玄攻', '冰抗', '火抗', '毒抗', '玄抗'][i] +
-                  ' ' + status.scoring.weights[k].toFixed(1)).join(' · ') :
-                '实战评分等待战斗数据') + '</div>') + '</div><div class="section"><h3>暗器养成</h3>' +
+            '<div class="hint">评分方式、权重和计算公式在“评分”页。</div></div><div class="section"><h3>暗器养成</h3>' +
             f('暗器养成（总开关）', 'hidden.enabled') +
             f('自动洗炼属性（5 砂/次）', 'hidden.wash') +
             f('自动洗炼品质（1 玉/次）', 'hidden.washQuality') +
@@ -5529,6 +5525,60 @@
         const sections = Array.isArray(u.notes?.sections) ? u.notes.sections : [];
         return `<div class="update-summary"><div class="notice">当前运行 v${esc(u.currentVersion)}${u.latestVersion ? ' · GitHub 最新版本 v' + esc(u.latestVersion) : ''}${u.newer ? '<br>发现新版本。' : ''}</div><div class="hint">新版本由 Tampermonkey 自动安装（默认每天检查一次），页面刷新后生效。托管运行并开启“页面刷新后恢复托管”时，脚本发现新版本会自动刷新页面：立即一次，之后每 6 小时一次，每个版本最多 5 次。想立即更新，点“安装新版本”，在 Tampermonkey 页面确认后刷新游戏。</div>${u.newer && u.apply?.exhausted ? '<div class="hint">已自动刷新 5 次仍是旧版本，请点“安装新版本”。</div>' : ''}${u.notes ? `<h3>${esc(u.notes.title)}</h3>${sections.map((s) => `<div class="hint"><strong>${esc(s.title)}</strong></div><ul>${s.items.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`).join('')}` : u.newer ? '<div class="hint">更新内容暂未读取，可在发布页查看。</div>' : ''}<div class="hint">${u.busy ? '正在读取公开版本信息' : u.error ? esc(u.error) : u.checkedAt ? '最近检查：' + esc(new Date(u.checkedAt).toLocaleString()) : '尚未检查公开版本'}${u.nextCheckAt ? '<br>下次可检查：' + esc(new Date(u.nextCheckAt).toLocaleString()) : ''}<br>自动检查每天一次，手动检查间隔至少 60 秒。</div><div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开发布页</button>${u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : ''}</div><div class="section"><h3>选择自动更新</h3><div class="hint">在油猴管理面板打开本脚本的设置，启用“检查更新”。实际自动安装由油猴执行；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。</div></div></div>`;
       }
+      scoreHTML(status, detail) {
+        const f = (l, p, o) => this.field(l, p, o);
+        return '<div class="section"><h3>评分方式</h3>' +
+          f('评分方式', 'gear.scoring', { choices: [['combat', '实战评分（按伤害公式，推荐）'], ['linear', '固定权重（同游戏战力）']] }) +
+          f('评分参照的怪物', 'gear.targets', { choices: [['pool', '可进入的最高 6 张挂机地图（推荐）'], ['map', '只看最近挂机的地图']] }) +
+          f('按实测战况自动调整生存权重', 'gear.autoDefense') +
+          f('生存权重（自动关闭或数据不足时使用；0 只看输出，1 输出与生存并重）', 'gear.defenseWeight', { min: 0, max: 1, step: 0.1 }) +
+          f('逛摊淘宝显示装备评分', 'market.showScore') +
+          f('背包和仓库装备图标显示评分', 'market.bagScore') +
+          f('逛摊显示的评分', 'market.scoreType', { choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
+          f('背包和仓库图标显示的评分', 'market.bagScoreType', { choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
+          f('装备详情和人物面板显示实战评分', 'market.tipScore') +
+          f('逛摊按脚本排序', 'market.sort', { choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }) +
+          '</div>' + this.scoreLiveHTML(status, detail) + this.scoreFormulaHTML();
+      }
+      scoreTableHTML(headers, rows) {
+        return '<table class="income-table"><thead><tr>' + headers.map((v) => '<th>' + esc(v) + '</th>').join('') +
+          '</tr></thead><tbody>' + rows.map((row) => '<tr>' + row.map((v) => '<td>' + esc(v) + '</td>').join('') + '</tr>').join('') + '</tbody></table>';
+      }
+      scoreDangerHTML(v) {
+        if (!v) return '';
+        const percent = (n) => (n * 100).toFixed(n * 100 < 10 ? 1 : 0);
+        return '<div class="hint">危险度 ' + v.danger.toFixed(2) + '：掉血占回血能力 ' + percent(v.ratio) +
+          '%（安全线 50%）→ ' + v.sustain.toFixed(2) + '；低血量时间 ' + percent(v.low) + '%（5% 升满）→ ' +
+          v.burst.toFixed(2) + '；阵亡 ' + v.deaths + ' 次 → ' + v.death.toFixed(2) + '</div>';
+      }
+      scoreLiveHTML(status, detail) {
+        let html = '<div class="section"><h3>当前状态</h3><div class="hint">' + esc(TLPolicy.scoringText(status.scoring)) + '</div>' + this.scoreDangerHTML(status.scoring.survival);
+        if (detail) {
+          html += '<div class="hint">人物实战评分 ' + Math.round(detail.character) + ' · 每次行动输出 ' + detail.parts.out.toFixed(0) + ' · 每次受击 ' + detail.parts.taken.toFixed(1) + ' · 气血 ' + detail.parts.hp.toFixed(0) + '</div><h3>当前每点属性的分数</h3>';
+          html += this.scoreTableHTML(['属性', '当前值', '+1 点', '+100 点'], detail.rows.map((r) => [r.name, Math.round(r.current), r.one.toFixed(2), r.hundred.toFixed(1)]));
+          html += '<div class="hint">分数按当前属性和参照怪物实时计算，每 100 分约等于整体实战能力的 1%。点数指装备上的点数，已计入被动技能的加成。抗性只在低于怪物对应元素攻击时有用，超出的部分不加分，所以抗性的“+100 点”远小于“+1 点”的 100 倍。</div>';
+        } else if (this.pending.gear.scoring === 'combat') html += '<div class="hint">实战评分等待怪物数据</div>';
+        else html += this.scoreTableHTML(['属性', '每点分数'], Object.entries(this.pending.gear.weights).map(([k, v]) => [Object.fromEntries(TLPolicy.SCORE_ATTRIBUTES)[k] || (k === 'mp' ? '真气' : k), v])) + '<div class="hint">固定权重与游戏战力相同，可在高级JSON配置中调整。</div>';
+        return html + '</div>';
+      }
+      scoreFormulaHTML() {
+        const p = TLPolicy, percent = (v) => Math.round(v * 100) + '%';
+        return '<div class="section"><h3>计算公式</h3><div class="hint">' + [
+          '实战值 = 每次行动输出 ×（气血 ÷ 每次受击伤害）^ 生存权重',
+          `分数 = ${p.SCORE_UNIT} × ln（实战值之比）；每 100 分约等于 1%`,
+          `单件装备分数 = ${p.SCORE_UNIT} × ln（穿上它的实战值 ÷ 该部位空着的实战值）`,
+          `人物实战评分 = ${p.SCORE_UNIT} × ln（当前实战值 ÷ 不穿任何装备的实战值）`,
+          '每次伤害 = 命中率 ×［主伤害 ×（1 + 0.5 × 会心率）+ 元素伤害］',
+          '主伤害 =［外攻² ÷（外攻 + 对方外防）+ 内攻² ÷（内攻 + 对方内防）］×（1 + 0.005 × 等级差）',
+          '元素伤害 = Σ max(0, 元素攻击 − 对方抗性) × 1.5 ×（1 + 被动加成）',
+          `命中率 = 命中 ÷（命中 + 对方闪避）；会心率 = 会心 ÷（会心 + 对方会防），怪物打你时再 × ${p.MONSTER_CRIT_SCALE}`,
+          '输出按技能轮转加权（冷却越短出手越多），对参照怪物取平均；受击伤害用同一组公式反过来算',
+          '自动生存权重 = 生命药费 ÷（击杀金币 + 出售收入）+ 危险度',
+          `危险度 = max（（掉血占回血能力 − ${percent(p.SUSTAIN_LINE)}）÷ ${percent(1 - p.SUSTAIN_LINE)}，低血量时间占比 ÷ ${percent(p.LOW_HP_SHARE)}，有阵亡时 0.5）`,
+          `低血量 = 气血低于 ${percent(p.HP_LINE)}；回血能力 = 最强可用生命药回复量 ÷ 3 秒`
+        ].map(esc).join('<br>') + '</div><div class="hint">评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。战斗数据不足 30 分钟时生存权重用手动值。</div>' +
+          '<div class="hint">自动生存权重按门槛计算：安全时只等于生命药费占金币收入的比例（接近 0，防御和抗性几乎不加分）。实战评分每 100 分约等于整体实战能力的 1%；人物面板的实战评分是全身装备的合计贡献，换一件装备后它的变化等于两件装备的分数差。</div></div>';
+      }
       statsHTML(stats, maps) {
         if (!stats) return '<div class="hint">等待角色数据</div>';
         const fmt = TLRuntime.statsNumber, duration = TLRuntime.statsDuration;
@@ -5596,6 +5646,8 @@
           this.renderBody();
         if (this.section === 'stats' && !this.dirty && Date.now() - this.statsPaintAt >= 5000 &&
           this.statsKey !== this.statsHTML(s.stats, this.controller.bridge.state()?.maps)) this.renderBody();
+        if (this.section === 'score' && !this.dirty && Date.now() - this.scorePaintAt >= 5000 &&
+          this.scoreKey !== this.scoreHTML(s, TLPolicy.scoringDetail(this.controller.bridge.state(), this.pending))) this.renderBody();
         const card = (kind, label, value) =>
           `<div data-budget="${kind}"><span class="budget-title">${label}</span><span>${value}</span></div>`;
         this.root.querySelector('.summary').innerHTML =
