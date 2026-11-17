@@ -117,6 +117,8 @@
         lotteryBatch: 12,
         tianlingUse: false,
       },
+      welfare: { enabled: false, currency: 'GOLD', multiplier: 1, betsPerDraw: 1,
+        dailyCost: 1000000, pick: 'random', numbers: '' },
       pets: { enabled: true, summon: true, claim: true, hatch: false, hatchMutant: false,
         keepMinAverage: 118, feed: false, feedKeepExp: 0, refreshMinutes: 10 },
       arena: { enabled: true, like: true, claim: true, challenge: true, maxPerDay: 10,
@@ -257,6 +259,12 @@
           for (const [k, v] of Object.entries(section))
             if (typeof v === 'number') section[k] = Math.max(0, num(v));
       p.activities.lotteryBatch = Math.max(1, Math.min(100, integer(p.activities.lotteryBatch)));
+      p.welfare.currency = p.welfare.currency === 'YUANBAO' ? 'YUANBAO' : 'GOLD';
+      p.welfare.multiplier = Math.max(1, Math.min(5, integer(p.welfare.multiplier)));
+      p.welfare.betsPerDraw = Math.max(1, Math.min(10, integer(p.welfare.betsPerDraw)));
+      p.welfare.dailyCost = Math.max(0, integer(p.welfare.dailyCost));
+      p.welfare.pick = p.welfare.pick === 'fixed' ? 'fixed' : 'random';
+      p.welfare.numbers = welfareNumbers(p.welfare.numbers)?.join(',') || '';
       p.arena.maxPerDay = integer(p.arena.maxPerDay);
       p.arena.rushMinutes = Math.max(0, Math.min(120, integer(p.arena.rushMinutes)));
       p.arena.maxPowerRatio = Math.max(0.5, Math.min(3, p.arena.maxPowerRatio));
@@ -438,14 +446,14 @@
       }
       return out;
     }
-    const MAIN_SOFTCAP = 1.15;
+    const MAIN_SOFTCAP = 1.15, ELEMENT_RATE = 2.5;
     function hitDamage(a, d, la, ld, mult = {}) {
       const main = ['ext', 'int'].reduce((sum, t) => {
         const atk = num(a[t + 'Atk']), denominator = MAIN_SOFTCAP * atk + num(d[t + 'Def']);
         return sum + (denominator ? atk * atk / denominator : 0);
       }, 0) * (1 + 0.005 * (la - ld));
       const elem = elements.reduce((sum, e) => sum + Math.max(0,
-        num(a[e + 'Atk']) - num(d[e + 'Def'])) * 1.5 * (mult[e] ?? 1), 0);
+        num(a[e + 'Atk']) - num(d[e + 'Def'])) * ELEMENT_RATE * (mult[e] ?? 1), 0);
       return { main, elem };
     }
     const combatCache = new WeakMap();
@@ -1099,8 +1107,11 @@
         costs(map).length === 0 && monsters(map).length > 0 &&
         ![20050, 20051, 20052, 20060, 20061, 20070].includes(num(map.id));
     }
+    function fieldMap(map) {
+      return farmMap(map) && num(map.id) >= 10000 && num(map.id) < 20000;
+    }
     function poolMaps(s) {
-      return array(s.maps).filter((m) => farmMap(m) && num(m.reqLevel) <= num(s.role?.level))
+      return array(s.maps).filter((m) => fieldMap(m) && num(m.reqLevel) <= num(s.role?.level))
         .sort((a, b) => num(b.reqLevel) - num(a.reqLevel) || num(a.id) - num(b.id)).slice(0, 6);
     }
     function scoreTargets(s, p, lastMap) {
@@ -1153,7 +1164,7 @@
     function normalMap(s, prefs, penalty = 0) {
       const eligible = array(s.maps).filter(
         (m) =>
-          farmMap(m) && num(m.reqLevel) <= num(s.role.level),
+          (prefs.battle.mapId ? farmMap(m) : fieldMap(m)) && num(m.reqLevel) <= num(s.role.level),
       );
       if (prefs.battle.mapId)
         return eligible.find((m) => num(m.id) === num(prefs.battle.mapId)) || null;
@@ -1273,6 +1284,7 @@
         ops: {},
         arena: { attempts: 0, lost: [] },
         activities: { zl: 0, camp: 0, bear: 0 },
+        welfare: { gold: 0, yuanbao: 0, bets: 0, periods: {} },
         tianlingUsedAt: 0,
         petHatched: [],
         keptEquipIds: [],
@@ -1293,6 +1305,10 @@
       out.exp = Math.max(out.exp, out.levelExp + out.skillExp + out.smeltExp + out.unclassifiedExp);
       out.ops = out.ops || {};
       out.activities = { zl: 0, camp: 0, bear: 0, ...out.activities };
+      out.welfare = { gold: 0, yuanbao: 0, bets: 0, periods: {}, ...out.welfare };
+      for (const key of ['gold', 'yuanbao', 'bets']) out.welfare[key] = Math.max(0, integer(out.welfare[key]));
+      out.welfare.periods = Object.fromEntries(Object.entries(out.welfare.periods || {})
+        .map(([key, value]) => [key, Math.max(0, integer(value))]));
       out.arena = { attempts: 0, lost: [], ...out.arena };
       out.petHatched = array(out.petHatched);
       out.keptEquipIds = array(out.keptEquipIds);
@@ -1524,6 +1540,46 @@
       return !!(arena && arena.enabled && arena.challenge && arena.rushMinutes > 0 &&
         left <= arena.rushMinutes * 60000);
     }
+    function welfareNumbers(text) {
+      const values = (String(text ?? '').normalize('NFKC').match(/[+-]?\d+/g) || []).map(Number);
+      return values.length === 3 && new Set(values).size === 3 &&
+        values.every((n) => Number.isInteger(n) && n >= 1 && n <= 25)
+        ? values.sort((a, b) => a - b) : null;
+    }
+    function randomNumbers(rand) {
+      const pick = (size) => {
+        if (rand) return Math.floor(rand() * size);
+        if (!globalThis.crypto?.getRandomValues) return Math.floor(Math.random() * size);
+        // Rejection sampling gives each remaining number the same probability.
+        const limit = 4294967296 - 4294967296 % size, value = new Uint32Array(1);
+        do { globalThis.crypto.getRandomValues(value); } while (value[0] >= limit);
+        return value[0] % size;
+      };
+      const pool = Array.from({ length: 25 }, (_, i) => i + 1), numbers = [];
+      for (let i = 0; i < 3; i++) numbers.push(pool.splice(pick(pool.length), 1)[0]);
+      return numbers.sort((a, b) => a - b);
+    }
+    function welfareStatus(s, p, ledger, now = Date.now()) {
+      const w = p.welfare, state = s?.welfare,
+        cost = (w.currency === 'GOLD' ? 100000 : 100) * w.multiplier,
+        serverNow = state ? num(state.serverTime) + now - num(state.at) : 0;
+      const result = { cost, serverNow, read: false, ready: false, reason: '' };
+      const blocked = (reason) => ({ ...result, reason });
+      if (!w.enabled) return blocked('自动投注已关闭');
+      if (!townFor(s || {}, NPC.lottery)) return blocked('没有可前往的苏州快活叁');
+      if (arenaRush(p, now)) return blocked('比武冲榜期间暂停投注');
+      if (!state || now - state.at > 600000 || serverNow >= state.drawAt)
+        return { ...result, read: true, reason: '等待读取期次' };
+      if (!state.accepting) return blocked('本期停止接受投注');
+      if (!(serverNow < state.closeAt - 30000)) return blocked('距封盘不足 30 秒，等待下期');
+      if (num(ledger?.welfare?.periods?.[state.period]) >= w.betsPerDraw) return blocked('本期投注注数已达上限');
+      if (w.dailyCost > 0 && num(ledger?.welfare?.[w.currency === 'GOLD' ? 'gold' : 'yuanbao']) + cost > w.dailyCost)
+        return blocked('今日' + (w.currency === 'GOLD' ? '金币' : '元宝') + '投注额度不足');
+      if (w.currency === 'GOLD' && num(s.role?.money) - cost < p.budget.moneyReserve)
+        return blocked('金币不足（需保留 ' + p.budget.moneyReserve.toLocaleString('zh-CN') + '）');
+      if (w.currency === 'YUANBAO' && num(s.role?.yuanbao) < cost) return blocked('元宝不足');
+      return { ...result, ready: true };
+    }
     function plans(s, prefs, ledger, now = Date.now()) {
       const p = config(prefs),
         out = [];
@@ -1570,6 +1626,21 @@
               { noResponse: true, setting },
             ),
           );
+      }
+      const welfare = welfareStatus(s, p, ledger, now);
+      if (welfare.read)
+        add(action('WELFARE_LOTTERY_COMMAND', { action: 'open', page: 0 }, '查询快活叁福彩期次', 'read', {
+          readOnly: true, responseType: 'WELFARE_LOTTERY_RESPONSE',
+        }));
+      else if (welfare.ready) {
+        const numbers = (p.welfare.pick === 'fixed' && welfareNumbers(p.welfare.numbers)) || randomNumbers();
+        const bet = action('WELFARE_LOTTERY_COMMAND', { action: 'bet', drawAt: s.welfare.drawAt,
+          numbers, currency: p.welfare.currency, multiplier: p.welfare.multiplier },
+          '快活叁福彩投注（第 ' + s.welfare.period + ' 期 · ' + numbers.join('、') + ' · ' + p.welfare.multiplier + '倍）',
+          'activity', { requiresTown: true, npc: NPC.lottery, responseType: 'WELFARE_LOTTERY_RESPONSE',
+            welfarePeriod: s.welfare.period });
+        bet.key = 'WELFARE_LOTTERY_COMMAND:bet';
+        add(bet);
       }
       if (p.activities.enabled) {
         const state = s.activityStatus || {},
@@ -2548,7 +2619,7 @@
       template,
       poolMaps, scoreTargets, survivalWeight, healPerSecond, scoringStatus, scoringText, SUSTAIN_LINE, LOW_HP_SHARE, HP_LINE,
       CRIT_BASE, CRIT_RATE, CRIT_FLOOR, CRIT_DEF_OFFSET, CRIT_DEF_RATE, CRIT_DEF_DIVISOR, critMultiplier,
-      MAIN_SOFTCAP, hitDamage, setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
+      MAIN_SOFTCAP, ELEMENT_RATE, hitDamage, setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
       equipmentStats,
       scoreStats,
       equipmentScore, characterScore, SCORE_UNIT, MONSTER_CRIT_SCALE, scoringDetail, SCORE_ATTRIBUTES,
@@ -2566,6 +2637,7 @@
       roleMap,
       townFor,
       farmMap,
+      fieldMap,
       normalMap,
       potionEffect,
       potionChoices,
@@ -2586,6 +2658,7 @@
       allowed,
       plans,
       arenaRush,
+      welfareNumbers, randomNumbers, welfareStatus,
       signature,
     };
   })();
@@ -2636,6 +2709,7 @@
       'CAMP_ENTER',
       'BEAR_ENTER',
       'ONLINE_LOTTERY_COMMAND',
+      'WELFARE_LOTTERY_COMMAND',
     ]);
     const readStorage = (key, fallback) => {
       try {
@@ -2777,7 +2851,7 @@
     function matchesResponse(waiter, packet) {
       if (waiter.doubleExp && (packet.success ?? packet.code === 200) &&
           !packet.data?.effects?.some((effect) => effect.type === 'DOUBLE_EXP_BUFF')) return false;
-      return packet.type === waiter.responseType && (!(['ARENA_COMMAND', 'PET_COMMAND', 'ONLINE_LOTTERY_COMMAND'].includes(waiter.type) || waiter.petHatch) ||
+      return packet.type === waiter.responseType && (!(['ARENA_COMMAND', 'PET_COMMAND', 'ONLINE_LOTTERY_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(waiter.type) || waiter.petHatch) ||
         packet.data?.requestId === waiter.requestId);
     }
     const statsFields = 'wall battle exp expBase gold sell potion hpPotions mpPotions kills deaths hpLost mpUsed low'.split(' ');
@@ -3062,19 +3136,25 @@
         this.socket = socket;
         this.sessionReady = false;
         this.authFailed = false;
+        this.welfareRequests = new Map();
         const send = socket.send;
         const bridge = this;
         socket.send = function (data) {
           if (typeof data === 'string') {
             try {
               const packet = JSON.parse(data);
+              if (packet.type === 'WELFARE_LOTTERY_COMMAND' && packet.payload?.requestId) {
+                bridge.welfareRequests.set(packet.payload.requestId, { action: packet.payload.action, page: packet.payload.page });
+                if (bridge.welfareRequests.size > 100)
+                  bridge.welfareRequests.delete(bridge.welfareRequests.keys().next().value);
+              }
               if (
                 packet.type === 'CONSIGNMENT_LIST' &&
                 P.num(packet.payload?.page) === 1 &&
                 !packet.payload?.myList
               )
                 bridge.cache.consignment.clear();
-              if (!bridge.sending && bridge.waiter && !bridge.waiter.petHatch && packet.type === bridge.waiter.type && !['ARENA_COMMAND', 'PET_COMMAND'].includes(packet.type))
+              if (!bridge.sending && bridge.waiter && !bridge.waiter.petHatch && packet.type === bridge.waiter.type && !['ARENA_COMMAND', 'PET_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(packet.type))
                 bridge.waiter.interference = true;
             } catch {}
           }
@@ -3142,6 +3222,9 @@
             this.cache.forgePreviews = {};
             this.cache.pets = null;
             this.cache.lottery = null;
+            this.cache.welfare = null;
+            this.cache.welfareHistory = null;
+            this.welfareRequests.clear();
             this.cache.arena = null;
             this.cache.arenaMatch = null;
             this.cache.trial = null;
@@ -3195,6 +3278,17 @@
             type === 'ONLINE_LOTTERY_RESPONSE' ? data?.state : null;
           if (lottery && typeof lottery.balance !== 'undefined')
             this.cache.lottery = { ...copy(lottery), at: Date.now() };
+          if (type === 'WELFARE_LOTTERY_RESPONSE') {
+            const request = this.welfareRequests.get(data?.requestId);
+            this.welfareRequests.delete(data?.requestId);
+            if (packet.success) {
+              const at = Date.now();
+              if (Number.isFinite(data?.state?.drawAt)) this.cache.welfare = { ...copy(data.state), at };
+              if (Array.isArray(data?.history) && (data.action === 'open' && (!request || request.page === 0) || data.action === 'bet' ||
+                  data.action === 'history' && request?.action === 'history' && request.page === 0))
+                this.cache.welfareHistory = { list: copy(data.history), at };
+            }
+          }
           if (type === 'PET_RESPONSE' && data?.state)
             this.cache.pets = { state: copy(data.state), at: Date.now() };
           if (type === 'ARENA_RESPONSE' && data) {
@@ -3401,6 +3495,8 @@
           pets: this.cache.pets ? { ...copy(this.cache.pets.state), at: this.cache.pets.at } : null,
           arena: this.cache.arena || null,
           lottery: this.cache.lottery || null,
+          welfare: this.cache.welfare || null,
+          welfareHistory: this.cache.welfareHistory || null,
           combat: this.statsRates?.() || null,
           arenaMatch: this.cache.arenaMatch || null,
           trial: this.cache.trial ? { ...this.cache.trial.trial, at: this.cache.trial.at } : null,
@@ -3442,6 +3538,9 @@
         if (!c) return;
         const t = packet.type,
           d = packet.data;
+        if (t === 'WELFARE_LOTTERY_RESPONSE' &&
+            (!packet.success || d?.action !== 'bet' || this.waiter?.type !== 'WELFARE_LOTTERY_COMMAND' ||
+              !matchesResponse(this.waiter, packet))) return;
         const direct = [
           'ENTER_GAME',
           'LEVEL_UP',
@@ -3471,7 +3570,7 @@
           'BEAR_ENTER',
         ];
         const nested = [
-          'ARENA_RESPONSE', 'PET_RESPONSE', 'TRIAL_RESPONSE', 'ONLINE_LOTTERY_RESPONSE',
+          'ARENA_RESPONSE', 'PET_RESPONSE', 'TRIAL_RESPONSE', 'ONLINE_LOTTERY_RESPONSE', 'WELFARE_LOTTERY_RESPONSE',
           'USE_ITEM_RESPONSE',
           'CALC_MONSTER_DROP_RESPONSE',
           'CALC_MAP_DROP_RESPONSE',
@@ -3533,7 +3632,7 @@
             this.sending = false;
           }
         }
-        if (['ARENA_COMMAND', 'PET_COMMAND', 'TRIAL_COMMAND', 'ONLINE_LOTTERY_COMMAND'].includes(action.type) || action.petHatch)
+        if (['ARENA_COMMAND', 'PET_COMMAND', 'TRIAL_COMMAND', 'ONLINE_LOTTERY_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(action.type) || action.petHatch)
           action.payload = { ...action.payload, requestId:
             globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
               .replace(/[xy]/g, (c) => {
@@ -4441,6 +4540,33 @@
         this.log('批量出售没有得到确认，本次运行改为逐件出售', 'warning');
         this.saveLedger();
       }
+      welfareResult(a, before, result, error) {
+        const success = !!(result && (result.success ?? result.code === 200)),
+          unknown = !result || !success && !!result.data?.retryable,
+          receipt = result?.data?.receipt,
+          period = receipt?.period ?? a.welfarePeriod ?? before.welfare?.period ?? String(a.payload.drawAt),
+          cost = (a.payload.currency === 'GOLD' ? 100000 : 100) * a.payload.multiplier;
+        if (success || unknown) {
+          const ledger = this.ledger.welfare || (this.ledger.welfare = P.freshLedger(this.ledger.day).welfare),
+            currency = a.payload.currency === 'GOLD' ? 'gold' : 'yuanbao';
+          ledger[currency] += cost;
+          ledger.bets++;
+          ledger.periods[period] = P.num(ledger.periods[period]) + 1;
+        }
+        if (success)
+          this.log('福彩投注成功：第 ' + period + ' 期 · ' +
+            (receipt?.numbers || a.payload.numbers).join('、') + ' · ' +
+            (receipt?.multiplier ?? a.payload.multiplier) + '倍', 'success');
+        else {
+          this.log('福彩投注' + (unknown ? '结果未确认，已按投注计入额度，本期不再尝试' : '失败') +
+            '：' + safeMessage(error?.message || result?.message || '未收到确认'), 'warning');
+          const state = before.welfare,
+            serverNow = state ? P.num(state.serverTime) + Date.now() - P.num(state.at) : Date.now();
+          this.suppress(a, Math.max(60000, Math.min(1800000, P.num(a.payload.drawAt) - serverNow)));
+          delete this.bridge.cache.welfare;
+        }
+        this.saveLedger();
+      }
       async execute(a) {
         if (!this.acquireLease()) {
           this.reason = '此角色已在另一标签页托管';
@@ -4448,6 +4574,7 @@
         }
         const arenaClaim = a.type === 'ARENA_COMMAND' && a.payload.action === 'claim';
         const lotteryDraw = a.type === 'ONLINE_LOTTERY_COMMAND' && a.payload.action === 'draw';
+        const welfareBet = a.type === 'WELFARE_LOTTERY_COMMAND' && a.payload.action === 'bet';
         const trialAction = a.type === 'TRIAL_COMMAND' && a.payload.action !== 'status',
           trialSignature = () => JSON.stringify(['revision', 'balances', 'inbox', 'weapon', 'level']
             .map((key) => this.bridge.cache.trial?.trial?.[key])),
@@ -4469,7 +4596,7 @@
         this.busy = true;
         this.action = a;
         this.reason = a.label;
-        this.charge(a);
+        if (!welfareBet) this.charge(a);
         // Stamped before sending: an unanswered request must not lead to a second pill.
         if (a.doubleExp) {
           this.ledger.tianlingUsedAt = Date.now();
@@ -4479,6 +4606,7 @@
         this.paint();
         try {
           const result = await this.bridge.request(a, this.prefs.requestTimeoutMs);
+          if (welfareBet) { this.welfareResult(a, before, result); return; }
           if (a.petHatch && (result.success ?? result.code === 200)) {
             await this.bridge.request({ type: 'PET_COMMAND', payload: { action: 'list', petId: '' },
               responseType: 'PET_RESPONSE', readOnly: true }, this.prefs.requestTimeoutMs);
@@ -4579,6 +4707,12 @@
             this.pause('金币已低于保留额度，请核对当前资源');
           this.saveLedger();
         } catch (e) {
+          if (welfareBet) { this.welfareResult(a, before, null, e); return; }
+          if (a.type === 'WELFARE_LOTTERY_COMMAND') {
+            this.log(safeMessage(e.message), 'warning');
+            this.suppress(a, 60000);
+            return;
+          }
           if (a.type === 'SHOP_SELL_BATCH') { this.batchFallback(); return; }
           if (a.family === 'pet' && String(e.message).includes('请先结束战斗')) {
             this.log(safeMessage(e.message), 'warning');
@@ -5425,7 +5559,7 @@
         else if (options.choices)
           control = `<select class="wide" data-path="${path}" aria-label="${esc(label)}">${options.choices.map(([v, t]) => `<option value="${esc(v)}" ${String(value) === String(v) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
         else
-          control = `<input type="${Array.isArray(value) ? 'text' : 'number'}" data-path="${path}" value="${esc(Array.isArray(value) ? value.join(',') : value)}" min="${options.min ?? 0}" ${options.max != null ? 'max="' + options.max + '"' : ''} ${options.step != null ? 'step="' + options.step + '"' : ''} aria-label="${esc(label)}">`;
+          control = `<input type="${options.type === 'text' || Array.isArray(value) ? 'text' : 'number'}" data-path="${path}" value="${esc(Array.isArray(value) ? value.join(',') : value)}" min="${options.min ?? 0}" ${options.max != null ? 'max="' + options.max + '"' : ''} ${options.step != null ? 'step="' + options.step + '"' : ''} aria-label="${esc(label)}">`;
         return `<label class="field"><span>${esc(label)}</span>${control}</label>`;
       }
       renderBody() {
@@ -5466,7 +5600,15 @@
             f('没有双倍经验时自动使用天灵丹', 'activities.tianlingUse') +
             f('自动抽取在线抽奖次数（需回苏州）', 'activities.lotteryDraw') +
             f('攒够多少次抽一次（当天次数发完时也会抽）', 'activities.lotteryBatch') +
-            '<div class="hint">珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合原游戏返回的资格数据核对。</div></div><div class="section"><h3>比武天梯</h3>' +
+            '<div class="hint">珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合原游戏返回的资格数据核对。</div></div><div class="section"><h3>快活叁福彩</h3>' +
+            f('自动投注（需回苏州）', 'welfare.enabled') +
+            f('币种', 'welfare.currency', { choices: [['GOLD', '金币 · 10万/倍'], ['YUANBAO', '元宝 · 100/倍（奖金为赠送元宝）']] }) +
+            f('倍数（1～5）', 'welfare.multiplier', { min: 1, max: 5, step: 1 }) +
+            f('每期投几注', 'welfare.betsPerDraw', { min: 1, max: 10, step: 1 }) +
+            f('每日投注上限（所选币种，0 为不限）', 'welfare.dailyCost', { step: 1 }) +
+            f('选号', 'welfare.pick', { choices: [['random', '每注随机'], ['fixed', '固定号码']] }) +
+            f('固定号码（3 个 1～25 的不同数字，如 3,8,15）', 'welfare.numbers', { type: 'text' }) +
+            '<div class="hint welfare-status">' + this.welfareHTML(s, status.ledger) + '</div></div><div class="section"><h3>比武天梯</h3>' +
             f('自动比武（总开关）', 'arena.enabled') +
             f('每日点赞', 'arena.like') +
             f('领取名次奖励（需回洛阳）', 'arena.claim') +
@@ -5656,6 +5798,24 @@
               .join('')
           : '<div class="hint">暂无动作记录。</div>';
       }
+      welfareHTML(s, ledger, now = Date.now()) {
+        const P = TLPolicy, state = s?.welfare, used = ledger?.welfare || {},
+          status = P.welfareStatus(s, P.config(this.pending), ledger, now),
+          fmt = (n) => P.num(n).toLocaleString('zh-CN');
+        const lines = [state ? '第 ' + state.period + ' 期 · ' +
+          (state.accepting && status.serverNow < state.closeAt ? '接受投注' : '停止接受投注') : '未读取期次',
+          '今日投注 ' + fmt(used.bets) + ' 注 · 金币支出 ' + fmt(used.gold) + ' · 元宝支出 ' + fmt(used.yuanbao)];
+        if (status.reason) lines.push(status.reason);
+        if (s?.welfareHistory) {
+          const list = P.array(s.welfareHistory.list),
+            total = (currency, field) => list.filter((bet) => bet.currency === currency &&
+              (field !== 'prize' || bet.hits != null)).reduce((sum, bet) => sum + P.num(bet[field]), 0);
+          lines.push('游戏返回的最近投注：' + list.length + ' 注 · 总投注额 ' + fmt(total('GOLD', 'cost')) +
+            ' 金币 / ' + fmt(total('YUANBAO', 'cost')) + ' 元宝 · 已开奖总奖金 ' + fmt(total('GOLD', 'prize')) +
+            ' 金币 / ' + fmt(total('YUANBAO', 'prize')) + ' 赠送元宝 · 未开奖 ' + list.filter((bet) => bet.hits == null).length + ' 注');
+        } else lines.push('游戏返回的最近投注：未读取');
+        return lines.map(esc).join('<br>');
+      }
       updateHTML(u) {
         const sections = Array.isArray(u.notes?.sections) ? u.notes.sections : [];
         return `<div class="update-summary"><div class="notice">当前运行 v${esc(u.currentVersion)}${u.latestVersion ? ' · GitHub 最新版本 v' + esc(u.latestVersion) : ''}${u.newer ? '<br>发现新版本。' : ''}</div><div class="hint">新版本由 Tampermonkey 自动安装（默认每天检查一次），页面刷新后生效。托管运行并开启“页面刷新后恢复托管”时，脚本发现新版本会自动刷新页面：立即一次，之后每 6 小时一次，每个版本最多 5 次。想立即更新，点“安装新版本”，在 Tampermonkey 页面确认后刷新游戏。</div>${u.newer && u.apply?.exhausted ? '<div class="hint">已自动刷新 5 次仍是旧版本，请点“安装新版本”。</div>' : ''}${u.notes ? `<h3>${esc(u.notes.title)}</h3>${sections.map((s) => `<div class="hint"><strong>${esc(s.title)}</strong></div><ul>${s.items.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`).join('')}` : u.newer ? '<div class="hint">更新内容暂未读取，可在发布页查看。</div>' : ''}<div class="hint">${u.busy ? '正在读取公开版本信息' : u.error ? esc(u.error) : u.checkedAt ? '最近检查：' + esc(new Date(u.checkedAt).toLocaleString()) : '尚未检查公开版本'}${u.nextCheckAt ? '<br>下次可检查：' + esc(new Date(u.nextCheckAt).toLocaleString()) : ''}<br>自动检查每天一次，手动检查间隔至少 60 秒。</div><div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开发布页</button>${u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : ''}</div><div class="section"><h3>选择自动更新</h3><div class="hint">在油猴管理面板打开本脚本的设置，启用“检查更新”。实际自动安装由油猴执行；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。</div></div></div>`;
@@ -5710,7 +5870,7 @@
           `人物实战评分 = ${p.SCORE_UNIT} × ln（当前实战值 ÷ 不穿任何装备的实战值）`,
           '每次伤害 = 命中率 ×［主伤害 ×（1 +（会心倍率 − 1）× 会心率）+ 元素伤害］',
           `主伤害 =［外攻² ÷（${p.MAIN_SOFTCAP} × 外攻 + 对方外防）+ 内攻² ÷（${p.MAIN_SOFTCAP} × 内攻 + 对方内防）］×（1 + 0.005 × 等级差）`,
-          '元素伤害 = Σ max(0, 元素攻击 − 对方抗性) × 1.5 ×（1 + 被动加成）',
+          '元素伤害 = Σ max(0, 元素攻击 − 对方抗性) × ' + TLPolicy.ELEMENT_RATE + ' ×（1 + 被动加成）',
           `命中率 = 命中 ÷（命中 + 对方闪避）；会心率 = 会心 ÷（会心 + 对方会防），怪物打你时再 × ${p.MONSTER_CRIT_SCALE}`,
           `会心一击只放大主伤害：倍率 = ${p.CRIT_BASE} + ${p.CRIT_RATE} × max(0, 会心 − max(${p.CRIT_FLOOR}, (${p.CRIT_DEF_OFFSET} + ${p.CRIT_DEF_RATE} × 对方会防) ÷ ${p.CRIT_DEF_DIVISOR}))`,
           '对方防御被技能削弱、被眩晕的时间按“持续时间 ÷ 冷却”折算',
@@ -5790,6 +5950,10 @@
           this.statsKey !== this.statsHTML(s.stats, this.controller.bridge.state()?.maps)) this.renderBody();
         if (this.section === 'score' && !this.dirty && Date.now() - this.scorePaintAt >= 5000 &&
           this.scoreKey !== this.scoreHTML(s, TLPolicy.scoringDetail(this.controller.bridge.state(), this.pending))) this.renderBody();
+        if (this.section === 'battle') {
+          const welfare = this.root.querySelector('.welfare-status');
+          if (welfare) welfare.innerHTML = this.welfareHTML(this.controller.bridge.state(), s.ledger);
+        }
         const card = (kind, label, value) =>
           `<div data-budget="${kind}"><span class="budget-title">${label}</span><span>${value}</span></div>`;
         this.root.querySelector('.summary').innerHTML =
