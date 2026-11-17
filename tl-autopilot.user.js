@@ -3350,6 +3350,12 @@
         if (this.waiter !== waiter) return;
         this.waiter = null;
         clearTimeout(waiter.timer);
+        if (error.code === 'RESPONSE_TIMEOUT') {
+          this.lateWaiters ||= new Set();
+          waiter.lateUntil = Date.now() + 120000;
+          this.lateWaiters.add(waiter);
+          waiter.lateTimer = setTimeout(() => this.lateWaiters.delete(waiter), 120000);
+        }
         waiter.reject(error);
       }
       installSocketHook() {
@@ -3558,6 +3564,19 @@
           this.packetTypes.push({ type, time: this.lastMessage });
           this.packetTypes = this.packetTypes.slice(-40);
           const waiter = this.waiter;
+          const answered = waiter && matchesResponse(waiter, packet);
+          if (answered) waiter.answered = true;
+          for (const late of this.lateWaiters || []) {
+            if (Date.now() >= late.lateUntil) {
+              this.lateWaiters.delete(late);
+              clearTimeout(late.lateTimer);
+            } else if (!answered && late.socket === socket && matchesResponse(late, packet)) {
+              this.lateWaiters.delete(late);
+              clearTimeout(late.lateTimer);
+              this.onLateResponse?.(late, packet, Math.max(0, Date.now() - late.started));
+              break;
+            }
+          }
           if (type === 'ERROR' && waiter)
             this.rejectWaiter(
               waiter,
@@ -3903,22 +3922,28 @@
             doubleExp: action.doubleExp,
             resolve,
             reject,
+            answered: false,
             interference: false,
             socket: this.socket,
             started: Date.now(),
           };
-          waiter.timer = setTimeout(
-            () =>
-              this.rejectWaiter(
+          const onTimeout = () => {
+            if (this.waiter !== waiter || waiter.answered) return;
+            if (!waiter.graceUsed && Date.now() - waiter.started > timeout + 5000) {
+              waiter.graceUsed = true;
+              waiter.timer = setTimeout(onTimeout, 3000);
+              return;
+            }
+            this.rejectWaiter(
+              waiter,
+              this.requestError(
                 waiter,
-                this.requestError(
-                  waiter,
-                  'RESPONSE_TIMEOUT',
-                  waiter.label + '：响应超时，结果未确认',
-                ),
+                'RESPONSE_TIMEOUT',
+                waiter.label + '：响应超时，结果未确认',
               ),
-            timeout,
-          );
+            );
+          };
+          waiter.timer = setTimeout(onTimeout, timeout);
           this.waiter = waiter;
           this.sending = true;
           try {
@@ -4455,6 +4480,8 @@
         this.reloads = readStorage(PREFIX + ':reloads', []);
         this.bridge = new Bridge((text, level) => this.log(text, level));
         this.bridge.onMessage = (type, packet) => this.received(type, packet);
+        this.bridge.onLateResponse = (waiter, packet, elapsedMs) =>
+          this.log(waiter.label + '：服务器迟到的回应已收到（' + Math.round(elapsedMs / 1000) + ' 秒）', 'info');
         this.bridge.recordStats = (packet) => {
           const own = this.bridge.character()?.role,
             sent = packet.data?.roleInfo?.role || packet.data?.role,
@@ -4651,20 +4678,7 @@
           const s = this.bridge.state();
           if (!s) return;
           this.setRole(P.num(s.role.id));
-        this.cleanPetLedger(s.pets);
-          this.enabled = false;
-          await this.execute({
-            kind: 'request',
-            type: 'ENTER_GAME',
-            payload: {},
-            label: '重新读取角色，核对上个动作结果',
-            family: 'read',
-            moneyCost: 0,
-            expCost: 0,
-            readOnly: true,
-            key: 'reconcile-role',
-          });
-          if (this.uncertain) return;
+          this.cleanPetLedger(s.pets);
         }
         this.enabled = true;
         this.lastPause = null;
@@ -4673,7 +4687,26 @@
         this.reason = '正在检查角色与策略';
         if (!wasUncertain) this.suppressed.clear();
         this.log('完整托管已开始');
+        if (wasUncertain && this.bridge.connected && this.bridge.sessionReady) {
+          await this.reconcileRole();
+          if (this.uncertain || !this.enabled) return;
+        }
         this.tick().catch((e) => this.pause(e.message));
+      }
+      async reconcileRole(now = Date.now()) {
+        if (this.busy || now - (this.lastReconcileAt ?? -Infinity) < 30000) return;
+        this.lastReconcileAt = now;
+        await this.execute({
+          kind: 'request',
+          type: 'ENTER_GAME',
+          payload: {},
+          label: '重新读取角色，核对上个动作结果',
+          family: 'read',
+          moneyCost: 0,
+          expCost: 0,
+          readOnly: true,
+          key: 'reconcile-role',
+        });
       }
       pause(reason = '已暂停托管', byUser = false) {
         this.lastPause = { at: Date.now(), reason, byUser };
@@ -5049,6 +5082,20 @@
             this.pause('金币已低于保留额度，请核对当前资源');
           this.saveLedger();
         } catch (e) {
+          const timedOut = e.code === 'RESPONSE_TIMEOUT', now = Date.now();
+          if (timedOut)
+            this.responseTimeouts = [...(this.responseTimeouts || []).filter((at) => now - at < 600000), now];
+          const timeoutPause = timedOut && this.responseTimeouts.length >= 3
+            ? '服务器 10 分钟内 3 次没有回应（最近一次：' + a.label + '）；请检查网络或游戏服务器后重新开始'
+            : null;
+          if (timedOut && a.readOnly && a.key !== 'reconcile-role') {
+            this.log(a.label + '：服务器没有及时回应，稍后重试', 'warning');
+            this.suppress(a, 300000);
+            this.saveLedger();
+            if (timeoutPause) this.pause(timeoutPause);
+            return;
+          }
+          // Action-specific recoveries below cover timeouts too and never pause.
           if (welfareBet) { this.welfareResult(a, before, null, e); return; }
           if (a.type === 'WELFARE_LOTTERY_COMMAND') {
             this.log(safeMessage(e.message), 'warning');
@@ -5098,7 +5145,10 @@
           }
           this.suppress(a, 3600000);
           this.saveLedger();
-          if (!this.bridge.connected && this.prefs.reconnect.enabled)
+          if (timeoutPause) this.pause(timeoutPause);
+          else if (timedOut && this.prefs.reconnect.enabled)
+            this.log(a.label + '：响应超时，结果未确认；先重新读取角色核对结果，再继续托管', 'warning');
+          else if (!this.bridge.connected && this.prefs.reconnect.enabled)
             this.log(safeMessage(e.message), 'warning');
           else this.pause(safeMessage(e.message) + '；请核对角色后重新开始');
         } finally {
@@ -5194,6 +5244,12 @@
           return;
         }
         if (this.busy || now - this.lastLocal < 1200) return;
+        if (this.uncertain) {
+          this.reason = '等待重新读取角色，核对上个动作结果';
+          await this.reconcileRole(now);
+          this.paint();
+          return;
+        }
         this.updateGearCheck(s, now);
         if (this.maybeApplyUpdate(now)) return;
         if (P.num(s.role.mapId) === 20070 || s.trial?.run) {
