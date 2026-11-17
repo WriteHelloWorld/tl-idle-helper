@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TL挂机助手
 // @namespace    https://github.com/YatsukiRenka/tl-idle-helper
-// @version      0.3.0
+// @version      0.3.1
 // @author       YatsukiRenka（基于 doai 的原作与 JimChan 的衍生版）
 // @description  日常、挂机、成长、装备回收、宝石与工艺；串行动作、资源预算、原页面战斗及每日版本检查。
 // @match        https://tl.jayczee.top/*
@@ -4827,7 +4827,7 @@
             active: s?.pets?.pets.find((entry) => entry.pet.id === s.pets.activePetId) || null,
             eggs: s ? P.petEggs(s).reduce((sum, item) => sum + P.num(item.count), 0) : null,
             list: s?.pets?.pets || null },
-          version: '0.3.0',
+          version: '0.3.1',
         };
       }
       received(type, packet) {
@@ -5637,7 +5637,7 @@
     class Checker {
       constructor(controller) {
         this.controller = controller;
-        this.currentVersion = '0.3.0';
+        this.currentVersion = '0.3.1';
         this.busy = false;
         this.onChange = () => {};
         this.timer = null;
@@ -5817,7 +5817,7 @@
         });
         document.documentElement.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: 'open' });
-        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.3.0</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.3.1</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
         this.root.addEventListener('click', (e) => {
           const b = e.target.closest('button');
           if (!b) return;
