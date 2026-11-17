@@ -536,6 +536,12 @@
       return ctx;
     }
     const MONSTER_CRIT_SCALE = 0.66; // Measured factor; mechanism unknown.
+    const CRIT_BASE = 1.5, CRIT_RATE = 0.005, CRIT_FLOOR = 60;
+    const CRIT_DEF_OFFSET = 70, CRIT_DEF_RATE = 7, CRIT_DEF_DIVISOR = 3;
+    function critMultiplier(critRate, critDef) {
+      return CRIT_BASE + CRIT_RATE * Math.max(0, critRate - Math.max(CRIT_FLOOR,
+        (CRIT_DEF_OFFSET + CRIT_DEF_RATE * critDef) / CRIT_DEF_DIVISOR));
+    }
     function combatParts(values, ctx) {
       const plus = (a, b) => Object.fromEntries(Object.keys(WEIGHTS).map((k) =>
         [k, Math.max(0, num(a[k]) + num(b[k]))]));
@@ -544,7 +550,7 @@
       const damage = (a, d, la, ld, mult = {}, critScale = 1) => {
         const { main, elem } = hitDamage(a, d, la, ld, mult);
         return ratio(num(a.precision), num(d.avoidance)) *
-          (main * (1 + 0.5 * critScale * ratio(num(a.critRate), num(d.critDef))) + elem);
+          (main * (1 + (critMultiplier(num(a.critRate), num(d.critDef)) - 1) * critScale * ratio(num(a.critRate), num(d.critDef))) + elem);
       };
       let out = 0, taken = 0, weight = 0;
       for (const target of ctx.targets) {
@@ -2541,6 +2547,7 @@
       lookup,
       template,
       poolMaps, scoreTargets, survivalWeight, healPerSecond, scoringStatus, scoringText, SUSTAIN_LINE, LOW_HP_SHARE, HP_LINE,
+      CRIT_BASE, CRIT_RATE, CRIT_FLOOR, CRIT_DEF_OFFSET, CRIT_DEF_RATE, CRIT_DEF_DIVISOR, critMultiplier,
       MAIN_SOFTCAP, hitDamage, setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
       equipmentStats,
       scoreStats,
@@ -5701,10 +5708,11 @@
           `分数 = ${p.SCORE_UNIT} × ln（实战值之比）；每 100 分约等于 1%`,
           `单件装备分数 = ${p.SCORE_UNIT} × ln（穿上它的实战值 ÷ 该部位空着的实战值）`,
           `人物实战评分 = ${p.SCORE_UNIT} × ln（当前实战值 ÷ 不穿任何装备的实战值）`,
-          '每次伤害 = 命中率 ×［主伤害 ×（1 + 0.5 × 会心率）+ 元素伤害］',
+          '每次伤害 = 命中率 ×［主伤害 ×（1 +（会心倍率 − 1）× 会心率）+ 元素伤害］',
           `主伤害 =［外攻² ÷（${p.MAIN_SOFTCAP} × 外攻 + 对方外防）+ 内攻² ÷（${p.MAIN_SOFTCAP} × 内攻 + 对方内防）］×（1 + 0.005 × 等级差）`,
           '元素伤害 = Σ max(0, 元素攻击 − 对方抗性) × 1.5 ×（1 + 被动加成）',
           `命中率 = 命中 ÷（命中 + 对方闪避）；会心率 = 会心 ÷（会心 + 对方会防），怪物打你时再 × ${p.MONSTER_CRIT_SCALE}`,
+          `会心一击只放大主伤害：倍率 = ${p.CRIT_BASE} + ${p.CRIT_RATE} × max(0, 会心 − max(${p.CRIT_FLOOR}, (${p.CRIT_DEF_OFFSET} + ${p.CRIT_DEF_RATE} × 对方会防) ÷ ${p.CRIT_DEF_DIVISOR}))`,
           '对方防御被技能削弱、被眩晕的时间按“持续时间 ÷ 冷却”折算',
           `输出按技能轮转加权（冷却越短出手越多）；多段技能按段数 × 每段比例计，群攻技能按当前平均在场怪物数（${status?.scoring?.aoeTargets === undefined ? '1' : status.scoring.aoeTargets.toFixed(1)}）计；对参照怪物取平均；受击伤害用同一组公式反过来算`,
           '自动生存权重 = 生命药费 ÷（击杀金币 + 出售收入）+ 危险度',
