@@ -106,6 +106,8 @@
       keepAwake: true,
       tickMs: 1000,
       requestTimeoutMs: 10000,
+      logs: { level: 'all', keepDays: 7, showCount: 100 },
+      storage: { indexedDB: true },
       budget: {
         moneyReserve: 10000,
         expReserve: 0,
@@ -253,6 +255,9 @@
       }
       const p = merge(DEFAULTS, value);
       p.version = 2;
+      if (!['all', 'notice', 'warning'].includes(p.logs.level)) p.logs.level = 'all';
+      p.logs.keepDays = Math.max(1, Math.min(90, integer(p.logs.keepDays, 7)));
+      p.logs.showCount = Math.max(20, Math.min(500, integer(p.logs.showCount, 100)));
       p.sell.batchMin = Math.max(1, Math.min(20, integer(p.sell.batchMin, 5)));
       p.pets.keepMinAverage = Math.max(0, Math.min(200, num(p.pets.keepMinAverage)));
       p.pets.feedKeepExp = Math.max(0, num(p.pets.feedKeepExp));
@@ -295,6 +300,56 @@
       p.potions.mpThreshold = Math.max(10, Math.min(80, integer(p.potions.mpThreshold, 50)));
       if (!['fit', 'weak', 'strong', 'smart'].includes(p.potions.order)) p.potions.order = 'fit';
       return p;
+    }
+    function logFilter(entries, level) {
+      return entries.filter((entry) => level === 'warning' ? entry.level === 'warning'
+        : level === 'notice' ? ['success', 'warning'].includes(entry.level) : true);
+    }
+    function logCutoff(keepDays, now) {
+      return now - Math.max(1, Math.min(90, integer(keepDays, 7))) * 86400000;
+    }
+    function logPrune(entries, keepDays, now = Date.now()) {
+      return entries.map((entry) => Number.isFinite(entry.at) ? entry : { ...entry, at: now })
+        .filter((entry) => entry.at >= logCutoff(keepDays, now));
+    }
+    function logSize(entries) {
+      let bytes = 0;
+      for (const char of JSON.stringify(entries)) {
+        const code = char.codePointAt(0);
+        bytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
+      }
+      return bytes;
+    }
+    function logSummary(entries) {
+      return { count: entries.length, bytes: logSize(entries) };
+    }
+    function logCombine(...summaries) {
+      const count = summaries.reduce((sum, item) => sum + item.count, 0);
+      return { count, bytes: count ? 1 + summaries.reduce((sum, item) =>
+        sum + (item.count ? item.bytes - 1 : 0), 0) : 2 };
+    }
+    function logMissing(entries, saved) {
+      const key = (entry) => JSON.stringify([entry.at, entry.time, entry.level, entry.text]), counts = new Map();
+      for (const entry of saved) counts.set(key(entry), (counts.get(key(entry)) || 0) + 1);
+      return entries.filter((entry) => {
+        const id = key(entry), count = counts.get(id) || 0;
+        if (!count) return true;
+        counts.set(id, count - 1);
+        return false;
+      });
+    }
+    function logTime(at) {
+      const date = new Date(at), pad = (value) => String(value).padStart(2, '0');
+      return [date.getHours(), date.getMinutes(), date.getSeconds()].map(pad).join(':');
+    }
+    function logText(entries, now = Date.now()) {
+      const pad = (value) => String(value).padStart(2, '0');
+      return entries.slice().reverse().map((entry) => Number.isFinite(entry.at) ? entry : { ...entry, at: now })
+        .sort((a, b) => a.at - b.at).map((entry) => {
+          const date = new Date(entry.at), day = [date.getFullYear(), pad(date.getMonth() + 1), pad(date.getDate())].join('-');
+          return day + ' ' + logTime(entry.at) + ' [' + ({ info: '信息', success: '成功', warning: '警告' }[entry.level] || '信息') +
+            '] ' + String(entry.text).replace(/[\r\n]+/g, ' ');
+        }).join('\n');
     }
     const camel = (k) => {
       const s = String(k);
@@ -2823,6 +2878,7 @@
       return [];
     }
     return {
+      logFilter, logPrune, logSize, logText, logCutoff, logSummary, logCombine, logMissing, logTime,
       fillPicks, slotChoices, charmUsable, charmCompatible,
       WAREHOUSE_CAPACITY,
       mapChoices,
@@ -2995,6 +3051,78 @@
         )
         .replace(/\bBearer\s+[A-Za-z0-9_.\/+\-=]+/gi, 'Bearer [redacted]')
         .slice(0, 260);
+    function createLogStore(factory = typeof indexedDB === 'undefined' ? null : indexedDB) {
+      let database = null, opening = null;
+      const transaction = (mode, run) => new Promise((resolve, reject) => {
+        try {
+          const tx = database.transaction('logs', mode);
+          let result;
+          tx.oncomplete = () => resolve(result);
+          tx.onabort = tx.onerror = () => reject(tx.error || new Error('日志数据库事务失败'));
+          run(tx.objectStore('logs'), (value) => { result = value; });
+        } catch (error) { reject(error); }
+      });
+      return {
+        supported: !!factory,
+        open() {
+          if (database) return Promise.resolve();
+          if (opening) return opening;
+          opening = new Promise((resolve, reject) => {
+            const request = factory.open(PREFIX, 1);
+            request.onupgradeneeded = () => {
+              const store = request.result.createObjectStore('logs', { autoIncrement: true });
+              store.createIndex('at', 'at');
+            };
+            request.onerror = () => reject(request.error || new Error('无法打开日志数据库'));
+            request.onblocked = () => reject(new Error('数据库被其他页面占用'));
+            request.onsuccess = () => {
+              database = request.result;
+              database.onversionchange = () => { database.close(); database = null; opening = null; };
+              resolve();
+            };
+          }).catch((error) => { opening = null; throw error; });
+          return opening;
+        },
+        append(entries) {
+          return transaction('readwrite', (store) => { for (const entry of entries) store.add(entry); });
+        },
+        read(limit = Infinity) {
+          return transaction('readonly', (store, done) => {
+            const entries = [], request = store.index('at').openCursor(null, 'prev');
+            request.onsuccess = () => {
+              const cursor = request.result;
+              if (!cursor || entries.length >= limit) return done(entries);
+              entries.push(cursor.value);
+              cursor.continue();
+            };
+          });
+        },
+        summary() {
+          return transaction('readonly', (store, done) => {
+            let summary = P.logSummary([]);
+            const request = store.openCursor();
+            request.onsuccess = () => {
+              const cursor = request.result;
+              if (!cursor) return done(summary);
+              summary = P.logCombine(summary, P.logSummary([cursor.value]));
+              cursor.continue();
+            };
+          });
+        },
+        prune(cutoff) {
+          return transaction('readwrite', (store) => {
+            const request = store.index('at').openCursor(IDBKeyRange.upperBound(cutoff, true));
+            request.onsuccess = () => {
+              const cursor = request.result;
+              if (cursor) { cursor.delete(); cursor.continue(); }
+            };
+          });
+        },
+        clear() {
+          return transaction('readwrite', (store) => { store.clear(); });
+        },
+      };
+    }
     function createKeepAwake(name) {
       let held = false, release = null;
       return {
@@ -4540,7 +4668,7 @@
         writeStorage(PREFIX + ':monsters', null);
         this.log('已重置评分数据：生存权重从现在起重新统计，怪物属性将重新读取');
       }
-      constructor() {
+      constructor({ logStore = createLogStore() } = {}) {
         this.prefs = P.config(readStorage(CONFIG, {}));
         writeStorage(CONFIG, this.prefs);
         this.enabled = !!(
@@ -4549,8 +4677,13 @@
         );
         this.reason = '等待游戏角色';
         const logs = readStorage(PREFIX + ':log', []);
-        this.logs = Array.isArray(logs) && logs.every((v) => v && ['time', 'level', 'text'].every((k) => typeof v[k] === 'string')) ? logs.slice(0, 60) : [];
-        this.logWriteAt = 0;
+        this.logs = P.logPrune(Array.isArray(logs) && logs.every((v) => v && ['time', 'level', 'text'].every((k) => typeof v[k] === 'string')) ? logs.slice(0, 60) : [], this.prefs.logs.keepDays);
+        this.logStore = logStore;
+        this.logQueue = [];
+        this.logBatches = new Set();
+        this.logDatabaseUsage = P.logSummary([]);
+        this.logWriteAt = Date.now();
+        this.logEpoch = 0;
         this.lastPause = readStorage(PREFIX + ':lastPause', null);
         if (!Number.isFinite(this.lastPause?.at) || typeof this.lastPause.reason !== 'string' || typeof this.lastPause.byUser !== 'boolean') this.lastPause = null;
         this.busy = false;
@@ -4593,6 +4726,8 @@
           if (!this.prefs.reconnect.enabled) this.pause('连接中断，自动恢复已关闭');
         };
         this.paint = () => {};
+        this.logReady = this.syncLogStorage();
+        this.logPruneTimer = setInterval(() => this.pruneLogs(), 3600000);
         if (this.logs.length) this.log('—— 页面重新加载 ——');
         this.keepAwake = createKeepAwake(PREFIX + ':keep-awake');
         this.keepAwakeLogged = null;
@@ -4710,19 +4845,140 @@
         });
       }
       log(text, level = 'info') {
-        this.logs.unshift({
-          time: new Date().toLocaleTimeString(),
+        const at = Date.now(), entry = {
+          at,
+          time: P.logTime(at),
           level,
           text: String(text).slice(0, 260),
-        });
-        this.logs = this.logs.slice(0, 60);
+        };
+        this.logs.unshift(entry);
+        this.logs = this.logs.slice(0, 500);
+        if (this.prefs?.storage.indexedDB && this.logStore?.supported && !this.logError) this.logQueue.push(entry);
         if (Date.now() - (this.logWriteAt || 0) >= 5000) this.flushLogs();
         else if (!this.logTimer) this.logTimer = setTimeout(() => { this.logTimer = null; this.flushLogs(); }, 5000 - (Date.now() - this.logWriteAt));
         this.paint();
       }
       flushLogs() {
+        clearTimeout(this.logTimer);
+        this.logTimer = null;
+        this.logs = P.logPrune(this.logs, this.prefs.logs.keepDays);
         writeStorage(PREFIX + ':log', this.logs.slice(0, 60));
         this.logWriteAt = Date.now();
+        if (!this.logDatabaseOn || !this.prefs.storage.indexedDB || this.logClearing || !this.logQueue.length) return Promise.resolve();
+        const batch = P.logPrune(this.logQueue, this.prefs.logs.keepDays);
+        this.logQueue = [];
+        const write = this.logStore.append(batch).then(() => {
+          this.logDatabaseUsage = P.logCombine(this.logDatabaseUsage, P.logSummary(batch));
+        }).catch((error) => this.failLogStorage(error)).finally(() => {
+          this.logBatches.delete(record);
+          this.paint();
+        }), record = { entries: batch, write };
+        this.logBatches.add(record);
+        return write;
+      }
+      failLogStorage(error) {
+        this.logError = String(error.message || error);
+        this.logDatabaseOn = false;
+        this.logQueue = [];
+        this.paint();
+      }
+      async syncLogStorage() {
+        const epoch = ++this.logEpoch;
+        this.logDatabaseOn = false;
+        this.logError = '';
+        this.logQueue = [];
+        if (!this.prefs.storage.indexedDB || !this.logStore.supported) return;
+        this.logQueue = this.logs.filter((entry) => !entry.databaseCleared).reverse();
+        try {
+          await this.logStore.open();
+          if (epoch !== this.logEpoch || !this.prefs.storage.indexedDB) return;
+          await this.logStore.prune(P.logCutoff(this.prefs.logs.keepDays, Date.now()));
+          const saved = await this.logStore.read(500), usage = await this.logStore.summary();
+          if (epoch !== this.logEpoch || !this.prefs.storage.indexedDB) return;
+          this.logQueue = P.logMissing(this.logQueue, saved);
+          this.logs = [...P.logMissing(this.logs, saved), ...saved].sort((a, b) => b.at - a.at).slice(0, 500);
+          this.logDatabaseUsage = usage;
+          this.logDatabaseOn = true;
+          if (this.logQueue.length && !this.logTimer) this.logTimer = setTimeout(() => { this.logTimer = null; this.flushLogs(); }, Math.max(0, 5000 - (Date.now() - this.logWriteAt)));
+          this.paint();
+        } catch (error) {
+          if (epoch === this.logEpoch) this.failLogStorage(error);
+        }
+      }
+      logStorageStatus() {
+        return !this.prefs.storage.indexedDB ? '未启用' : !this.logStore.supported ? '浏览器不支持'
+          : this.logError ? '打开失败：' + this.logError : this.logDatabaseOn ? '可用' : '未启用';
+      }
+      logUsage() {
+        const key = [this.logs, this.logQueue, this.logDatabaseUsage, this.logBatches.size, this.logDatabaseOn];
+        if (!this.logUsageKey || key.some((value, index) => value !== this.logUsageKey[index])) {
+          this.logUsageKey = key;
+          this.logUsageCache = this.logDatabaseOn
+            ? P.logCombine(this.logDatabaseUsage, P.logSummary(this.logQueue), ...Array.from(this.logBatches, (batch) => P.logSummary(batch.entries)))
+            : P.logSummary(this.logs);
+        }
+        return this.logUsageCache;
+      }
+      async queryLogUsage() {
+        await this.logReady;
+        if (!this.logDatabaseOn) return P.logSummary([]);
+        try {
+          const usage = await this.logStore.summary();
+          this.logDatabaseUsage = usage;
+          return usage;
+        } catch (error) { this.failLogStorage(error); return P.logSummary([]); }
+      }
+      async pruneLogs() {
+        this.logs = P.logPrune(this.logs, this.prefs.logs.keepDays);
+        this.logQueue = P.logPrune(this.logQueue, this.prefs.logs.keepDays);
+        writeStorage(PREFIX + ':log', this.logs.slice(0, 60));
+        if (this.logDatabaseOn && this.prefs.storage.indexedDB && !this.logClearing) {
+          try {
+            await this.logStore.prune(P.logCutoff(this.prefs.logs.keepDays, Date.now()));
+            await this.queryLogUsage();
+          } catch (error) { this.failLogStorage(error); }
+        }
+        this.paint();
+      }
+      async clearLogDatabase() {
+        if (this.logClearing) return this.logClearing;
+        ++this.logEpoch;
+        this.logQueue = [];
+        this.logClearing = (async () => {
+          await this.logReady;
+          await Promise.all(Array.from(this.logBatches, (batch) => batch.write));
+          if (this.logStore.supported) {
+            await this.logStore.open();
+            await this.logStore.clear();
+            this.logError = '';
+            this.logDatabaseOn = this.prefs.storage.indexedDB;
+          }
+          // Cleared cache entries remain visible but are not imported into the database again.
+          this.logs = this.logs.map((entry) => this.logQueue.includes(entry) ? entry : { ...entry, databaseCleared: true });
+          writeStorage(PREFIX + ':log', this.logs.slice(0, 60));
+          this.logDatabaseUsage = P.logSummary([]);
+          return this.logDatabaseUsage;
+        })();
+        try { return await this.logClearing; }
+        catch (error) { this.failLogStorage(error); throw error; }
+        finally {
+          this.logClearing = null;
+          if (this.logQueue.length && !this.logTimer) this.logTimer = setTimeout(() => { this.logTimer = null; this.flushLogs(); }, Math.max(0, 5000 - (Date.now() - this.logWriteAt)));
+          this.paint();
+        }
+      }
+      async clearLogs() {
+        this.logs = [];
+        writeStorage(PREFIX + ':log', []);
+        this.paint();
+        return this.clearLogDatabase();
+      }
+      async exportLogs() {
+        await this.logReady;
+        if (!this.logDatabaseOn) return P.logText(this.logs);
+        await Promise.all(Array.from(this.logBatches, (batch) => batch.write));
+        const pending = this.logQueue.slice().reverse(), entries = await this.logStore.read();
+        return P.logText(P.logPrune([...pending, ...entries], this.prefs.logs.keepDays));
       }
       ledgerKey() {
         return PREFIX + ':ledger:' + this.roleId + ':' + day();
@@ -4814,7 +5070,10 @@
         return stopped;
       }
       updateConfig(value) {
+        const previous = this.prefs;
         this.prefs = P.config(value);
+        if (previous.storage.indexedDB !== this.prefs.storage.indexedDB) this.logReady = this.syncLogStorage();
+        if (previous.logs.keepDays !== this.prefs.logs.keepDays) this.pruneLogs();
         this.filler?.schedule();
         writeStorage(CONFIG, this.prefs);
         this.timer.set(this.prefs.tickMs);
@@ -4944,7 +5203,7 @@
           ledger: ledger ? copy(ledger) : null,
           lastFailure: this.lastFailure ? copy(this.lastFailure) : null,
           updates: this.updates ? this.updates.status() : null,
-          logs: this.logs.slice(0, 40),
+          logs: this.logs.slice(0, this.prefs.logs.showCount),
           scoring: { mode: this.prefs.gear.scoring, aoeTargets: s?.aoeTargets, since: this.stats?.pressureFrom?.at ?? null,
             ...P.scoringStatus(s, this.prefs),
             pending: this.prefs.gear.scoring === 'combat' && !P.combatWeights(s, this.prefs),
@@ -5750,7 +6009,7 @@
     }
     const arraySafe = (v) => (Array.isArray(v) ? v : []);
     return {
-      Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake, showConflictNotice,
+      Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake, createLogStore, showConflictNotice,
     };
   })();
   if (typeof module !== 'undefined' && module.exports) module.exports.TLRuntime = TLRuntime;
@@ -5926,7 +6185,8 @@
       ['economy', '出售补药'],
       ['budget', '预算设置'],
       ['updates', '更新'],
-      ['logs', '日志高级'],
+      ['settings', '设置'],
+      ['logs', '日志'],
     ];
     const qualityChoices = [
       [1, '白色（1）'],
@@ -5973,7 +6233,7 @@
         document.documentElement.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: 'open' });
         this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.3.2</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
-        this.root.addEventListener('click', (e) => {
+        this.root.addEventListener('click', async (e) => {
           const b = e.target.closest('button');
           if (!b) return;
           const action = b.dataset.action;
@@ -5984,6 +6244,7 @@
           if (b.dataset.tab) {
             this.section = b.dataset.tab;
             this.renderBody();
+            if (this.section === 'settings') await this.queryDatabaseUsage();
             return;
           }
           if (action === 'start') this.controller.start();
@@ -6015,14 +6276,23 @@
           } else if (action === 'export') this.download('天龙托管配置.json', this.pending);
           else if (action === 'diagnostics')
             this.download('天龙托管诊断.json', this.controller.status());
-          else if (action === 'applyJson') {
+          else if (action === 'applyJson') this.applyJSON(this.root.querySelector('textarea').value);
+          else if (action === 'importConfig') this.root.querySelector('.config-file').click();
+          else if (['exportLogs', 'clearLogs', 'clearDatabase'].includes(action)) {
             try {
-              this.pending = TLPolicy.config(JSON.parse(this.root.querySelector('textarea').value));
-              this.dirty = true;
-              this.controller.log('JSON配置已载入，点击保存生效');
-              this.renderBody();
+              if (action === 'exportLogs') {
+                const date = new Date(), stamp = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('');
+                this.download('TL挂机助手日志-' + location.host + '-' + stamp + '.txt', await this.controller.exportLogs(), 'text/plain');
+              } else if (action === 'clearLogs' && confirm('确定清空全部日志？')) {
+                await this.controller.clearLogs();
+                await this.queryDatabaseUsage();
+              } else if (action === 'clearDatabase' && confirm('确定清理浏览器数据库中的全部日志？')) {
+                await this.controller.clearLogDatabase();
+                await this.queryDatabaseUsage();
+              }
             } catch (error) {
-              this.root.querySelector('.error').textContent = 'JSON格式错误：' + error.message;
+              const line = this.root.querySelector('.error');
+              if (line) line.textContent = '日志操作失败：' + error.message;
             }
           }
           this.paint();
@@ -6043,8 +6313,27 @@
                       .filter((n) => Number.isFinite(n) && n > 0)
                   : e.target.value;
           pathSet(this.pending, path, value);
+          if (path === 'logs.level') {
+            this.controller.prefs.logs.level = TLPolicy.config(this.pending).logs.level;
+            TLRuntime.writeStorage(TLRuntime.PREFIX + ':config', this.controller.prefs);
+            this.paintLogs();
+            return;
+          }
           this.dirty = true;
           this.root.querySelector('.dirty').textContent = '有未保存的配置';
+        });
+        this.root.addEventListener('change', async (e) => {
+          if (!e.target.matches('.config-file') || !e.target.files?.[0]) return;
+          try {
+            const text = await e.target.files[0].text();
+            const textarea = this.root.querySelector('textarea');
+            if (textarea) textarea.value = text;
+            this.applyJSON(text);
+          } catch (error) {
+            const line = this.root.querySelector('.error');
+            if (line) line.textContent = '读取配置文件失败：' + error.message;
+          }
+          e.target.value = '';
         });
         this.root.addEventListener('click', (e) => {
           const action = e.target.closest('button')?.dataset.action;
@@ -6077,6 +6366,51 @@
         else
           control = `<input type="${options.type === 'text' || Array.isArray(value) ? 'text' : 'number'}" data-path="${path}" value="${esc(Array.isArray(value) ? value.join(',') : value)}" min="${options.min ?? 0}" ${options.max != null ? 'max="' + options.max + '"' : ''} ${options.step != null ? 'step="' + options.step + '"' : ''} aria-label="${esc(label)}">`;
         return `<label class="field"><span>${esc(label)}</span>${control}</label>`;
+      }
+      applyJSON(text) {
+        try {
+          this.pending = TLPolicy.config(JSON.parse(text));
+          this.dirty = true;
+          this.controller.log('JSON配置已载入，点击保存生效');
+          this.renderBody();
+        } catch (error) {
+          const line = this.root.querySelector('.error');
+          if (line) line.textContent = 'JSON格式错误：' + error.message;
+        }
+      }
+      async queryDatabaseUsage() {
+        this.databaseUsage = await this.controller.queryLogUsage();
+        this.paintDatabase();
+        this.paintLogs();
+      }
+      databaseUsageText() {
+        const usage = this.databaseUsage || { count: 0, bytes: 0 };
+        return '已用空间：约 ' + (usage.bytes / 1024).toFixed(1) + ' KB（' + usage.count + ' 条日志）';
+      }
+      paintDatabase() {
+        const status = this.root.querySelector('.database-status'), usage = this.root.querySelector('.database-usage');
+        if (status) status.textContent = this.controller.logStorageStatus();
+        if (usage) usage.textContent = this.databaseUsageText();
+      }
+      logUsageText() {
+        const usage = this.controller.logUsage();
+        return '日志共 ' + usage.count + ' 条，约 ' + (usage.bytes / 1024).toFixed(1) + ' KB（保存最近 ' + this.controller.prefs.logs.keepDays + ' 天）';
+      }
+      paintLogs() {
+        const list = this.root.querySelector('.live-logs');
+        if (!list) return;
+        const level = this.pending.logs.level, count = this.controller.prefs.logs.showCount;
+        if (this.logKey == null || this.logSource !== this.controller.logs || this.logLevel !== level || this.logCount !== count) {
+          this.logSource = this.controller.logs;
+          this.logLevel = level;
+          this.logCount = count;
+          const entries = TLPolicy.logFilter(this.controller.logs, level).slice(0, count), key = JSON.stringify([level, count, entries]);
+          if (this.logKey !== key) {
+            this.logKey = key;
+            list.innerHTML = this.logsHTML(entries);
+          }
+        }
+        this.root.querySelector('.log-usage').textContent = this.logUsageText();
       }
       renderBody() {
         const f = (l, p, o) => this.field(l, p, o),
@@ -6274,7 +6608,10 @@
             f('保留经验', 'budget.expReserve') +
             f('每日技能经验额度', 'budget.skillExpPerDay') +
             f('每日冶炼经验额度', 'budget.smeltExpPerDay') +
-            '<div class="hint">三项每日额度及各功能的每日操作上限填 0 均表示不限（仍受保留金币、保留经验约束）。保存不会清零已用额度。托管暂停时，保存后需点击“开始托管”。</div><div class="hint legacy-experience-note"></div><div class="section"><h3>恢复与调度</h3>' +
+            '<div class="hint">三项每日额度及各功能的每日操作上限填 0 均表示不限（仍受保留金币、保留经验约束）。保存不会清零已用额度。托管暂停时，保存后需点击“开始托管”。</div><div class="hint legacy-experience-note"></div>';
+        if (this.section === 'settings')
+          html =
+            '<h3>恢复与调度</h3>' +
             f('页面刷新后恢复托管', 'resumeAfterReload') +
             f('托管运行时持有 Web Lock（防标签页睡眠）', 'keepAwake') +
             f('连接恢复后继续托管', 'reconnect.enabled') +
@@ -6283,14 +6620,20 @@
             f('每小时最多自动刷新', 'reconnect.maxReloadsPerHour') +
             f('策略检查间隔（毫秒）', 'tickMs', { min: 700 }) +
             f('动作响应超时（毫秒）', 'requestTimeoutMs', { min: 6000 }) +
-            '<div class="actions"><button type="button" class="btn" data-action="defaults">载入默认策略</button><button type="button" class="btn" data-action="export">导出配置</button></div></div>';
-        if (this.section === 'logs')
-          html =
-            '<h3>最近动作</h3><div class="live-logs">' +
-            this.logsHTML(status.logs) +
-            '</div><div class="section"><h3>高级配置JSON</h3><div class="hint">修改后先载入，再保存。模板ID与评分权重均保存在本机配置中。</div><textarea spellcheck="false" aria-label="高级配置JSON">' +
+            '<div class="section"><h3>配置</h3><label for="tl-config-json">高级配置JSON</label><div class="hint">修改后先载入，再保存。模板ID与评分权重均保存在本机配置中。</div><textarea id="tl-config-json" spellcheck="false" aria-label="高级配置JSON">' +
             esc(JSON.stringify(this.pending, null, 2)) +
-            '</textarea><div class="error"></div><div class="actions"><button type="button" class="btn" data-action="applyJson">载入JSON配置</button><button type="button" class="btn" data-action="export">导出配置</button><button type="button" class="btn" data-action="diagnostics">导出诊断</button></div></div>';
+            '</textarea><input class="config-file" type="file" accept=".json" hidden><div class="error"></div><div class="actions"><button type="button" class="btn" data-action="applyJson">载入JSON配置</button><button type="button" class="btn" data-action="importConfig">导入配置文件</button><button type="button" class="btn" data-action="export">导出配置</button><button type="button" class="btn" data-action="defaults">载入默认策略</button><button type="button" class="btn" data-action="diagnostics">导出诊断</button></div></div>' +
+            '<div class="section"><h3>浏览器数据库</h3>' + f('使用浏览器数据库保存日志', 'storage.indexedDB') +
+            '<div class="database-status">' + esc(this.controller.logStorageStatus()) + '</div><div class="hint database-usage">' + this.databaseUsageText() +
+            '</div><button type="button" class="btn" data-action="clearDatabase">清理数据库</button></div>';
+        if (this.section === 'logs') {
+          this.logKey = null;
+          html = '<h3>日志</h3>' + f('显示等级', 'logs.level', { choices: [['all', '全部'], ['notice', '成功和警告'], ['warning', '仅警告']] }) +
+            '<div class="hint log-usage">' + this.logUsageText() + '</div><div class="actions"><button type="button" class="btn" data-action="exportLogs">导出日志</button><button type="button" class="btn" data-action="clearLogs">清空日志</button></div>' +
+            f('保存日志天数', 'logs.keepDays', { min: 1, max: 90, step: 1 }) +
+            f('面板显示条数', 'logs.showCount', { min: 20, max: 500, step: 1 }) +
+            '<div class="error"></div><div class="live-logs"></div>';
+        }
         if (this.section === 'updates') {
           const u = status.updates || { currentVersion: status.version, error: '', notes: null };
           this.updateKey = JSON.stringify(u);
@@ -6302,6 +6645,7 @@
             this.updateHTML(u);
         }
         this.root.querySelector('.body').innerHTML = html;
+        if (this.section === 'logs') this.paintLogs();
         this.root
           .querySelectorAll('[data-tab]')
           .forEach((b) => b.classList.toggle('active', b.dataset.tab === this.section));
@@ -6547,17 +6891,17 @@
         this.root.querySelector('.dirty').textContent = this.dirty
           ? '有未保存的配置'
           : '配置已保存 · ' + (s.enabled ? '托管运行中' : '托管已暂停');
-        const logs = this.root.querySelector('.live-logs');
-        if (logs) logs.innerHTML = this.logsHTML(s.logs);
+        this.paintLogs();
+        this.paintDatabase();
         const key = s.role?.id || '';
         if (key && key !== this.roleKey && !this.dirty) {
           this.roleKey = key;
           this.renderBody();
         }
       }
-      download(name, value) {
+      download(name, value, type = 'application/json') {
         const url = URL.createObjectURL(
-            new Blob([JSON.stringify(value, null, 2)], { type: 'application/json;charset=utf-8' }),
+            new Blob([type === 'application/json' ? JSON.stringify(value, null, 2) : value], { type: type + ';charset=utf-8' }),
           ),
           a = document.createElement('a');
         a.href = url;
