@@ -1582,8 +1582,9 @@
         role = s.role,
         level = num(role.level),
         currentExp = num(role.currentExp);
-      const tmpl =
-          lookup(s.levelTmpls, level) || array(s.levelTmpls).find((t) => num(t.level) === level),
+      const levelTmpls = s.levelTmpls instanceof Map
+          ? [...s.levelTmpls.values()] : Object.values(s.levelTmpls || {}),
+        tmpl = lookup(s.levelTmpls, level) || levelTmpls.find((t) => num(t.level) === level),
         requiredExp = num(tmpl?.upgradeExp);
       const availableExp = Math.max(0, currentExp - p.budget.expReserve);
       const result = {
@@ -1599,6 +1600,8 @@
       if (!p.growth.level) return done('disabled', '自动升级人物已关闭');
       if (level >= p.growth.maxLevel)
         return done('target', '人物已达到目标 ' + fmt(p.growth.maxLevel) + ' 级');
+      if (tmpl && !levelTmpls.some((t) => num(t.level) > level))
+        return done('cap', '人物已达服务器当前最高等级 ' + fmt(level) + ' 级');
       if (requiredExp <= 0) return done('template', '等待当前等级的升级经验数据');
       if (availableExp < requiredExp)
         return currentExp >= requiredExp
@@ -5064,6 +5067,12 @@
             this.log(safeMessage(e.message), 'warning');
             if (arenaClaim) this.ledger.arena.claimFailed = true;
             else this.suppress(a, 1800000);
+            this.saveLedger();
+            return;
+          }
+          if (['LEVEL_UP', 'UPGRADE_SKILL'].includes(a.type) && e.code === 'SERVER_ERROR') {
+            this.log(safeMessage(e.message), 'warning');
+            this.suppress(a, 3600000);
             this.saveLedger();
             return;
           }
