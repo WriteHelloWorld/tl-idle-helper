@@ -3763,7 +3763,7 @@
         socket.addEventListener('open', () => {
           if (this.socket === socket) {
             this.authFailed = false;
-            this.log('连接已打开，等待原游戏进入角色');
+            this.log('连接已打开，等待游戏进入角色');
           }
         });
         socket.addEventListener('close', () => {
@@ -4936,7 +4936,7 @@
         this.bridge.pressure = (maps) => this.stats?.pressure((id) => P.farmMap(P.array(maps).find((m) => P.num(m.id) === id)));
         window.addEventListener('pagehide', () => { this.stats?.flush(); this.flushLogs(); });
         this.bridge.onDisconnect = () => {
-          this.reason = '等待原游戏重连';
+          this.reason = '等待游戏重连';
           if (!this.prefs.reconnect.enabled) this.pause('连接中断，自动恢复已关闭');
         };
         this.paint = createPaintScheduler(() => this.panel?.paint());
@@ -5321,7 +5321,7 @@
       }
       stopBattle() {
         const stopped = this.bridge.setBattle(false);
-        this.reason = stopped ? '原游戏战斗已停止' : '未找到战斗停止入口';
+        this.reason = stopped ? '战斗已停止' : '未找到战斗停止入口';
         this.paint();
         return stopped;
       }
@@ -5926,7 +5926,7 @@
         if (!this.bridge.connected || !this.bridge.sessionReady || this.bridge.reconnectVisible()) {
           this.reason = this.bridge.authFailed
             ? '游戏认证失效，请在原页面重新登录'
-            : '等待原游戏连接与角色快照';
+            : '等待游戏连接与角色快照';
           this.maybeReload(now);
           this.paint();
           return;
@@ -6154,7 +6154,7 @@
           this.reason = started ? '已通过原页面开始战斗' : '未找到原页面战斗入口，托管等待';
           this.lastLocal = now;
           this.log(this.reason, started ? 'info' : 'warning');
-        } else this.reason = '原游戏正在战斗：' + (map?.name || s.role.mapId);
+        } else this.reason = '战斗中：' + (map?.name || s.role.mapId);
         this.paint();
       }
       maybeApplyUpdate(now) {
@@ -6180,7 +6180,7 @@
           return;
         this.reloads = arraySafe(this.reloads).filter((t) => now - t < 3600000);
         if (this.reloads.length >= this.prefs.reconnect.maxReloadsPerHour) {
-          this.reason = '刷新次数已达上限，等待原游戏恢复';
+          this.reason = '刷新次数已达上限，等待游戏恢复';
           return;
         }
         this.reloads.push(now);
@@ -6568,26 +6568,45 @@
       for (const k of ks.slice(0, -1)) cur = cur[k];
       cur[ks.at(-1)] = value;
     };
-    const CSS = `:host{all:initial;font-family:"Microsoft YaHei","Segoe UI",sans-serif;--text:#e9f0e4;--dim:#aeca9e;--gold:#eddaaa;--success:#b8df91;--warning:#eed39c;color:var(--text);font-size:13px;line-height:1.6}
-*{box-sizing:border-box}[hidden]{display:none!important}button,input,select,textarea{font:inherit;color:inherit}button,summary{cursor:pointer}
-button,summary,input[role=switch]{transition:color 120ms,background-color 120ms,border-color 120ms}
-button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
-button:hover,summary:hover{background-color:#476447}input:hover,select:hover,textarea:hover{border-color:var(--gold)}
-.shell{display:flex;flex-direction:column;width:390px;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);background:#183a32f5;border:1px solid #73936d;border-radius:12px;box-shadow:0 8px 28px #0007;pointer-events:auto;overflow:hidden}
-.head,.controls,.summary,.tabs,.footer{flex-shrink:0}.head{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;border-bottom:1px solid #456149;background:#20483b}.head strong{color:var(--gold);font-size:13px;letter-spacing:.08em}.version{font-size:12px;color:var(--dim)}.head button{background:none;border:0;padding:5px}.head button:hover{background:#476447}
-.controls{display:flex;gap:7px;padding:8px 14px 4px}.btn{padding:6px 12px;border-radius:6px;border:1px solid #71896b;background:#30543f}.btn.primary{background:#4c4934;color:var(--gold);border-color:#dbb862;font-weight:700}.btn.warn{color:var(--warning);border-color:#8c7257;background:#4c4934}.btn:hover{background:#476447}.controls .btn{flex:1;padding:6px 4px}
-.summary{padding:6px 14px 9px}.status-line{display:flex;align-items:center;gap:8px}.status-label{display:flex;align-items:center;gap:6px;white-space:nowrap}.role-name{margin-top:3px;color:var(--dim);overflow-wrap:anywhere}.text-button{border:0;border-radius:4px;background:none;color:var(--gold);padding:2px 4px;margin-left:auto;white-space:nowrap}.dot{width:7px;height:7px;background:#84977a;border-radius:50%;flex-shrink:0}.dot.on{background:var(--success)}.reason{padding-top:3px;color:var(--gold);font-weight:700;overflow-wrap:anywhere}
-.facts{display:grid;row-gap:3px;margin:5px 0 0;padding-top:5px;border-top:1px solid #3d5c42}.facts>div{display:grid;grid-template-columns:2em minmax(0,1fr);column-gap:10px}.facts dt{color:var(--dim);white-space:nowrap}.facts dd{margin:0;min-width:0;text-align:left;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.summary-login{margin-top:5px;font-size:12px;color:var(--dim)}
-.tabs{display:flex;flex-wrap:nowrap;gap:3px;padding:3px 11px 6px;border-bottom:1px solid #3d5c42;overflow-x:auto;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}.tabs button{flex:none;border:0;background:none;color:var(--dim);padding:5px 7px;border-radius:5px;white-space:nowrap}.group-tabs button{flex:1}.tabs button.active,.tabs button:hover{background:#476447;color:var(--gold)}.tabs button.has-update{color:var(--gold)}
-.body{padding:10px 14px;max-height:min(62vh,600px);overflow:auto;min-height:0;flex:1}.group{border-top:1px solid #3d5c42;margin-top:8px}.group:first-child{margin-top:0;border-top:0}.group>summary{display:flex;align-items:center;gap:8px;padding:8px 2px;list-style:none;border-radius:4px;color:var(--gold);font-weight:700}.group>summary::-webkit-details-marker{display:none}.group>summary::before{content:'▸';flex:none}.group[open]>summary::before{content:'▾'}.section-title{min-width:0}.section-state{margin-left:auto;font-size:12px;font-weight:400;color:var(--dim)}.group[open]>.group-summary .section-state{visibility:hidden}.master{display:flex;align-items:center;margin-left:auto}.section-state+.master{margin-left:0}.section-content{padding:0 2px 5px}
-.hint,.note,.more{font-size:12px;color:var(--dim)}.hint{margin:5px 0 10px;overflow-wrap:anywhere}.more{margin:6px 0 10px}.more>summary{padding:3px;border-radius:4px}.more>.hint{margin-top:5px}.field{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:8px;row-gap:3px;margin:9px 0}.field-label{white-space:nowrap}.field-control{display:flex;align-items:center;gap:5px}.field.dependent{margin-left:12px}.field.disabled{opacity:.5}.note,.field-error{grid-column:1/-1}.unit{font-size:11px;color:var(--dim);white-space:nowrap}.instant{font-size:12px;color:var(--gold);margin-left:6px;white-space:nowrap}
-.control-input,.control-select{border:1px solid #668060;background:#244432;border-radius:5px;padding:4px 6px;min-height:30px}.control-input{width:96px}.control-select{width:176px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
-input[role=switch]{appearance:none;position:relative;width:32px;height:18px;margin:0;border:1px solid #71896b;border-radius:10px;background:#244432;cursor:pointer;flex:none}input[role=switch]::before{content:'';position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--text)}input[role=switch]:checked{background-color:#dbb862;border-color:#dbb862}input[role=switch]:checked::before{left:16px;background:#183a32}input[role=switch]:disabled{cursor:default}
-.footer{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid #496449;background:#204335}.dirty{font-size:12px;color:var(--dim)}.footer .btn{padding:5px 12px;white-space:nowrap}.plan{padding:10px 12px;border:1px solid #607858;background:#2b4b34;border-radius:7px;margin-bottom:8px}.plan small{display:block;color:var(--dim);font-size:12px;margin-top:5px}
-.log{border-bottom:1px solid #355438;padding:8px 0;overflow-wrap:anywhere}.log time{font-size:11px;color:var(--dim);margin-right:7px}.log.success{color:var(--success)}.log.warning{color:var(--warning)}textarea{width:100%;background:#183323;border:1px solid #668060;border-radius:6px;padding:10px;font:13px/1.6 Consolas,monospace;min-height:230px;resize:vertical}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-.launcher{display:none;background:#30543f;color:var(--gold);border:1px solid #ecd58d;border-radius:22px;padding:11px 16px;box-shadow:0 5px 17px #0006;font-weight:700;pointer-events:auto}.launcher:hover{background:#476447}.collapsed .shell{display:none}.collapsed .launcher{display:block}.notice{padding:9px 11px;background:#2e4d35;border-left:3px solid #d8b768;font-size:12px;color:var(--dim);margin-bottom:10px}.error{color:var(--warning);font-size:12px;min-height:17px}.field-error{color:#ee8585;font-size:12px}[aria-invalid=true]{outline:1px solid #ee8585;border-color:#ee8585}
-.budget-card{display:flex;justify-content:space-between;gap:8px;padding:7px 9px;background:#244734;border-radius:6px;margin:6px 0}.income-table{width:100%;border-collapse:collapse;font-size:12px}.income-table th,.income-table td{padding:4px;text-align:right}.income-table th:first-child,.income-table td:first-child{text-align:left}.table-scroll{overflow-x:auto}.update-summary ul{padding-left:18px;margin:8px 0}.update-summary li{margin:5px 0}
-@media(max-height:600px){.facts .fact-detail{display:none}.reason{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary{padding-bottom:8px}}@media(max-width:700px){.shell{width:350px}.body{max-height:52vh}}@media(prefers-reduced-motion:reduce){button,summary,input[role=switch]{transition:none}}`;
+    const scoreSections = ['评分设置', '当前状态', '每点属性的分数', '计算公式'];
+    const CSS = `:host([data-theme="dark"]){--bg:#202020;--surface:#2b2b2b;--surface-alt:#1c1c1c;--control:#2f2f2f;--stroke:#3d3d3d;--stroke-strong:#9d9d9d;--divider:#353535;--text:#ffffff;--text-2:#c8c8c8;--text-3:#9a9a9a;--accent:#e2bd6b;--accent-hover:#edcd85;--on-accent:#2b2100;--accent-text:#e9c97e;--accent-soft:rgba(226,189,107,.14);--ok:#6ccb5f;--warn:#ffb454;--err:#ff99a4;--hover:rgba(255,255,255,.06);--pressed:rgba(255,255,255,.035);--shadow:0 16px 40px rgba(0,0,0,.42);color-scheme:dark}
+:host([data-theme="light"]){--bg:#f3f3f3;--surface:#ffffff;--surface-alt:#ebebeb;--control:#ffffff;--stroke:#d6d6d6;--stroke-strong:#868686;--divider:#e6e6e6;--text:#1a1a1a;--text-2:#5a5a5a;--text-3:#767676;--accent:#c99a1c;--accent-hover:#b98a12;--on-accent:#1f1700;--accent-text:#7d5800;--accent-soft:rgba(201,154,28,.16);--ok:#0f7b0f;--warn:#9a5b00;--err:#c42b1c;--hover:rgba(0,0,0,.045);--pressed:rgba(0,0,0,.025);--shadow:0 16px 40px rgba(0,0,0,.16);color-scheme:light}
+:host{all:initial;font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;color:var(--text);font-size:13px;line-height:1.5;font-variant-numeric:tabular-nums}
+*{box-sizing:border-box}[hidden]{display:none!important}
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-thumb{background:var(--stroke);border-radius:4px}::-webkit-scrollbar-track{background:transparent}
+@supports not selector(::-webkit-scrollbar){*{scrollbar-width:thin;scrollbar-color:var(--stroke) transparent}}
+button,input,select,textarea{font:inherit;color:inherit}button,summary{cursor:pointer}
+button,input,select,textarea,summary,input[role=switch]::before{transition:color 120ms ease,background-color 120ms ease,border-color 120ms ease,transform 120ms ease}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button:hover,summary:hover{background-color:var(--hover)}button:active,summary:active{background-color:var(--pressed)}
+button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.4;cursor:default}
+.shell{display:flex;flex-direction:column;width:560px;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);background:var(--bg);border:1px solid var(--stroke);border-radius:8px;box-shadow:var(--shadow);pointer-events:auto;overflow:hidden}
+.head,.controls,.summary,.group-tabs,.footer{flex-shrink:0}.head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--divider)}.head strong{font-size:14px;font-weight:600}
+.head-title{display:flex;align-items:center;flex-wrap:wrap;gap:8px;flex:1;min-width:0}.head .version{height:28px;padding:0 8px;border:1px solid transparent;border-radius:4px;background:transparent;font-size:12px;color:var(--text-2);white-space:nowrap}.head .version:disabled{cursor:default;background:transparent}.head .version.has-update{color:var(--accent-text);background:var(--accent-soft)}.head .version.has-update:hover{background:var(--hover)}.head .version.has-update:active{background:var(--pressed)}
+.btn{height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--stroke);background:var(--control)}.btn:hover{background:var(--hover)}.btn:active{background:var(--pressed)}
+.btn.primary,.launcher{background:var(--accent);color:var(--on-accent);border-color:transparent;font-weight:600}.btn.primary:hover,.launcher:hover{background:var(--accent-hover)}.btn.primary:active,.launcher:active{background:var(--accent);transform:translateY(1px)}.btn.warn{color:var(--warn);border-color:var(--warn)}
+.btn.subtle,.text-button,.icon-button{background:transparent;color:var(--accent-text);border:1px solid transparent;border-radius:4px}.btn.subtle:hover,.text-button:hover,.icon-button:hover{background:var(--hover)}.btn.subtle:active,.text-button:active,.icon-button:active{background:var(--pressed)}
+.icon-button{width:28px;height:28px;padding:0;flex:none}.text-button{height:28px;padding:0 4px;margin-left:auto;white-space:nowrap}
+.controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:12px 16px 8px}.controls .btn{padding:0 4px}
+.summary{margin:0 16px 12px;padding:12px;background:var(--surface);border:1px solid var(--stroke);border-radius:6px}.status-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.status-label{display:flex;align-items:center;gap:8px}.role-name{color:var(--text-2);min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dot{width:8px;height:8px;background:var(--text-3);border-radius:50%;flex-shrink:0}.dot.on{background:var(--ok)}.reason{padding-top:4px;font-size:15px;font-weight:600;overflow-wrap:anywhere}
+.figures{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--divider)}.figure span{display:block;font-size:11px;color:var(--text-2)}.figure strong{font-weight:600;overflow-wrap:anywhere}
+.facts{display:grid;row-gap:4px;margin:8px 0 0;padding-top:8px;border-top:1px solid var(--divider)}.facts>div{display:grid;grid-template-columns:2em minmax(0,1fr);column-gap:12px}.facts dt{color:var(--text-2);white-space:nowrap}.facts dd{margin:0;min-width:0;text-align:left;overflow-wrap:anywhere}.summary-login{margin-top:4px;font-size:12px;color:var(--text-2)}
+.tabs{display:flex;gap:4px}.tabs button{position:relative;flex:none;height:34px;border:0;background:transparent;color:var(--text-2);padding:0 12px;border-radius:4px;white-space:nowrap}.tabs button:hover{background:var(--hover)}.tabs button:active{background:var(--pressed)}.tabs button.active{color:var(--text);font-weight:600}
+.group-tabs{margin:0 16px 4px}.group-tabs button.active::before{content:'';position:absolute;left:12px;right:12px;bottom:0;height:3px;border-radius:4px;background:var(--accent)}.tabs button.has-update::after{content:'';display:inline-block;width:6px;height:6px;margin-left:4px;vertical-align:middle;border-radius:50%;background:var(--accent)}
+.main{display:grid;grid-template-columns:112px minmax(0,1fr);min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--divider)}.page-tabs{flex-direction:column;min-height:0;padding:8px;background:var(--surface-alt);border-right:1px solid var(--stroke);overflow:auto}.page-tabs button{text-align:left;padding:0 8px;overflow:hidden;text-overflow:ellipsis}.page-tabs button.active{background:var(--surface)}.page-tabs button.active:hover{background:var(--hover)}.page-tabs button.active:active{background:var(--pressed)}.page-tabs button.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:4px;background:var(--accent)}
+.body{padding:12px;max-height:min(62vh,600px);overflow:auto;min-height:0;min-width:0}.group{background:var(--surface);border:1px solid var(--stroke);border-radius:6px;margin-top:8px}.group:first-child{margin-top:0}.group>summary{display:flex;align-items:center;gap:8px;min-height:40px;padding:8px 12px;list-style:none;border-radius:4px;font-weight:600}.group>summary::-webkit-details-marker{display:none}.group>summary::after{content:'›';flex:none;color:var(--text-2);transform:rotate(0deg);transition:transform 120ms ease}.group[open]>summary::after{transform:rotate(90deg)}.section-title{min-width:0;flex:1}.section-state{font-size:12px;font-weight:400;color:var(--text-2);white-space:nowrap}.master{display:flex;align-items:center;flex:none}.section-content{padding:0 12px 8px;border-top:1px solid var(--divider)}
+.hint,.note,.more{font-size:12px;color:var(--text-2)}.hint{margin:8px 0;overflow-wrap:anywhere}.more{margin:8px 0}.more>summary{padding:4px;border-radius:4px}.more>.hint{margin-top:4px}.field{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 8px;min-height:40px;padding:4px 0;border-bottom:1px solid var(--divider)}.field:last-child{border-bottom:0}.field-label{min-width:0;overflow-wrap:anywhere}.field-control{display:flex;align-items:center;gap:4px}.field.dependent{padding-left:12px}.field.disabled{opacity:.45}.note,.field-error{grid-column:1/-1}.unit{font-size:11px;color:var(--text-2);white-space:nowrap}.instant{font-size:12px;color:var(--accent-text);margin-left:4px;white-space:nowrap}
+.control-input,.control-select{height:28px;border:1px solid var(--stroke);border-bottom-color:var(--stroke-strong);background:var(--control);border-radius:4px;padding:0 8px}.control-input{width:96px}.control-select{width:176px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
+.control-input:hover,.control-select:hover,textarea:hover{background:var(--hover)}.control-input:active,.control-select:active,textarea:active{background:var(--pressed)}.control-input:focus,.control-select:focus,textarea:focus{border-bottom:2px solid var(--accent)}input::placeholder,textarea::placeholder{color:var(--text-3)}
+input[role=switch]{appearance:none;position:relative;width:40px;height:20px;margin:0;border:1px solid var(--stroke-strong);border-radius:12px;background:transparent;cursor:pointer;flex:none}input[role=switch]::before{content:'';position:absolute;top:50%;left:3px;width:12px;height:12px;border-radius:50%;background:var(--stroke-strong);transform:translateY(-50%)}input[role=switch]:checked{background:var(--accent);border-color:var(--accent)}input[role=switch]:checked::before{background:var(--on-accent);transform:translate(20px,-50%)}input[role=switch]:hover{background:var(--hover)}input[role=switch]:checked:hover{background:var(--accent-hover);border-color:var(--accent-hover)}input[role=switch]:hover::before{left:2px;width:14px;height:14px}input[role=switch]:active{background:var(--pressed)}input[role=switch]:checked:active{background:var(--accent)}
+.footer{display:flex;align-items:center;gap:8px;padding:8px 16px;border-top:1px solid var(--divider);background:var(--surface-alt)}.dirty{font-size:12px;color:var(--text-2);flex:1}.dirty.unsaved{color:var(--warn)}.footer .btn{height:28px;white-space:nowrap}
+.plan{padding:12px;border:1px solid var(--stroke);background:var(--surface);border-radius:6px;margin:8px 0}.plan small{display:block;color:var(--text-2);font-size:12px;margin-top:4px}.log{border-bottom:1px solid var(--divider);padding:8px 0;overflow-wrap:anywhere}.log time{font-size:11px;color:var(--text-3);margin-right:8px}.log.success{color:var(--ok)}.log.warning{color:var(--warn)}.log.error{color:var(--err)}
+textarea{width:100%;background:var(--control);border:1px solid var(--stroke);border-bottom-color:var(--stroke-strong);border-radius:4px;padding:8px;min-height:232px;resize:vertical}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.launcher{display:none;height:32px;border:1px solid transparent;border-radius:16px;padding:0 16px;pointer-events:auto}.collapsed .shell{display:none}.collapsed .launcher{display:block}.notice{padding:8px 12px;background:var(--surface);border-left:3px solid var(--accent);font-size:12px;color:var(--text-2);margin-bottom:8px}.error{color:var(--err);font-size:12px;min-height:20px}.field-error{color:var(--err);font-size:12px}[aria-invalid=true],[aria-invalid=true]:focus{border-color:var(--err)}
+.budget-card{display:flex;justify-content:space-between;gap:8px;padding:8px;background:var(--surface-alt);border-radius:4px;margin:8px 0}.income-table{width:100%;border-collapse:collapse;font-size:12px}.income-table th,.income-table td{padding:4px;text-align:right;border-bottom:1px solid var(--divider)}.income-table th:first-child,.income-table td:first-child{text-align:left}.table-scroll{overflow-x:auto}.update-summary ul{padding-left:16px;margin:8px 0}.update-summary li{margin:4px 0}
+@media(max-height:600px){.facts .fact-detail{display:none}.reason{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary{padding:8px;margin-bottom:8px}.head{padding:8px 16px}.controls{padding-top:8px}}
+@media(max-width:639px){.shell{width:calc(100vw - 24px)}.main{display:flex;flex-direction:column}.page-tabs{flex-direction:row;flex-shrink:0;border-right:0;border-bottom:1px solid var(--stroke);overflow-x:auto}.page-tabs button{max-width:none}.body{flex:1}.status-label{font-size:12px}.role-name{font-size:12px}.field{grid-template-columns:minmax(0,1fr)}.field-control{justify-self:end}.group-tabs{margin-left:8px;margin-right:8px}.group-tabs button{padding:0 8px}.group-tabs button.active::before{left:8px;right:8px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;scroll-behavior:auto!important}}`;
     class Panel {
       constructor(controller) {
         this.controller = controller;
@@ -6609,6 +6628,7 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
         }
         this.host = document.createElement('div');
         this.host.id = 'tl-autopilot-host';
+        this.host.setAttribute?.('data-theme', this.uiState().theme);
         Object.assign(this.host.style, {
           position: 'fixed',
           right: '12px',
@@ -6618,7 +6638,16 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
         });
         document.documentElement.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: 'open' });
-        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.3.2</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div>${this.navigationHTML()}<div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        const light = this.uiState().theme === 'light';
+        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div class="head-title"><strong>TL挂机助手</strong><button type="button" class="version" data-action="showUpdates" disabled>v0.3.2</button></div><button type="button" class="icon-button" data-action="theme" aria-label="切换浅色 / 深色主题" title="${light ? '切换深色主题' : '切换浅色主题'}">${light ? '☀' : '☾'}</button><button type="button" class="icon-button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary run-toggle" data-action="start">开始托管</button><button type="button" class="btn" data-action="stopBattle">停止战斗</button><button type="button" class="btn" data-action="preview">预览计划</button></div><div class="summary"></div>${this.navigationHTML()}<footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn subtle" data-action="revert" hidden>撤销</button><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        this.versionChip = this.root.querySelector('.version');
+        const narrow = typeof window !== 'undefined' && window.matchMedia?.('(max-width: 639px)'),
+          orientRail = () => {
+            const rail = this.root.querySelector('.page-tabs'), orientation = narrow?.matches ? 'horizontal' : 'vertical';
+            if (rail && rail.getAttribute('aria-orientation') !== orientation) rail.setAttribute('aria-orientation', orientation);
+          };
+        orientRail();
+        narrow?.addEventListener?.('change', orientRail);
         this.root.addEventListener('click', async (e) => {
           if (e.target.closest('.master')?.classList.contains('master')) {
             e.stopPropagation();
@@ -6627,9 +6656,40 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
           const b = e.target.closest('button');
           if (!b) return;
           const action = b.dataset.action;
+          if (action === 'theme') {
+            const state = this.uiState(), light = state.theme !== 'light';
+            state.theme = light ? 'light' : 'dark';
+            this.host.setAttribute('data-theme', state.theme);
+            b.textContent = light ? '☀' : '☾';
+            b.title = light ? '切换深色主题' : '切换浅色主题';
+            this.savePanelState();
+            return;
+          }
+          if (action === 'showUpdates') {
+            if (b.disabled) return;
+            if (this.collapsed) {
+              this.collapsed = false;
+              this.root.querySelector('.wrap').classList.remove('collapsed');
+            }
+            this.selectPage('updates');
+            this.controller.paint(true);
+            return;
+          }
           if (b.classList.contains('launcher') || action === 'collapse') {
             this.collapsed = this.root.querySelector('.wrap').classList.toggle('collapsed');
             if (!this.collapsed) this.controller.paint(true);
+            return;
+          }
+          if (b.dataset.sectionLink) {
+            this.scoreSection = b.dataset.sectionLink;
+            const section = [...this.root.querySelectorAll('details.group')].find((node) => node.dataset.section === this.scoreSection);
+            if (section) {
+              if (!section.open) section.open = true;
+              this.uiState().sections[this.scoreSection] = true;
+              this.savePanelState();
+              this.paintNavigation();
+              section.scrollIntoView({ block: 'start', inline: 'nearest' });
+            }
             return;
           }
           if (b.dataset.group || b.dataset.tab) {
@@ -6661,11 +6721,18 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
           else if (action === 'pause') this.controller.pause(undefined, true);
           else if (action === 'stopBattle') this.controller.stopBattle();
           else if (action === 'save') {
-            this.pending = this.controller.updateConfig(this.pending);
+            this.pending = TLPolicy.clone(this.controller.updateConfig(this.pending));
+            this.dirty = false;
+            this.requestBody();
+          } else if (action === 'revert') {
+            this.pending = TLPolicy.clone(this.controller.prefs);
             this.dirty = false;
             this.requestBody();
           } else if (action === 'preview') {
             this.previewPlans = this.controller.preview();
+            this.section = 'status';
+            this.uiState().sections['status:计划预览'] = true;
+            this.rememberPage();
             this.requestBody();
           } else if (action === 'defaults') {
             this.pending = TLPolicy.clone(TLPolicy.DEFAULTS);
@@ -6717,22 +6784,30 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
             this.controller.prefs.logs.level = TLPolicy.config(this.pending).logs.level;
             TLRuntime.writeStorage(TLRuntime.PREFIX + ':config', this.controller.prefs);
             this.paintLogs();
+            this.paintDirty();
             return;
           }
           if (path === 'market.sort') {
             const current = this.controller.prefs;
             this.controller.updateConfig({ ...current, market: { ...current.market, sort: value } });
+            this.paintDirty();
             return;
           }
           this.dirty = true;
           this.paintDirty();
         });
         this.root.addEventListener('keydown', (e) => {
-          if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+          if (e.target === this.versionChip && ['Enter', ' '].includes(e.key)) {
+            e.preventDefault();
+            if (!e.repeat) this.versionChip.click();
+            return;
+          }
+          if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
           const button = e.target.closest('[role="tab"]'), row = button?.closest('[role="tablist"]');
           if (!row) return;
+          if (['ArrowUp', 'ArrowDown'].includes(e.key) && !row.classList.contains('page-tabs')) return;
           const buttons = [...row.querySelectorAll('[role="tab"]')].filter((tab) => !tab.hidden),
-            index = buttons.indexOf(button), next = buttons[(index + (e.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length];
+            index = buttons.indexOf(button), next = buttons[(index + (['ArrowRight', 'ArrowDown'].includes(e.key) ? 1 : -1) + buttons.length) % buttons.length];
           e.preventDefault();
           next.focus();
           next.click();
@@ -6789,7 +6864,8 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
         let saved;
         try { saved = JSON.parse(localStorage.getItem(PANEL_KEY)); } catch {}
         const pages = groups.flatMap(([, , items]) => items.map(([id]) => id));
-        this.panelState = { page: pages.includes(saved?.page) ? saved.page : 'status', last: {}, sections: {}, expanded: saved?.expanded === true };
+        this.panelState = { page: pages.includes(saved?.page) ? saved.page : 'status', last: {}, sections: {}, expanded: saved?.expanded === true,
+          theme: saved?.theme === 'light' ? 'light' : 'dark' };
         for (const [id, , items] of groups)
           this.panelState.last[id] = items.some(([page]) => page === saved?.last?.[id]) ? saved.last[id] : items[0][0];
         for (const [key, value] of Object.entries(saved?.sections && typeof saved.sections === 'object' ? saved.sections : {}))
@@ -6823,13 +6899,13 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
       navigationHTML() {
         return '<nav class="tabs group-tabs" role="tablist" aria-label="功能分组">' + groups.map(([id, name]) =>
           `<button type="button" role="tab" data-group="${id}"${id === 'score' ? ' data-tab="score"' : ''} aria-selected="false" tabindex="-1">${name}</button>`).join('') +
-          '</nav><nav class="tabs page-tabs" role="tablist" aria-label="分组页面">' + groups.filter(([id]) => id !== 'score').flatMap(([, , items]) => items.map(([id, name]) =>
-            `<button type="button" role="tab" data-tab="${id}" aria-selected="false" tabindex="-1">${name}</button>`)).join('') + '</nav>';
+          '</nav><div class="main"><nav class="tabs page-tabs" role="tablist" aria-label="分组页面" aria-orientation="vertical">' + groups.filter(([id]) => id !== 'score').flatMap(([, , items]) => items.map(([id, name]) =>
+            `<button type="button" role="tab" data-tab="${id}" aria-selected="false" tabindex="-1">${name}</button>`)).join('') +
+          scoreSections.map((name) => `<button type="button" role="tab" data-tab="score" data-section-link="score:${name}" title="${name}" aria-selected="false" tabindex="-1">${name}</button>`).join('') +
+          '</nav><div class="body"></div></div>';
       }
       paintNavigation() {
-        const group = groups.find(([, , items]) => items.some(([id]) => id === this.section)) || groups[0],
-          row = this.root.querySelector('.page-tabs');
-        if (row && row.hidden !== (group[0] === 'score')) row.hidden = group[0] === 'score';
+        const group = groups.find(([, , items]) => items.some(([id]) => id === this.section)) || groups[0];
         const select = (button, active) => {
           if (button.classList.contains('active') !== active) button.classList.toggle('active', active);
           if (button.getAttribute('aria-selected') !== String(active)) button.setAttribute('aria-selected', String(active));
@@ -6841,7 +6917,8 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
             const hidden = !group[2].some(([id]) => id === button.dataset.tab);
             if (button.hidden !== hidden) button.hidden = hidden;
           }
-          select(button, button.dataset.tab === this.section);
+          select(button, button.dataset.tab === this.section && (!button.dataset.sectionLink ||
+            button.dataset.sectionLink === (this.scoreSection || 'score:' + scoreSections[0])));
         });
       }
       confirmAction(button) {
@@ -6866,11 +6943,22 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
         button.classList.toggle('warn', pending.warn);
         this.confirmations.delete(button);
       }
-      paintDirty(status) {
+      changedPaths(pending, saved) {
+        if (Object.is(pending, saved)) return 0;
+        if (Array.isArray(pending) || Array.isArray(saved)) return JSON.stringify(pending) === JSON.stringify(saved) ? 0 : 1;
+        if (pending && saved && typeof pending === 'object' && typeof saved === 'object')
+          return [...new Set([...Object.keys(pending), ...Object.keys(saved)])]
+            .reduce((count, key) => count + this.changedPaths(pending[key], saved[key]), 0);
+        return 1;
+      }
+      paintDirty() {
+        const count = this.changedPaths(this.pending, this.controller?.prefs || this.pending), dirty = count > 0;
         const line = this.root.querySelector('.dirty'), button = this.root.querySelector('[data-action="save"]'),
-          text = this.dirty ? '有未保存的配置' : '配置已保存' + (status ? ' · ' + (status.enabled ? '托管运行中' : '托管已暂停') : '');
+          revert = this.root.querySelector('[data-action="revert"]'), text = dirty ? '有 ' + count + ' 项未保存的改动' : '配置已保存';
         if (line && line.textContent !== text) line.textContent = text;
-        if (button && button.classList.contains('primary') !== this.dirty) button.classList.toggle('primary', this.dirty);
+        if (line?.classList && line.classList.contains('unsaved') !== dirty) line.classList.toggle('unsaved', dirty);
+        if (revert && revert.hidden !== !dirty) revert.hidden = !dirty;
+        if (button && button.classList.contains('primary') !== dirty) button.classList.toggle('primary', dirty);
       }
       field(label, path, options = {}) {
         const value = pathGet(this.pending, path), id = 'tl-field-' + path.replaceAll('.', '-'),
@@ -7029,7 +7117,7 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
         }
         if (this.section === 'status') {
           this.statusBudgetsKey = this.statusBudgetsHTML(status);
-          html = '<div class="notice">先在原游戏完成登录，然后开始托管。人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。</div><div class="hint network-status">' + esc(this.networkText(status)) + '</div>' +
+          html = '<div class="notice">先在游戏里完成登录，然后开始托管。人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。</div><div class="hint network-status">' + esc(this.networkText(status)) + '</div>' +
             g('已保存的资源策略', '<div class="status-budgets">' + this.statusBudgetsKey + '</div><div class="hint">默认保留强化、镶宝、星级、鉴定装备和套装部件；自动回收品质1的普通装备。宝石默认目标3级，强化默认目标+3。</div>', true) +
             g('计划预览', '<div class="actions"><button class="btn" type="button" data-action="preview">预览下一步计划</button><button class="btn" type="button" data-action="diagnostics">导出当前诊断</button></div>' +
               (this.previewPlans.length ? this.previewPlans.map((a) => `<div class="plan">${esc(a.label)}<small>预计金币 ${a.coinCost} · 经验 ${a.expCost}${a.requiresTown ? ' · 在对应城镇处理' : ''}</small></div>`).join('') : '<div class="hint">点击预览可查看当前角色满足条件的动作。</div>'));
@@ -7037,7 +7125,7 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
         if (this.section === 'battle') {
           html =
             g('挂机与恢复',
-            f('自动开始原游戏战斗', 'battle.enabled') +
+            f('自动开始战斗', 'battle.enabled') +
             f('挂机地图', 'battle.mapId', { choices: TLPolicy.mapChoices(s?.maps) }) +
             f('选图等级差', 'battle.levelOffset', { unit: '级', note: '比角色低多少级选图', dependsOn: { path: 'battle.mapId', value: 0 } }) +
             f('阵亡后返城重新选择', 'battle.recoverDeath') +
@@ -7054,7 +7142,7 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
             f('自动使用天灵丹', 'activities.tianlingUse', { note: '没有双倍经验时使用' }) +
             f('自动在线抽奖', 'activities.lotteryDraw', { note: '需回苏州' }) +
             f('攒够多少次抽一次', 'activities.lotteryBatch', { unit: '次', note: '当天次数发完时也会抽', dependsOn: 'activities.lotteryDraw' }) +
-            '<div class="hint">珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合原游戏返回的资格数据核对。</div>') +
+            '<div class="hint">珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合游戏返回的资格数据核对。</div>') +
             g('快活叁福彩',
             f('自动投注', 'welfare.enabled', { note: '需回苏州' }) +
             f('币种', 'welfare.currency', { dependsOn: 'welfare.enabled', choices: [['GOLD', '金币 · 10万/倍'], ['YUANBAO', '元宝 · 100/倍（奖金为赠送元宝）']] }) +
@@ -7454,6 +7542,18 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
           '<div class="hint">经验按击杀前后的差值统计；“单倍经验”把天灵丹双倍时段折半，方便比较地图。每小时数值按在线时间折算，地图表按战斗时间折算。</div>');
       }
       paintUpdates(u, status) {
+        const chip = this.versionChip, newer = !!u?.newer;
+        if (chip) {
+          const text = newer ? '可更新 v' + u.latestVersion : 'v' + (u?.currentVersion || '0.3.2'),
+            title = newer ? '点击查看更新内容' : '';
+          if (chip.textContent !== text) chip.textContent = text;
+          if (chip.classList.contains('has-update') !== newer) chip.classList.toggle('has-update', newer);
+          if (chip.disabled !== !newer) chip.disabled = !newer;
+          if (chip.title !== title) {
+            if (title) chip.title = title;
+            else chip.removeAttribute('title');
+          }
+        }
         for (const [selector, name] of [['[data-group="system"]', '系统'], ['[data-tab="updates"]', '更新']]) {
           const tab = this.root.querySelector(selector), text = name + (u?.newer ? ' · 新' : '');
           if (!tab) continue;
@@ -7522,15 +7622,23 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
             this.statusBudgetsKey = html;
           }
         }
+        const run = this.root.querySelector('.run-toggle'), action = s.enabled ? 'pause' : 'start',
+          runText = s.enabled ? '暂停托管' : '开始托管';
+        if (run) {
+          if (run.dataset.action !== action) run.setAttribute('data-action', action);
+          if (run.textContent !== runText) run.textContent = runText;
+        }
         const expanded = this.uiState().expanded;
-        const fact = (label, value, detail = false, progress = null) => value == null || value === '' || (!expanded && label !== '收益') ? '' :
+        const fact = (label, value, detail = false, progress = null) => value == null || value === '' || !expanded ? '' :
           `<div${detail ? ' class="fact-detail"' : ''}><dt>${label}</dt><dd${progress ? ' class="level-reason" data-code="' + esc(progress.code) + '"' : ''}>${esc(value)}</dd></div>`;
-        let summary = `<div class="status-line"><span class="status-label"><span class="dot ${s.ready ? 'on' : ''}"></span><span>${s.enabled ? '托管运行中' : '托管已暂停'} · ${s.ready ? '角色在线' : s.connected ? '等待角色' : '等待连接'}</span></span><button type="button" class="text-button" data-action="summary" aria-expanded="${expanded}">${expanded ? '收起' : '展开'}</button></div>${expanded && s.role ? `<div class="role-name">${esc(s.role.nickname)} · Lv.${esc(s.role.level)}</div>` : ''}<div class="reason">${esc(s.reason)}</div>`;
+        let summary = `<div class="status-line"><span class="status-label"><span class="dot ${s.enabled && s.ready ? 'on' : ''}"></span><span>${s.enabled ? '托管运行中' : '已暂停'} · ${s.ready ? '角色在线' : s.connected ? '等待角色' : '等待连接'}</span></span>${s.role ? `<span class="role-name" title="${esc(s.role.nickname)} · Lv.${esc(s.role.level)}">${esc(s.role.nickname)} · Lv.${esc(s.role.level)}</span>` : ''}<button type="button" class="text-button" data-action="summary" aria-expanded="${expanded}">${expanded ? '收起' : '展开'}</button></div><div class="reason">${esc(s.reason)}</div>`;
         if (s.role) {
           const income = s.stats?.summary?.recent;
-          summary += '<dl class="facts">' +
+          if (income?.wall >= 60000) summary += '<div class="figures">' +
+            [['经验 / 时', income.exp], ['金币 / 时', income.gold + income.sell], ['药费 / 时', income.potion]]
+              .map(([label, value]) => `<div class="figure"><span>${label}</span><strong>${esc(TLRuntime.statsNumber(value * 3600000 / income.wall))}</strong></div>`).join('') + '</div>';
+          if (expanded) summary += '<dl class="facts">' +
             fact('地图', s.map) + fact('金币', s.role.money == null ? null : fmt(s.role.money)) +
-            fact('收益', income?.wall >= 60000 ? `经验 ${TLRuntime.statsNumber(income.exp * 3600000 / income.wall)}/时 · 金币 ${TLRuntime.statsNumber((income.gold + income.sell) * 3600000 / income.wall)}/时 · 药费 ${TLRuntime.statsNumber(income.potion * 3600000 / income.wall)}/时` : null) +
             fact('升级', s.levelUp?.reason, true, s.levelUp) + fact('技能', s.skillUp?.reason, true, s.skillUp) +
             fact('比武', s.arena ? `第 ${s.arena.rank} 名 · 挑战 ${s.arena.attempts}/${this.controller.prefs.arena.maxPerDay || '不限'} · 点赞 ${s.arena.liked ? '已' : '未'}` : null, true) +
             fact('珍兽', s.pets && [s.pets.count, s.pets.capacity, s.pets.active, s.pets.eggs].some((v) => v != null) ? `${s.pets.count ?? '?'} / ${s.pets.capacity ?? '?'} · ${s.pets.active ? '出战 ' + s.pets.active.pet.name + ' Lv.' + s.pets.active.pet.level : '未出战'} · 蛋 ${s.pets.eggs ?? '?'}` : null, true) +
@@ -7549,7 +7657,7 @@ input[role=switch]{appearance:none;position:relative;width:32px;height:18px;marg
               fmt(s.ledger.unclassifiedExp) +
               '，已占用技能和冶炼预算；人物升级继续按等级目标执行。';
         }
-        this.paintDirty(s);
+        this.paintDirty();
         this.paintLogs();
         this.paintDatabase();
         const key = s.role?.id || '';
