@@ -2758,7 +2758,21 @@
           this.buckets = Object.fromEntries(Object.entries(saved.buckets).map(([k, b]) => [k, { ...b,
             battle: saved.version === 1 && b.battle > 0 && b.hpLost === 0 && b.kills === 0 ? 0 : b.battle,
             low: saved.version === 1 ? 0 : b.low ?? 0 }]));
+        const p = saved?.pressureFrom;
+        if (p && Number.isFinite(p.at) && p.at >= 0 && p.hour === Math.floor(p.at / 3600000) &&
+          p.base && typeof p.base === 'object' && !Array.isArray(p.base) &&
+          Object.entries(p.base).every(([key, b]) => new RegExp('^' + p.hour + ':-?\\d+$').test(key) && b &&
+            'battle hpLost gold sell potion hpPotions mpPotions deaths low'.split(' ').every(k => Number.isFinite(b[k]) && b[k] >= 0))) this.pressureFrom = p;
         this.prune();
+      }
+      resetPressure() {
+        const at = this.now(), hour = Math.floor(at / 3600000);
+        const fields = 'battle hpLost gold sell potion hpPotions mpPotions deaths low'.split(' ');
+        const base = Object.fromEntries(Object.entries(this.buckets).filter(([k]) => Number(k.split(':')[0]) === hour)
+          .map(([k, b]) => [k, Object.fromEntries(fields.map(f => [f, b[f]]))]));
+        this.pressureFrom = { at, hour, base };
+        this.previous = null;
+        this.flush();
       }
       prune() {
         const hour = Math.floor(this.now() / 3600000);
@@ -2769,9 +2783,10 @@
         const totals = Object.fromEntries('battle hpLost gold sell potion hpPotions mpPotions deaths low'.split(' ').map((k) => [k, 0]));
         const hours = [...new Set(Object.keys(this.buckets).map((k) => Number(k.split(':')[0])))].sort((a, b) => b - a);
         for (const hour of hours) {
+          if (this.pressureFrom && hour < this.pressureFrom.hour) continue;
           const buckets = Object.entries(this.buckets).filter(([k]) => Number(k.split(':')[0]) === hour && isFarmMap(Number(k.split(':')[1])));
-          for (const [, bucket] of buckets)
-            for (const k of Object.keys(totals)) totals[k] += bucket[k];
+          for (const [key, bucket] of buckets)
+            for (const k of Object.keys(totals)) totals[k] += Math.max(0, bucket[k] - (this.pressureFrom?.base[key]?.[k] || 0));
           if (totals.battle >= 21600000) break;
         }
         return totals;
@@ -2786,10 +2801,12 @@
       }
       flush() {
         this.prune();
-        this.write({ version: 2, buckets: JSON.parse(JSON.stringify(this.buckets)) });
+        this.write(JSON.parse(JSON.stringify({ version: 2, buckets: this.buckets,
+          ...(this.pressureFrom ? { pressureFrom: this.pressureFrom } : {}) })));
         this.lastWrite = this.now();
       }
       clear() {
+        delete this.pressureFrom;
         this.lastLowHpAt = this.lastDeathAt = 0;
         this.buckets = {};
         this.window = [];
@@ -3979,6 +3996,13 @@
       }
     }
     class Controller {
+      resetScoring() {
+        this.stats?.resetPressure();
+        this.bridge.cache.monsterTemplates.clear();
+        this.bridge.cache.monsterTemplatesAt = 0;
+        writeStorage(PREFIX + ':monsters', null);
+        this.log('已重置评分数据：生存权重从现在起重新统计，怪物属性将重新读取');
+      }
       constructor() {
         this.prefs = P.config(readStorage(CONFIG, {}));
         writeStorage(CONFIG, this.prefs);
@@ -4294,7 +4318,7 @@
           lastFailure: this.lastFailure ? copy(this.lastFailure) : null,
           updates: this.updates ? this.updates.status() : null,
           logs: this.logs.slice(0, 40),
-          scoring: { mode: this.prefs.gear.scoring,
+          scoring: { mode: this.prefs.gear.scoring, since: this.stats?.pressureFrom?.at ?? null,
             ...P.scoringStatus(s, this.prefs),
             pending: this.prefs.gear.scoring === 'combat' && !P.combatWeights(s, this.prefs),
             weights: P.combatWeights(s, this.prefs) },
@@ -5246,6 +5270,10 @@
             return;
           }
           if (action === 'start') this.controller.start();
+          else if (action === 'resetScoring' && confirm('重置评分数据？自动生存权重将从现在起重新统计。')) {
+            this.controller.resetScoring();
+            this.renderBody();
+          }
           else if (action === 'clearStats' && confirm('清空全部收益统计？')) {
             this.controller.stats?.clear();
             this.renderBody();
@@ -5588,6 +5616,11 @@
       }
       scoreLiveHTML(status, detail) {
         let html = '<div class="section"><h3>当前状态</h3><div class="hint">' + esc(TLPolicy.scoringText(status.scoring)) + '</div>' + this.scoreDangerHTML(status.scoring.survival);
+        html += '<button class="btn" type="button" data-action="resetScoring">重置评分数据</button><div class="hint">重置只影响自动生存权重用的实测数据和怪物属性缓存，统计页的收益数据不变。重置后战斗满 30 分钟前使用手动权重。</div>';
+        if (status.scoring.since != null) {
+          const d = new Date(status.scoring.since), pad = n => String(n).padStart(2, '0');
+          html += '<div class="hint">评分数据自 ' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ' 起统计</div>';
+        }
         if (detail) {
           html += '<div class="hint">人物实战评分 ' + Math.round(detail.character) + ' · 每次行动输出 ' + detail.parts.out.toFixed(0) + ' · 每次受击 ' + detail.parts.taken.toFixed(1) + ' · 气血 ' + detail.parts.hp.toFixed(0) + '</div><h3>当前每点属性的分数</h3>';
           html += this.scoreTableHTML(['属性', '当前值', '+1 点', '+100 点'], detail.rows.map((r) => [r.name, Math.round(r.current), r.one.toFixed(2), r.hundred.toFixed(1)]));
