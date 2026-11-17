@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name TL战斗数据记录器
 // @namespace https://github.com/YatsukiRenka/tl-idle-helper
-// @version 0.1.3
+// @version 0.1.4
 // @description 本地记录自身战斗数据用于评分校准，不上传任何数据。
 // @match https://tl.jayczee.top/*
 // @match https://tl2.jayczee.top/*
@@ -22,7 +22,7 @@
   const dangerDefaults = { dead: 0, low: 0, mid: 0, hpSum: 0, hpMin: 1, b3: 0, b10: 0, hpMax: 0, pt: 0 };
   const eventDefaults = () => ({ dot: 0, dotN: 0, exec: 0, monRevive: 0, petCasts: 0, petRevive: 0, heal: 0, healN: 0, p: [0, 0, 0, 0, 0] });
   const round = n => Math.round(n * 10000) / 10000;
-  const empty = () => ({ version: 1, configs: {}, skills: {}, monsters: {}, hours: {}, floats: {} });
+  const empty = () => ({ version: 1, configs: {}, skills: {}, rivals: {}, monsters: {}, hours: {}, floats: {} });
   const nums = x => ATTRS.map((k, i) => Number(Array.isArray(x) ? x[i] : x?.[k]) || 0);
   const keyOf = m => [m.templateId, m.level, m.category].join(':');
   const slots = s => (s?.monsterSlots || []).filter(Boolean);
@@ -48,7 +48,9 @@
       this.roleId = c.roleId;
       this.previous = this.sig = this.exp = undefined;
       this.skill = '';
+      this.rivalSessions = new Map();
       try { const d = this.read(this.storageKey()); this.data = valid(d) ? clone(d) : empty(); } catch { this.data = empty(); }
+      this.data.rivals ||= {};
       for (const [k, b] of Object.entries(this.data.hours)) this.data.hours[k] = { ...dangerDefaults, ...eventDefaults(), ...b };
     }
     storageKey() { return 'tl-combat-recorder-v1:' + this.roleId; }
@@ -58,8 +60,25 @@
       this.sig = hash([c.level, attrs, skills, pet]);
       this.data.configs[this.sig] ||= { first: s.serverTime, last: s.serverTime, level: c.level, sect: c.sect, attrs, skills, pet, out: [], in: [] };
       this.data.configs[this.sig].last = s.serverTime;
-      for (const x of s.player.skills || []) this.data.skills[x.id] = clone(Object.fromEntries(['name', 'skillType', 'hitCount', 'cd', 'mpCost', 'combatRules', 'effects'].filter(k => x[k] !== undefined).map(k => [k, x[k]])));
-      for (const m of slots(s)) this.data.monsters[keyOf(m)] = [m.name, ...nums(m.base)];
+      this.recordSkills(s.player);
+      for (const m of slots(s)) {
+        if (m.type === 'PLAYER') this.rival(m, s.sessionId);
+        else this.data.monsters[keyOf(m)] = [m.name, ...nums(m.base)];
+      }
+    }
+    recordSkills(unit) {
+      for (const x of unit.skills || []) this.data.skills[x.id] = clone(Object.fromEntries(['name', 'icon', 'skillType', 'hitCount', 'cd', 'mpCost', 'combatRules', 'effects'].filter(k => x[k] !== undefined).map(k => [k, x[k]])));
+    }
+    rival(unit, sessionId) {
+      this.recordSkills(unit);
+      const key = /sect\/([^/]+)/.exec(unit.skills?.[0]?.icon || '')?.[1] || '';
+      if (!(key in this.data.rivals) && Object.keys(this.data.rivals).length >= 40) return;
+      const sessions = this.rivalSessions.get(key) || new Set();
+      const seen = (this.data.rivals[key]?.seen || 0) + Number(!sessions.has(sessionId));
+      sessions.add(sessionId);
+      this.rivalSessions.set(key, sessions);
+      this.data.rivals[key] = { seen, level: unit.level,
+        skills: (unit.skills || []).map(x => [x.id, x.level]).sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true })) };
     }
     bucket(t, c) {
       const k = [Math.floor(t / 3600000), c.mapId, this.sig].join('|');
@@ -122,7 +141,7 @@
     }
     monsterDelta(m, next, b, dt) {
       if (dt > 0) b.dealt += next ? Math.max(0, m.currentHp - next.currentHp) : (!m.isDead ? m.currentHp : 0);
-      if (m.isDead || (next && !next.isDead)) return;
+      if (m.type === 'PLAYER' || m.isDead || (next && !next.isDead)) return;
       b.kills++; const k = keyOf(m); b.k[k] = (b.k[k] || 0) + 1;
     }
     discover(e, side) {
@@ -215,7 +234,7 @@
       const hours = Object.keys(this.data.hours), configs = Object.values(this.data.configs);
       return { battleHours: Object.values(this.data.hours).reduce((n, b) => n + b.battle, 0) / 3600000, configs: configs.length, hours: hours.length, samples: configs.reduce((n, c) => n + c.out.length + c.in.length, 0), bytes: JSON.stringify(this.data).length, since: hours.length ? Math.min(...hours.map(k => Number(k.split('|')[0]))) * 3600000 : null };
     }
-    exportData(meta) { return { format: 'tl-combat-data', version: 1, recorder: '0.1.3', exportedAt: this.now(), ...meta, data: clone(this.data) }; }
+    exportData(meta) { return { format: 'tl-combat-data', version: 1, recorder: '0.1.4', exportedAt: this.now(), ...meta, data: clone(this.data) }; }
   }
   if (typeof module !== 'undefined') { module.exports = { Recorder, ATTRS, hash }; return; }
   if (window.__TL_COMBAT_RECORDER__) return;
