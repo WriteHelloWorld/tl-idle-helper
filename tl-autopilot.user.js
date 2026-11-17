@@ -136,7 +136,7 @@
         keepMinAverage: 118, feed: false, feedKeepExp: 0, refreshMinutes: 10 },
       arena: { enabled: true, like: true, claim: true, challenge: true, maxPerDay: 10,
         maxPowerRatio: 1.1, refreshMinutes: 30, rushMinutes: 10 },
-      hidden: { enabled: true, wash: true, washQuality: true, inbox: true, feed: false,
+      hidden: { enabled: true, claim: false, claimElement: 'auto', wash: true, washQuality: true, inbox: true, feed: false,
         maxLevel: 100, keepExp: 0, refreshMinutes: 30 },
       potions: {
         enabled: true,
@@ -169,6 +169,7 @@
         keepFuture: true,
         keepBestBackup: true,
         keepCrafted: true,
+        keepAppraised: true,
         batchMin: 5,
         keepTemplateIds: [],
         materialIds: [],
@@ -290,6 +291,8 @@
       for (const section of [p.arena, p.hidden])
         section.refreshMinutes = Math.max(5, Math.min(240, section.refreshMinutes));
       p.hidden.maxLevel = Math.max(1, Math.min(100, integer(p.hidden.maxLevel)));
+      if (!['auto', 'ice', 'fire', 'poison', 'holy'].includes(p.hidden.claimElement))
+        p.hidden.claimElement = 'auto';
       p.tickMs = Math.max(700, integer(p.tickMs, 1000));
       p.requestTimeoutMs = Math.max(6000, integer(p.requestTimeoutMs, 10000));
       p.warehouse.minQuality = Math.min(5, Math.max(1, integer(p.warehouse.minQuality, 3)));
@@ -385,14 +388,16 @@
         array(s.equipSets).flatMap((set) => array(parse(set.equipTmplIds, []))).map(num),
       );
     }
+    function doublePerfect(e) {
+      const quality = stats(e?.appraisalStats);
+      return num(quality.extScore) > 1500 && num(quality.intScore) > 1500;
+    }
     function warehouseEligible(e, p, setIds) {
-      const quality = stats(e.appraisalStats);
       return (
         !e.isEquipped && !e.hiddenWeapon && num(e.equipTmpl?.slotType) !== 12 && e.equipTmpl &&
         ((p.warehouse.sets && setIds.has(num(e.tmplId || e.equipTmpl.id))) ||
           equipQuality(e) >= p.warehouse.minQuality ||
-          (p.warehouse.perfect && e.isAppraisal &&
-            num(quality.extScore) > 1500 && num(quality.intScore) > 1500))
+          (p.warehouse.perfect && e.isAppraisal && doublePerfect(e)))
       );
     }
     function sellPlan(s, prefs, ledger, now = Date.now()) {
@@ -423,7 +428,8 @@
           : num(eq.quality, 1) > p.sell.maxQuality ? '品质高于上限'
           : num(eq.enhanceLevel) !== 0 ? '已强化'
           : num(eq.starLevel) !== 0 ? '有星级'
-          : eq.isAppraisal ? '已鉴定'
+          : eq.isAppraisal && p.sell.keepAppraised ? '已鉴定'
+          : eq.isAppraisal && doublePerfect(eq) ? '双完美武器'
           : slots(eq).some((id) => id > 0) ? '镶了宝石'
           : !t || num(t.price) <= 0 ? '商店不收'
           : p.sell.keepFuture && num(t.reqLevel) > num(s.role?.level) ? '还没到穿戴等级'
@@ -876,6 +882,15 @@
     function gearWeights(state, prefs) {
       return combatWeights(state, prefs) || prefs?.gear?.weights || WEIGHTS;
     }
+    function hiddenClaimElement(state, prefs) {
+      const p = config(prefs);
+      if (p.hidden.claimElement !== 'auto') return p.hidden.claimElement;
+      const attacks = state?.finalAttributes || {}, weights = gearWeights(state, p);
+      return elements.slice().sort((a, b) =>
+        num(attacks[b + 'Atk']) - num(attacks[a + 'Atk']) ||
+        num(weights[b + 'Atk']) - num(weights[a + 'Atk']) ||
+        elements.indexOf(a) - elements.indexOf(b))[0];
+    }
     function setScore(eqs, state, prefs) {
       return eqs.reduce((sum, e) => sum + equipmentScore(e, state, prefs), 0) +
         scoreStats(setEffects(eqs, state), prefs.gear.weights);
@@ -1238,14 +1253,12 @@
           : fail('缺少该装备等级所需的可用强化精华');
       }
       if (a.type === 'SMITHY_SMELT_START') {
-        const eq = equipment(payload.roleEquipId),
-          quality = stats(eq?.appraisalStats);
+        const eq = equipment(payload.roleEquipId);
         return eq &&
           num(template(eq).slotType) === 1 &&
           num(template(eq).reqLevel) >= 50 &&
           eq.isAppraisal &&
-          num(quality.extScore) > 1500 &&
-          num(quality.intScore) > 1500 &&
+          doublePerfect(eq) &&
           (!eq.isEquipped || prefs.smithy.allowSmeltEquipped) &&
           !num(s.role.smeltingItemId)
           ? ok
@@ -1336,11 +1349,12 @@
         return num(s.role.level) >= 30 && materialCount(s, 51002) > 0
           ? ok
           : fail('角色等级或除熊害令牌不足');
-      if (a.type === 'SHOP_SELL_BATCH') {
-        const ids = payload.roleEquipIds;
+      if (a.type === 'SHOP_SELL_BATCH' || (a.type === 'SHOP_SELL' && payload.bagItemId == null)) {
+        const ids = a.type === 'SHOP_SELL_BATCH' ? payload.roleEquipIds : [payload.roleEquipId];
         return Array.isArray(ids) && ids.length > 0 && ids.length <= 20 &&
           new Set(ids.map(num)).size === ids.length && ids.every(id => array(s.equipments).some(e =>
-            num(e.id) === num(id) && !e.isEquipped && e.equipTmpl))
+            num(e.id) === num(id) && !e.isEquipped && e.equipTmpl &&
+            (!e.isAppraisal || (prefs.sell.keepAppraised === false && !doublePerfect(e)))))
           ? ok : fail('装备状态已变化，不再符合出售条件');
       }
       if (a.type === 'SHOP_SELL' && payload.bagItemId != null) {
@@ -2278,9 +2292,21 @@
             action('TRIAL_COMMAND', { action: name,
               ...(trial ? { revision: trial.revision } : {}), ...payload },
             '暗器：' + name, 'trial', { responseType: 'TRIAL_RESPONSE', ...options });
-          if (!trial || now - trial.at >= (trial.run ? 60000 : p.hidden.refreshMinutes * 60000))
+          const hiddenEquip = townSafe && !equipped.some((e) => num(template(e).slotType) === 12) &&
+            array(s.equipments).find((e) => !e.isEquipped && num(template(e).slotType) === 12);
+          if (hiddenEquip)
+            add(action('EQUIP_ITEM', { roleEquipId: num(hiddenEquip.id) },
+              '穿戴暗器「' + template(hiddenEquip).name + '」', 'trial', { inBattle: true }));
+          if (!trial || !Number.isFinite(trial.at) ||
+              now - trial.at >= (trial.run ? 60000 : p.hidden.refreshMinutes * 60000))
             add(request('status', {}, { readOnly: true, inBattle: true }));
-          else if (townSafe && trial.weapon && !trial.run) {
+          else if (townSafe && p.hidden.claim && trial.claimed === false) {
+            const element = hiddenClaimElement(s, p),
+              label = { ice: '冰攻', fire: '火攻', poison: '毒攻', holy: '玄攻' }[element];
+            // Claim suppression survives revision and element changes.
+            add({ ...request('claim', { element }, { requiresTown: true, npc: NPC.trial,
+              label: '暗器：领取飞蝗石（' + label + '）' }), key: 'trial-claim' });
+          } else if (townSafe && trial.weapon && !trial.run) {
             const w = trial.weapon, balances = trial.balances || {};
             const opts = { requiresTown: true, npc: NPC.trial };
             if (p.hidden.inbox && Object.keys(trial.inbox || {}).length)
@@ -2323,7 +2349,8 @@
           .map((e) => ({ eq: e, gain: projectedGain(e, s, p) }))
           .filter((v) => v.gain.gain > 0 && v.gain.percent >= p.gear.minGainPercent)
           .sort((a, b) => b.gain.gain - a.gain.gain);
-        const candidates = candidatesFrom(s.equipments);
+        const candidates = candidatesFrom(array(s.equipments)
+          .filter((e) => num(template(e).slotType) !== 12));
         const warehouseCandidates = p.gear.fromWarehouse ? candidatesFrom(s.warehouseEquips) : [];
         const warehouseBest = warehouseCandidates[0];
         if (warehouseBest && (!candidates[0] || warehouseBest.gain.gain > candidates[0].gain.gain)) {
@@ -2675,8 +2702,7 @@
                   num(template(e).slotType) === 1 &&
                   num(template(e).reqLevel) >= 50 &&
                   e.isAppraisal &&
-                  num(stats(e.appraisalStats).extScore) > 1500 &&
-                  num(stats(e.appraisalStats).intScore) > 1500,
+                  doublePerfect(e),
               );
             if (eq)
               add(
@@ -2954,7 +2980,7 @@
       }
       if (mode === 'SMITHY_APPRAISAL') return result([eqs.filter((e) => [1, 12].includes(num(template(e).slotType)) && num(template(e).reqLevel) >= 50 && !e.isAppraisal).sort((a, b) => Number(!!b.isEquipped) - Number(!!a.isEquipped))[0]], '没有未鉴定的50级以上武器');
       if (mode === 'SMITHY_REINFORCE') return result([equipped.filter((e) => num(e.enhanceLevel) < 9 && (num(template(e).reqLevel) < 40 ? find(5050) : find(5051, 5079))).sort((a, b) => num(a.enhanceLevel) - num(b.enhanceLevel))[0]]);
-      if (mode === 'SMITHY_SMELT') return result([eqs.filter((e) => !e.isEquipped && num(template(e).slotType) === 1 && num(template(e).reqLevel) >= 50 && num(stats(e.appraisalStats).extScore) > 1500 && num(stats(e.appraisalStats).intScore) > 1500).sort((a, b) => num(template(a).reqLevel) - num(template(b).reqLevel))[0]], '没有可冶炼的完美资质武器（已穿戴的不会自动放入）');
+      if (mode === 'SMITHY_SMELT') return result([eqs.filter((e) => !e.isEquipped && num(template(e).slotType) === 1 && num(template(e).reqLevel) >= 50 && doublePerfect(e)).sort((a, b) => num(template(a).reqLevel) - num(template(b).reqLevel))[0]], '没有可冶炼的完美资质武器（已穿戴的不会自动放入）');
       if (mode === 'SMITHY_REPAIR') {
         const complete = (b) => num(stats(b.extraData).repairs) >= 5;
         const section = bags.filter((b) => id(b) >= 5032 && id(b) <= 5037 && (complete(b) || find(id(b) + 6))).sort((a, b) => id(b) - id(a))[0];
@@ -3001,7 +3027,7 @@
       if (kind !== 'any') return [];
       if (mode === 'SMITHY_APPRAISAL') return eqs.filter((e) => [1, 12].includes(num(template(e).slotType)) && num(template(e).reqLevel) >= 50).sort((a, b) => Number(!!a.isAppraisal) - Number(!!b.isAppraisal) || worn(a, b));
       if (mode === 'SMITHY_REINFORCE') return eqs.filter((e) => num(e.enhanceLevel) < 9).sort((a, b) => worn(a, b) || num(a.enhanceLevel) - num(b.enhanceLevel));
-      if (mode === 'SMITHY_SMELT') return eqs.filter((e) => num(template(e).slotType) === 1 && num(template(e).reqLevel) >= 50 && num(stats(e.appraisalStats).extScore) > 1500 && num(stats(e.appraisalStats).intScore) > 1500).sort((a, b) => -worn(a, b) || num(template(a).reqLevel) - num(template(b).reqLevel));
+      if (mode === 'SMITHY_SMELT') return eqs.filter((e) => num(template(e).slotType) === 1 && num(template(e).reqLevel) >= 50 && doublePerfect(e)).sort((a, b) => -worn(a, b) || num(template(a).reqLevel) - num(template(b).reqLevel));
       if (mode === 'SMITHY_REPAIR') return bags.filter((b) => id(b) >= 5032 && id(b) <= 5043).sort((a, b) => id(b) - id(a));
       if (mode === 'SMITHY_FORGE') return bags.filter((b) => id(b) >= 5044 && id(b) <= 5049);
       if (mode === 'TAILOR_ADD_MATERIAL') return bags.filter((b) => id(b) >= 5008 && id(b) <= 5015 || id(b) >= 5017 && id(b) <= 5024).sort((a, b) => (id(b) >= 5017 ? id(b) - 5017 : id(b) - 5008) - (id(a) >= 5017 ? id(a) - 5017 : id(a) - 5008) || bound(a, b));
@@ -3030,6 +3056,7 @@
       viewedState, isViewedProfile, profileState, profileScoreText, tooltipContext,
       CRIT_BASE, CRIT_RATE, CRIT_FLOOR, CRIT_DEF_OFFSET, CRIT_DEF_RATE, CRIT_DEF_DIVISOR, critMultiplier,
       MAIN_SOFTCAP, ELEMENT_RATE, hitDamage, setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
+      hiddenClaimElement,
       equipmentStats,
       scoreStats,
       equipmentScore, equipmentValues, characterScore, SCORE_UNIT, CRIT_CHANCE_OFFSET, scoringDetail, SCORE_ATTRIBUTES,
@@ -5491,6 +5518,7 @@
           return;
         }
         const arenaClaim = a.type === 'ARENA_COMMAND' && a.payload.action === 'claim';
+        const trialClaim = a.type === 'TRIAL_COMMAND' && a.payload.action === 'claim';
         const lotteryDraw = a.type === 'ONLINE_LOTTERY_COMMAND' && a.payload.action === 'draw';
         const welfareBet = a.type === 'WELFARE_LOTTERY_COMMAND' && a.payload.action === 'bet';
         const trialAction = a.type === 'TRIAL_COMMAND' && a.payload.action !== 'status',
@@ -5551,6 +5579,12 @@
             P.recordExperience(this.ledger, a.type, extraExp);
           }
           const success = result.success ?? result.code === 200;
+          if (!success && trialClaim) {
+            this.log(a.label + '：' + (result.message || '操作未成功'), 'warning');
+            this.suppress(a, 1800000);
+            this.saveLedger();
+            return;
+          }
           if (success && a.type === 'EQUIP_ITEM') this.gearEquipped(a, before, after);
           if (!success && a.type === 'SHOP_SELL_BATCH') { this.batchFallback(); return; }
           if (!success && a.doubleExp) {
@@ -5637,6 +5671,12 @@
             this.suppress(a, 300000);
             this.saveLedger();
             if (timeoutPause) this.pause(timeoutPause);
+            return;
+          }
+          if (trialClaim && e.code === 'SERVER_ERROR') {
+            this.log(safeMessage(e.message), 'warning');
+            this.suppress(a, 1800000);
+            this.saveLedger();
             return;
           }
           // Action-specific recoveries below cover timeouts too and never pause.
@@ -6717,6 +6757,12 @@
             '<div class="actions"><button class="btn" type="button" data-action="clearGearRejected">清空换回名单</button></div>' +
             '<div class="hint">评分方式、权重和计算公式在“评分”页。</div></div><div class="section"><h3>暗器养成</h3>' +
             f('暗器养成（总开关）', 'hidden.enabled') +
+            f('自动领取暗器（50 级，回洛阳找薛飞）', 'hidden.claim') +
+            f('领取时的初始属攻', 'hidden.claimElement', { choices: [
+              ['auto', '自动（当前最高的属性攻击）'], ['ice', '冰攻'], ['fire', '火攻'],
+              ['poison', '毒攻'], ['holy', '玄攻'],
+            ] }) +
+            '<div class="hint">领取前请确认属攻；领错后转换要 5 砂。</div>' +
             f('自动洗炼属性（5 砂/次）', 'hidden.wash') +
             f('自动洗炼品质（1 玉/次）', 'hidden.washQuality') +
             f('领取暂存奖励', 'hidden.inbox') +
@@ -6792,12 +6838,14 @@
             f('保留尚未达到等级的装备', 'sell.keepFuture') +
             f('保留各部位最佳备用装', 'sell.keepBestBackup') +
             f('保留托管新打造装备', 'sell.keepCrafted') +
+            f('保留已鉴定装备（不勾选时只保留双完美武器）', 'sell.keepAppraised') +
+            '<div class="hint">不勾选时，资质不是外攻、内攻双完美（都高于 1500）的已鉴定武器按其余规则出售；品质上限、强化、套装等保护照常生效。</div>' +
             f('攒够几件再出售（1 = 有就卖）', 'sell.batchMin', { min: 1, max: 20 }) +
             f('永不出售的模板ID（可填预览里的模板ID，逗号分隔）', 'sell.keepTemplateIds') +
             f('明确允许出售的材料ID', 'sell.materialIds') +
             f('每日出售操作上限', 'sell.maxPerDay') +
             '<div class="sell-preview">' + this.sellPreview(s) + '</div>' +
-            '<div class="hint">穿戴、强化、镶宝、星级和鉴定装备始终保留。材料仅按填写的模板ID处理。</div><div class="section"><h3>自动存入仓库</h3>' +
+            '<div class="hint">穿戴、强化、镶宝和星级装备始终保留。材料仅按填写的模板ID处理。</div><div class="section"><h3>自动存入仓库</h3>' +
             f('自动将装备存入仓库', 'warehouse.enabled') +
             f('存仓最低品质（≥此品质）', 'warehouse.minQuality', {
               choices: qualityChoices,
