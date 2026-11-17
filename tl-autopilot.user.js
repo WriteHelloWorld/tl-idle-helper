@@ -153,6 +153,7 @@
         keepFuture: true,
         keepBestBackup: true,
         keepCrafted: true,
+        batchMin: 5,
         keepTemplateIds: [],
         materialIds: [],
         maxPerDay: 100,
@@ -239,6 +240,7 @@
       }
       const p = merge(DEFAULTS, value);
       p.version = 2;
+      p.sell.batchMin = Math.max(1, Math.min(20, integer(p.sell.batchMin, 5)));
       p.pets.keepMinAverage = Math.max(0, Math.min(200, num(p.pets.keepMinAverage)));
       p.pets.feedKeepExp = Math.max(0, num(p.pets.feedKeepExp));
       p.pets.refreshMinutes = Math.max(2, Math.min(240, num(p.pets.refreshMinutes)));
@@ -1036,6 +1038,13 @@
         return num(s.role.level) >= 30 && materialCount(s, 51002) > 0
           ? ok
           : fail('角色等级或除熊害令牌不足');
+      if (a.type === 'SHOP_SELL_BATCH') {
+        const ids = payload.roleEquipIds;
+        return Array.isArray(ids) && ids.length > 0 && ids.length <= 20 &&
+          new Set(ids.map(num)).size === ids.length && ids.every(id => array(s.equipments).some(e =>
+            num(e.id) === num(id) && !e.isEquipped && e.equipTmpl))
+          ? ok : fail('装备状态已变化，不再符合出售条件');
+      }
       if (a.type === 'SHOP_SELL' && payload.bagItemId != null) {
         const bag = byId(payload.bagItemId),
           count = num(payload.count);
@@ -1876,14 +1885,15 @@
               (!p.sell.keepCrafted || !array(ledger.keptEquipIds).includes(num(e.id))),
           )
           .sort((a, b) => equipmentScore(a, s, p) - equipmentScore(b, s, p));
-        if (sellable[0])
+        const batch = s.batchSell !== false, items = sellable.slice(0, 20);
+        if (sellable.length >= (batch ? p.sell.batchMin : 1))
           add(
             action(
-              'SHOP_SELL',
-              { roleEquipId: num(sellable[0].id), count: 1 },
-              '出售普通装备「' + sellable[0].equipTmpl.name + '」',
+              batch ? 'SHOP_SELL_BATCH' : 'SHOP_SELL',
+              batch ? { roleEquipIds: items.map(e => num(e.id)) } : { roleEquipId: num(sellable[0].id), count: 1 },
+              '出售普通装备「' + sellable[0].equipTmpl.name + '」' + (batch && items.length > 1 ? '等 ' + items.length + ' 件' : ''),
               'sell',
-              { inBattle: true },
+              { inBattle: true, responseType: 'SHOP_SELL_RESPONSE' },
             ),
           );
         else {
@@ -2592,6 +2602,7 @@
       'UPDATE_SETTINGS',
       'SHOP_BUY',
       'SHOP_SELL',
+      'SHOP_SELL_BATCH',
       'WAREHOUSE_DEPOSIT',
       'WAREHOUSE_WITHDRAW',
       'GEM_DRILL',
@@ -2962,6 +2973,7 @@
     }
     class Bridge {
       constructor(log) {
+        this.noBatchSell = false;
         this.log = log;
         this.socket = null;
         this.sessionReady = false;
@@ -3378,6 +3390,7 @@
         const shop = this.stores().get('shop');
         return {
           role,
+          ...(this.noBatchSell ? { batchSell: false } : {}),
           pets: this.cache.pets ? { ...copy(this.cache.pets.state), at: this.cache.pets.at } : null,
           arena: this.cache.arena || null,
           lottery: this.cache.lottery || null,
@@ -3842,6 +3855,7 @@
         return c?.role?.id
           ? {
               role: c.role,
+              ...(this.controller.bridge.noBatchSell ? { batchSell: false } : {}),
               skills: copy(c.skills),
               finalAttributes: copy(c.finalAttributes),
               ...scoringState(c, this.controller.bridge, this.controller.prefs),
@@ -4415,6 +4429,11 @@
           this.saveLedger();
         }
       }
+      batchFallback() {
+        this.bridge.noBatchSell = true;
+        this.log('批量出售没有得到确认，本次运行改为逐件出售', 'warning');
+        this.saveLedger();
+      }
       async execute(a) {
         if (!this.acquireLease()) {
           this.reason = '此角色已在另一标签页托管';
@@ -4479,6 +4498,7 @@
             P.recordExperience(this.ledger, a.type, extraExp);
           }
           const success = result.success ?? result.code === 200;
+          if (!success && a.type === 'SHOP_SELL_BATCH') { this.batchFallback(); return; }
           if (!success && a.doubleExp) {
             this.ledger.tianlingUsedAt = 0;
             this.saveLedger();
@@ -4552,6 +4572,7 @@
             this.pause('金币已低于保留额度，请核对当前资源');
           this.saveLedger();
         } catch (e) {
+          if (a.type === 'SHOP_SELL_BATCH') { this.batchFallback(); return; }
           if (a.family === 'pet' && String(e.message).includes('请先结束战斗')) {
             this.log(safeMessage(e.message), 'warning');
             this.suppress(a, 300000);
@@ -5536,6 +5557,7 @@
             f('保留尚未达到等级的装备', 'sell.keepFuture') +
             f('保留各部位最佳备用装', 'sell.keepBestBackup') +
             f('保留托管新打造装备', 'sell.keepCrafted') +
+            f('攒够几件再出售（1 = 有就卖）', 'sell.batchMin', { min: 1, max: 20 }) +
             f('额外保留模板ID', 'sell.keepTemplateIds') +
             f('明确允许出售的材料ID', 'sell.materialIds') +
             f('每日出售操作上限', 'sell.maxPerDay') +
