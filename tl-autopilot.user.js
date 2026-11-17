@@ -5085,7 +5085,7 @@
         if (this.updates) {
           if (this.prefs.updates.checkDaily) {
             this.updates.start();
-            this.updates.check().catch(() => {});
+            this.updates.check(!previous.updates.checkDaily).catch(() => {});
           } else this.updates.stop();
         }
         return copy(this.prefs);
@@ -6016,7 +6016,7 @@
 
   ('use strict');
   const TLUpdates = (() => {
-    const DAY = 24 * 60 * 60 * 1000,
+    const HOUR = 60 * 60 * 1000,
       KEY = TLRuntime.PREFIX + ':updates',
       PAGE = 'https://github.com/YatsukiRenka/tl-idle-helper/releases',
       API = 'https://api.github.com/repos/YatsukiRenka/tl-idle-helper/releases/latest',
@@ -6065,7 +6065,7 @@
           currentVersion: this.currentVersion,
           latestVersion: cache.version || null,
           checkedAt: cache.checkedAt || null,
-          nextCheckAt: cache.checkedAt ? cache.checkedAt + DAY : null,
+          nextCheckAt: cache.checkedAt ? cache.checkedAt + HOUR : null,
           newer,
           notes: cache.notes || null,
           error: cache.error || this.localError,
@@ -6081,12 +6081,11 @@
       }
       start() {
         if (this.timer) return;
-        // check() fetches at most once a day. A daily interval would delay a check until almost
-        // two days after the last one, so the interval is one hour.
+        // The five-minute timer checks the shared cache for the hourly deadline.
         this.timer = setInterval(() => {
           if (this.controller.prefs.updates.checkDaily) this.check().catch(() => {});
-        }, 60 * 60 * 1000);
-        if (this.controller.prefs.updates.checkDaily) this.check().catch(() => {});
+        }, 5 * 60 * 1000);
+        if (this.controller.prefs.updates.checkDaily) this.check(true).catch(() => {});
       }
       stop() {
         clearInterval(this.timer);
@@ -6108,13 +6107,13 @@
       }
       async check(force) {
         const prior = TLRuntime.readStorage(KEY, {});
-        if (prior.checkedAt && Date.now() - prior.checkedAt < (force === true ? 60000 : DAY)) return this.status();
+        if (prior.checkedAt && Date.now() - prior.checkedAt < (force === true ? 60000 : HOUR)) return this.status();
         if (this.busy) return this.status();
         if (!navigator.locks?.request) {
           TLRuntime.writeStorage(KEY, {
             ...prior,
             checkedAt: Date.now(),
-            error: '请使用油猴管理器检查更新，此浏览器无法协调每日检查',
+            error: '请使用油猴管理器检查更新，此浏览器无法协调定时检查',
           });
           this.onChange();
           return this.status();
@@ -6122,12 +6121,12 @@
         await navigator.locks.request(KEY, { ifAvailable: true }, async (lock) => {
           if (!lock) return;
           const cache = TLRuntime.readStorage(KEY, {});
-          if (cache.checkedAt && Date.now() - cache.checkedAt < (force === true ? 60000 : DAY)) return;
+          if (cache.checkedAt && Date.now() - cache.checkedAt < (force === true ? 60000 : HOUR)) return;
           this.busy = true;
           const next = { ...cache, checkedAt: Date.now(), error: '' };
           TLRuntime.writeStorage(KEY, next);
           if (TLRuntime.readStorage(KEY, {}).checkedAt !== next.checkedAt) {
-            this.localError = '浏览器无法保存每日检查记录，请使用油猴管理器检查更新';
+            this.localError = '浏览器无法保存定时检查记录，请使用油猴管理器检查更新';
             this.busy = false;
             this.onChange();
             return;
@@ -6164,7 +6163,7 @@
         return this.status();
       }
     }
-    return { Checker, compare, parseNotes, shouldApply, DAY, KEY, PAGE };
+    return { Checker, compare, parseNotes, shouldApply, HOUR, KEY, PAGE };
   })();
 
   ('use strict');
@@ -6639,7 +6638,7 @@
           this.updateKey = JSON.stringify(u);
           html =
             '<h3>版本与更新</h3>' +
-            f('每天检查 GitHub 上的最新版本', 'updates.checkDaily') +
+            f('开启自动更新', 'updates.checkDaily') +
             f('发现新版本时提醒', 'updates.remind') +
             f('发现新版本后自动刷新页面启用', 'updates.autoApply') +
             this.updateHTML(u);
@@ -6712,7 +6711,7 @@
       }
       updateHTML(u) {
         const sections = Array.isArray(u.notes?.sections) ? u.notes.sections : [];
-        return `<div class="update-summary"><div class="notice">当前运行 v${esc(u.currentVersion)}${u.latestVersion ? ' · GitHub 最新版本 v' + esc(u.latestVersion) : ''}${u.newer ? '<br>发现新版本。' : ''}</div><div class="hint">新版本由 Tampermonkey 自动安装（默认每天检查一次），页面刷新后生效。托管运行并开启“页面刷新后恢复托管”时，脚本发现新版本会自动刷新页面：立即一次，之后每 6 小时一次，每个版本最多 5 次。想立即更新，点“安装新版本”，在 Tampermonkey 页面确认后刷新游戏。</div>${u.newer && u.apply?.exhausted ? '<div class="hint">已自动刷新 5 次仍是旧版本，请点“安装新版本”。</div>' : ''}${u.notes ? `<h3>${esc(u.notes.title)}</h3>${sections.map((s) => `<div class="hint"><strong>${esc(s.title)}</strong></div><ul>${s.items.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`).join('')}` : u.newer ? '<div class="hint">更新内容暂未读取，可在发布页查看。</div>' : ''}<div class="hint">${u.busy ? '正在读取公开版本信息' : u.error ? esc(u.error) : u.checkedAt ? '最近检查：' + esc(new Date(u.checkedAt).toLocaleString()) : '尚未检查公开版本'}${u.nextCheckAt ? '<br>下次可检查：' + esc(new Date(u.nextCheckAt).toLocaleString()) : ''}<br>自动检查每天一次，手动检查间隔至少 60 秒。</div><div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开发布页</button>${u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : ''}</div><div class="section"><h3>选择自动更新</h3><div class="hint">在油猴管理面板打开本脚本的设置，启用“检查更新”。实际自动安装由油猴执行；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。</div></div></div>`;
+        return `<div class="update-summary"><div class="notice">当前运行 v${esc(u.currentVersion)}${u.latestVersion ? ' · GitHub 最新版本 v' + esc(u.latestVersion) : ''}${u.newer ? '<br>发现新版本。' : ''}</div>${u.newer && u.apply?.exhausted ? '<div class="hint">已自动刷新 5 次仍是旧版本，请点“安装新版本”。</div>' : ''}${u.notes ? `<h3>${esc(u.notes.title)}</h3>${sections.map((s) => `<div class="hint"><strong>${esc(s.title)}</strong></div><ul>${s.items.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`).join('')}` : u.newer ? '<div class="hint">更新内容暂未读取，可在发布页查看。</div>' : ''}<div class="hint">${u.busy ? '正在读取公开版本信息' : u.error ? esc(u.error) : u.checkedAt ? '最近检查：' + esc(new Date(u.checkedAt).toLocaleString()) : '尚未检查公开版本'}${u.nextCheckAt ? '<br>下次可检查：' + esc(new Date(u.nextCheckAt).toLocaleString()) : ''}<br>自动检查：打开或刷新页面时一次，之后每小时一次；手动检查间隔至少 60 秒。</div><div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开发布页</button>${u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : ''}</div><div class="section"><h3>选择自动更新</h3><div class="hint">在油猴管理面板打开本脚本的设置，启用“检查更新”。新版本由 Tampermonkey 自动安装；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。</div></div></div>`;
       }
       scoreHTML(status, detail) {
         const f = (l, p, o) => this.field(l, p, o);
