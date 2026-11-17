@@ -1092,7 +1092,7 @@
       const auto = !!p.gear.autoDefense && Number.isFinite(survival?.weight);
       const source = s?.scoreTargets?.source || 'none', mapIds = s?.scoreTargets?.mapIds || [];
       return { source, mapIds, mapNames: mapIds.map((id) => array(s.maps).find((m) => num(m.id) === num(id))?.name || String(id)),
-        weight: auto ? survival.weight : p.gear.defenseWeight, auto, survival, autoDefense: p.gear.autoDefense };
+        weight: auto ? survival.weight : p.gear.defenseWeight, auto, survival, survivalReason: s?.survivalReason, autoDefense: p.gear.autoDefense };
     }
     function scoringText(s) {
       const target = s.source === 'pool' ? s.mapNames.join('、') :
@@ -1101,7 +1101,7 @@
       const v = s.survival;
       const detail = s.auto ? '自动·' + (v.safe ? '安全' : '吃紧') + '：药费占收入 ' + percent(v.share) + '%，掉血占回血能力 ' +
         percent(v.ratio) + '%，低血量时间 ' + percent(v.low || 0) + '%，近 ' + v.hours.toFixed(1) + ' 战斗小时' + (v.deaths > 0 ? '，有阵亡' : '') :
-        s.autoDefense ? '数据不足，用手动值' : '手动';
+        s.autoDefense ? (s.survivalReason === 'potions' ? '未读到生命药数据，用手动值；开始托管后自动读取' : '数据不足，用手动值') : '手动';
       return '评分参照：' + target + ' · 生存权重 ' + s.weight + '（' + detail + '）';
     }
     function normalMap(s, prefs, penalty = 0) {
@@ -2696,6 +2696,7 @@
       const selected = P.scoreTargets(s, prefs, farmTargets(bridge.cache.targets, c.maps));
       return { monsters: selected.list, scoreTargets: { source: selected.source, mapIds: selected.mapIds },
         monsterTemplates: s.monsterTemplates, monsterTemplatesAt: bridge.cache.monsterTemplatesAt,
+        survivalReason: !P.healPerSecond(s) ? 'potions' : bridge.pressure?.(c.maps)?.battle < 1800000 ? 'data' : undefined,
         survival: P.survivalWeight(bridge.pressure?.(c.maps), P.healPerSecond(s)) };
     }
     function farmTargets(targets, maps) {
@@ -2751,10 +2752,12 @@
         this.lastTick = now();
         this.lastWrite = now();
         const saved = read();
-        if (saved?.version === 1 && saved.buckets && typeof saved.buckets === 'object' && !Array.isArray(saved.buckets) &&
+        if ([1, 2].includes(saved?.version) && saved.buckets && typeof saved.buckets === 'object' && !Array.isArray(saved.buckets) &&
           Object.entries(saved.buckets).every(([key, b]) => key.split(':').length === 2 &&
             key.split(':').every((v) => v !== '' && Number.isInteger(Number(v))) && b && statsFields.every((k) => k === 'low' && b[k] === undefined || Number.isFinite(b[k]) && b[k] >= 0)))
-          this.buckets = Object.fromEntries(Object.entries(saved.buckets).map(([k, b]) => [k, { ...b, low: b.low ?? 0 }]));
+          this.buckets = Object.fromEntries(Object.entries(saved.buckets).map(([k, b]) => [k, { ...b,
+            battle: saved.version === 1 && b.battle > 0 && b.hpLost === 0 && b.kills === 0 ? 0 : b.battle,
+            low: saved.version === 1 ? 0 : b.low ?? 0 }]));
         this.prune();
       }
       prune() {
@@ -2783,7 +2786,7 @@
       }
       flush() {
         this.prune();
-        this.write({ version: 1, buckets: JSON.parse(JSON.stringify(this.buckets)) });
+        this.write({ version: 2, buckets: JSON.parse(JSON.stringify(this.buckets)) });
         this.lastWrite = this.now();
       }
       clear() {
@@ -2842,6 +2845,12 @@
         if (effects.length) b.potion += context.potionPrice((d.message || '').replace(/^使用了 /, ''));
       }
       combat(d, b) {
+        const dead = d.player && (d.player.isDead || !(d.player.currentHp > 0));
+        if (d.player) {
+          if (dead && this.deathState?.sessionId === d.sessionId && !this.deathState.dead) this.death(this.mapId);
+          this.deathState = { sessionId: d.sessionId, dead: !!dead };
+        }
+        if (dead) { this.previous = null; return; }
         const low = d.player?.base.hp > 0 && d.player.currentHp / d.player.base.hp < P.HP_LINE;
         if (d.stage === 'running' && low) this.lastLowHpAt = d.serverTime;
         const p = this.previous;
@@ -2916,6 +2925,9 @@
         this.manualUntil = 0;
         this.packetTypes = [];
         this.cache = { potions: [], activityStatus: {}, forgePreviews: {}, consignment: new Map() };
+        const potions = readStorage(PREFIX + ':potions', null);
+        if (Number.isFinite(potions?.at) && Array.isArray(potions.list) && potions.list.every((p) => p && typeof p === 'object' && !Array.isArray(p)))
+          this.cache.potions = potions.list;
         this.cache.monsterTemplates = new Map();
         this.cache.monsterTemplatesAt = 0;
         const monsters = readStorage(PREFIX + ':monsters', null);
@@ -3073,8 +3085,10 @@
             this.cache.monsterTemplatesAt = Date.now();
             writeStorage(PREFIX + ':monsters', { at: this.cache.monsterTemplatesAt, list: [...this.cache.monsterTemplates] });
           }
-          if (type === 'GET_POTION_LIST_RESPONSE' && packet.success && Array.isArray(packet.data))
+          if (type === 'GET_POTION_LIST_RESPONSE' && packet.success && Array.isArray(packet.data)) {
             this.cache.potions = copy(packet.data);
+            writeStorage(PREFIX + ':potions', { at: Date.now(), list: this.cache.potions });
+          }
           if (
             type === 'ZL_STATUS_RESPONSE' &&
             packet.data &&
@@ -3973,7 +3987,11 @@
           readStorage(RUNNING, false)
         );
         this.reason = '等待游戏角色';
-        this.logs = [];
+        const logs = readStorage(PREFIX + ':log', []);
+        this.logs = Array.isArray(logs) && logs.every((v) => v && ['time', 'level', 'text'].every((k) => typeof v[k] === 'string')) ? logs.slice(0, 60) : [];
+        this.logWriteAt = 0;
+        this.lastPause = readStorage(PREFIX + ':lastPause', null);
+        if (!Number.isFinite(this.lastPause?.at) || typeof this.lastPause.reason !== 'string' || typeof this.lastPause.byUser !== 'boolean') this.lastPause = null;
         this.busy = false;
         this.action = null;
         this.suppressed = new Map();
@@ -4006,12 +4024,13 @@
         this.bridge.statsRates = () => this.stats?.rates() || null;
         this.bridge.scoringPrefs = () => this.prefs;
         this.bridge.pressure = (maps) => this.stats?.pressure((id) => P.farmMap(P.array(maps).find((m) => P.num(m.id) === id)));
-        window.addEventListener('pagehide', () => this.stats?.flush());
+        window.addEventListener('pagehide', () => { this.stats?.flush(); this.flushLogs(); });
         this.bridge.onDisconnect = () => {
           this.reason = '等待原游戏重连';
           if (!this.prefs.reconnect.enabled) this.pause('连接中断，自动恢复已关闭');
         };
         this.paint = () => {};
+        if (this.logs.length) this.log('—— 页面重新加载 ——');
         this.keepAwake = createKeepAwake(PREFIX + ':keep-awake');
         this.keepAwakeLogged = null;
         this.timer = createTicker(
@@ -4055,8 +4074,14 @@
           level,
           text: String(text).slice(0, 260),
         });
-        this.logs = this.logs.slice(0, 120);
+        this.logs = this.logs.slice(0, 60);
+        if (Date.now() - (this.logWriteAt || 0) >= 5000) this.flushLogs();
+        else if (!this.logTimer) this.logTimer = setTimeout(() => { this.logTimer = null; this.flushLogs(); }, 5000 - (Date.now() - this.logWriteAt));
         this.paint();
+      }
+      flushLogs() {
+        writeStorage(PREFIX + ':log', this.logs.slice(0, 60));
+        this.logWriteAt = Date.now();
       }
       ledgerKey() {
         return PREFIX + ':ledger:' + this.roleId + ':' + day();
@@ -4117,13 +4142,17 @@
           if (this.uncertain) return;
         }
         this.enabled = true;
+        this.lastPause = null;
+        writeStorage(PREFIX + ':lastPause', null);
         writeStorage(RUNNING, true);
         this.reason = '正在检查角色与策略';
         if (!wasUncertain) this.suppressed.clear();
         this.log('完整托管已开始');
         this.tick().catch((e) => this.pause(e.message));
       }
-      pause(reason = '已暂停托管') {
+      pause(reason = '已暂停托管', byUser = false) {
+        this.lastPause = { at: Date.now(), reason, byUser };
+        writeStorage(PREFIX + ':lastPause', this.lastPause);
         this.enabled = false;
         writeStorage(RUNNING, false);
         this.reason = reason;
@@ -4235,7 +4264,7 @@
           enabled: this.enabled,
           connected: this.bridge.connected,
           ready: this.bridge.sessionReady,
-          reason: this.reason,
+          reason: !this.enabled && this.lastPause?.byUser === false ? '托管已自行暂停（' + new Date(this.lastPause.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) + '）：' + this.lastPause.reason : this.reason,
           busy: this.busy,
           action: this.action?.label || '',
           role: s?.role
@@ -4483,6 +4512,13 @@
             packetTypes: e.packetTypes || [],
             resultConfirmed: false,
           };
+          if (a.type === 'SHOP_BUY' && a.stockItemId) {
+            this.uncertain = false;
+            this.log(safeMessage(e.message), 'warning');
+            this.suppress(a, 300000);
+            this.saveLedger();
+            return;
+          }
           this.suppress(a, 3600000);
           this.saveLedger();
           if (!this.bridge.connected && this.prefs.reconnect.enabled)
@@ -4606,7 +4642,6 @@
             this.lastDeathKey = key;
             this.deaths = this.deaths.filter((t) => now - t < 3600000);
             this.deaths.push(now);
-            this.stats?.death(s.role.mapId);
             this.penalty += 5;
             this.log('检测到阵亡，准备按游戏入口返城', 'warning');
           }
@@ -5215,7 +5250,7 @@
             this.controller.stats?.clear();
             this.renderBody();
           }
-          else if (action === 'pause') this.controller.pause();
+          else if (action === 'pause') this.controller.pause(undefined, true);
           else if (action === 'stopBattle') this.controller.stopBattle();
           else if (action === 'save') {
             this.pending = this.controller.updateConfig(this.pending);
@@ -5713,7 +5748,7 @@
     controller.updates.start();
     window.TLAutopilot = Object.freeze({
       start: () => controller.start(),
-      pause: () => controller.pause(),
+      pause: () => controller.pause(undefined, true),
       stopBattle: () => controller.stopBattle(),
       preview: () => controller.preview(),
       status: () => controller.status(),

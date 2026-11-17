@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name TL战斗数据记录器
 // @namespace https://github.com/YatsukiRenka/tl-idle-helper
-// @version 0.1.1
+// @version 0.1.2
 // @description 本地记录自身战斗数据用于评分校准，不上传任何数据。
 // @match https://tl.jayczee.top/*
 // @match https://tl2.jayczee.top/*
@@ -19,7 +19,7 @@
   const ATTRS = 'hp mp extAtk intAtk extDef intDef critRate critDef avoidance precision iceAtk fireAtk poisonAtk holyAtk iceDef fireDef poisonDef holyDef'.split(' ');
   const fields = 'battle buff dbl kills rewards exp gold dealt taken deaths potHp potMp healHp healMp'.split(' ');
   const clone = x => JSON.parse(JSON.stringify(x));
-  const dangerDefaults = { low: 0, mid: 0, hpSum: 0, hpMin: 1, b3: 0, b10: 0, hpMax: 0, pt: 0 };
+  const dangerDefaults = { dead: 0, low: 0, mid: 0, hpSum: 0, hpMin: 1, b3: 0, b10: 0, hpMax: 0, pt: 0 };
   const round = n => Math.round(n * 10000) / 10000;
   const empty = () => ({ version: 1, configs: {}, skills: {}, monsters: {}, hours: {}, floats: {} });
   const nums = x => ATTRS.map((k, i) => Number(Array.isArray(x) ? x[i] : x?.[k]) || 0);
@@ -82,8 +82,21 @@
       if (prev?.sessionId !== s.sessionId) { this.skill = ''; this.losses = []; }
       this.config(s, c);
       const b = this.bucket(s.serverTime, c);
-      this.danger(s, prev, b);
-      if (prev?.sessionId === s.sessionId) this.delta(prev, s, c, b);
+      const dead = s.player.isDead || !(s.player.currentHp > 0);
+      const wasDead = prev && (prev.player.isDead || !(prev.player.currentHp > 0));
+      if (dead) {
+        if (prev?.sessionId === s.sessionId) {
+          b.dead += Math.max(0, Math.min(5000, s.serverTime - prev.serverTime));
+          if (!wasDead) b.deaths++;
+        }
+        this.losses = [];
+        this.floating(s, prev, b);
+        this.previous = clone(s);
+        return;
+      }
+      if (wasDead) this.previous = undefined;
+      this.danger(s, wasDead ? null : prev, b);
+      if (!wasDead && prev?.sessionId === s.sessionId) this.delta(prev, s, c, b);
       this.floating(s, prev?.sessionId === s.sessionId ? prev : null, b);
       this.previous = clone(s);
     }
@@ -126,6 +139,7 @@
       if (!e || typeof e.text !== 'string' || typeof e.ownerId !== 'string') return;
       const incoming = e.ownerId === 'player', m = monsters.find(x => x.id === e.ownerId);
       this.discover(e, incoming ? 'player' : 'monster');
+      if (s.player.isDead || !(s.player.currentHp > 0)) return;
       if (incoming && /^【[^】]*】$/.test(e.text)) { this.skill = e.text.slice(1, -1); return; }
       if (!incoming && !m) return;
       const a = incoming ? b.i : b.o;
@@ -189,7 +203,7 @@
       const hours = Object.keys(this.data.hours), configs = Object.values(this.data.configs);
       return { battleHours: Object.values(this.data.hours).reduce((n, b) => n + b.battle, 0) / 3600000, configs: configs.length, hours: hours.length, samples: configs.reduce((n, c) => n + c.out.length + c.in.length, 0), bytes: JSON.stringify(this.data).length, since: hours.length ? Math.min(...hours.map(k => Number(k.split('|')[0]))) * 3600000 : null };
     }
-    exportData(meta) { return { format: 'tl-combat-data', version: 1, recorder: '0.1.1', exportedAt: this.now(), ...meta, data: clone(this.data) }; }
+    exportData(meta) { return { format: 'tl-combat-data', version: 1, recorder: '0.1.2', exportedAt: this.now(), ...meta, data: clone(this.data) }; }
   }
   if (typeof module !== 'undefined') { module.exports = { Recorder, ATTRS, hash }; return; }
   if (window.__TL_COMBAT_RECORDER__) return;
