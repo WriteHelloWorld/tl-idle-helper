@@ -1570,6 +1570,8 @@
       if (arenaRush(p, now)) return blocked('比武冲榜期间暂停投注');
       if (!state || now - state.at > 600000 || serverNow >= state.drawAt)
         return { ...result, read: true, reason: '等待读取期次' };
+      if (typeof state.rulesVersion !== 'string' || !state.rulesVersion.trim())
+        return blocked('未读到福彩规则版本');
       if (!state.accepting) return blocked('本期停止接受投注');
       if (!(serverNow < state.closeAt - 30000)) return blocked('距封盘不足 30 秒，等待下期');
       if (num(ledger?.welfare?.periods?.[state.period]) >= w.betsPerDraw) return blocked('本期投注注数已达上限');
@@ -1634,7 +1636,7 @@
         }));
       else if (welfare.ready) {
         const numbers = (p.welfare.pick === 'fixed' && welfareNumbers(p.welfare.numbers)) || randomNumbers();
-        const bet = action('WELFARE_LOTTERY_COMMAND', { action: 'bet', drawAt: s.welfare.drawAt,
+        const bet = action('WELFARE_LOTTERY_COMMAND', { action: 'bet', rulesVersion: s.welfare.rulesVersion, drawAt: s.welfare.drawAt,
           numbers, currency: p.welfare.currency, multiplier: p.welfare.multiplier },
           '快活叁福彩投注（第 ' + s.welfare.period + ' 期 · ' + numbers.join('、') + ' · ' + p.welfare.multiplier + '倍）',
           'activity', { requiresTown: true, npc: NPC.lottery, responseType: 'WELFARE_LOTTERY_RESPONSE',
@@ -5803,7 +5805,8 @@
           status = P.welfareStatus(s, P.config(this.pending), ledger, now),
           fmt = (n) => P.num(n).toLocaleString('zh-CN');
         const lines = [state ? '第 ' + state.period + ' 期 · ' +
-          (state.accepting && status.serverNow < state.closeAt ? '接受投注' : '停止接受投注') : '未读取期次',
+          (state.accepting && status.serverNow < state.closeAt ? '接受投注' : '停止接受投注') + ' · 规则 ' +
+          (typeof state.rulesVersion === 'string' && state.rulesVersion.trim() ? state.rulesVersion : '未读取') : '未读取期次',
           '今日投注 ' + fmt(used.bets) + ' 注 · 金币支出 ' + fmt(used.gold) + ' · 元宝支出 ' + fmt(used.yuanbao)];
         if (status.reason) lines.push(status.reason);
         if (s?.welfareHistory) {
