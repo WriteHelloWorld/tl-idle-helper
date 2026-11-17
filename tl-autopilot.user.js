@@ -71,6 +71,7 @@
       17: 'poisonDef',
       18: 'holyDef',
     };
+    const STAT_KEYS = Object.keys(WEIGHTS);
     const ENHANCE = [0, 10, 20, 30, 45, 65, 90, 120, 155, 195],
       ENHANCE_RATE = [0, 100, 90, 90, 80, 65, 50, 35, 25, 15];
     const GEM_TYPES = {
@@ -395,7 +396,11 @@
       );
     }
     function sellPlan(s, prefs, ledger, now = Date.now()) {
+      return withScoringPass(s, () => sellPlanFrom(s, prefs, ledger, now));
+    }
+    function sellPlanFrom(s, prefs, ledger, now) {
       const p = config(prefs), sell = [], keep = [],
+        scores = new Map(),
         provisional = p.gear.scoring === 'combat' && combatWeights(s, p) === null,
         setIds = setTemplateIds(s), backups = new Set(),
         protectedGear = new Set([...gearRejected(s.gearRejected, now).map((e) => e.id), s.gearCheck?.oldItemId]);
@@ -403,7 +408,8 @@
         for (let slot = 1; slot <= 11; slot++) {
           const best = array(s.equipments)
             .filter((e) => !e.isEquipped && num(template(e).slotType) === slot)
-            .sort((a, b) => equipmentScore(b, s, p) - equipmentScore(a, s, p))[0];
+            .map((e) => { scores.set(e, equipmentScore(e, s, p)); return e; })
+            .sort((a, b) => scores.get(b) - scores.get(a))[0];
           if (best) backups.add(num(best.id));
         }
       for (const eq of array(s.equipments)) {
@@ -429,7 +435,8 @@
         if (reason) keep.push({ eq, reason });
         else sell.push(eq);
       }
-      sell.sort((a, b) => equipmentScore(a, s, p) - equipmentScore(b, s, p));
+      for (const e of sell) if (!scores.has(e)) scores.set(e, equipmentScore(e, s, p));
+      sell.sort((a, b) => scores.get(a) - scores.get(b));
       return { sell, keep, provisional };
     }
     function slots(eq) {
@@ -466,50 +473,119 @@
       return Object.entries(values).reduce((sum, [k, n]) => sum + num(n) * num(weights[k]), 0);
     }
     const SCORE_UNIT = 10000;
+    let scoringPass = null;
+    // These signatures live only for a synchronous, read-only policy call.
+    function withScoringPass(state, run) {
+      if (scoringPass?.state === state) return run();
+      const previous = scoringPass;
+      scoringPass = { state, contexts: new Map(), worn: null };
+      try { return run(); } finally { scoringPass = previous; }
+    }
+    // Special numeric values and undefined have distinct keys, including inside stat objects.
+    const scoringKey = (value) => JSON.stringify(value, (_, v) =>
+      v === undefined ? '\u0000undefined' : typeof v === 'number' && (!Number.isFinite(v) || Object.is(v, -0))
+        ? '\u0000number:' + (Object.is(v, -0) ? '-0' : String(v))
+        : typeof v === 'string' && v.startsWith('\u0000') ? '\u0000string:' + v : v);
+    function copyScoringInput(value) {
+      if (Array.isArray(value)) return value.map(copyScoringInput);
+      if (value && typeof value === 'object')
+        return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, copyScoringInput(entry)]));
+      return value;
+    }
+    function equipmentInputs(eq, state) {
+      const t = template(eq);
+      return [eq?.id, eq?.tmplId, t.id, t.slotType, t.reqLevel, t.baseStats, t.extraStats,
+        eq?.enhanceLevel, eq?.gemSlots, eq?.isAppraisal, eq?.appraisalStats, eq?.extraStats,
+        eq?.quality, t.qualityBase, slots(eq).filter((id) => id > 0).map((id) => {
+          const gem = lookup(state.gemInfos, id);
+          return [id, gem?.id, gem?.subType, gem?.value];
+        })];
+    }
+    function wornSignature(state) {
+      if (scoringPass?.state === state && scoringPass.worn !== null) return scoringPass.worn;
+      const items = array(state.equipments).filter((e) => !!e.isEquipped);
+      // Set grouping also depends on template slots and the first matching bag-item fallback.
+      const key = scoringKey([items.map((e) => equipmentInputs(e, state)), array(state.equipSets).map((set) =>
+        [set.equipTmplIds, set.memberGroups, set.bonusTiers, set.effects,
+          array(parse(set.equipTmplIds, [])).map((id) => {
+            const known = lookup(state.allEquipTemplates, id),
+              item = array(state.equipments).find((e) => num(e.tmplId || template(e).id) === num(id));
+            return [id, !!known || !!item, (known || template(item)).slotType];
+          })])]);
+      if (scoringPass?.state === state) scoringPass.worn = key;
+      return key;
+    }
+    function scoreMemo(ctx, name, key, calculate) {
+      const memo = ctx.memos[name];
+      if (memo.has(key)) return memo.get(key);
+      const value = calculate();
+      if (memo.size >= 2000) memo.clear();
+      memo.set(key, value);
+      return value;
+    }
     function characterScore(stats, state, prefs) {
+      return withScoringPass(state, () => characterScoreFrom(stats, state, prefs));
+    }
+    function characterScoreFrom(stats, state, prefs) {
       if (!array(state?.monsters).length) return null;
       const weights = gearWeights(state, prefs), ctx = combatContext(state, prefs);
       const values = Object.fromEntries(Object.keys(WEIGHTS).map((k) => [k, num(stats?.[k])]));
-      if (!ctx || !ctx.weights) return scoreStats(values, weights);
-      values.weaponId = ctx.me.weaponId;
-      const value = combatValue(values, ctx), bare = combatValue(equipmentValues([], state, ctx), ctx);
-      return positiveValue(value) && positiveValue(bare) ?
-        SCORE_UNIT * Math.log(value / bare) : scoreStats(values, weights) * SCORE_UNIT / ctx.scale;
+      if (!ctx) return scoreStats(values, weights);
+      const key = wornSignature(state) + ':' + scoringKey([values, weights]);
+      return scoreMemo(ctx, 'character', key, () => {
+        if (!ctx.weights) return scoreStats(values, weights);
+        values.weaponId = ctx.me.weaponId;
+        const value = combatValue(values, ctx), bare = combatValue(equipmentValues([], state, ctx), ctx);
+        return positiveValue(value) && positiveValue(bare) ?
+          SCORE_UNIT * Math.log(value / bare) : scoreStats(values, weights) * SCORE_UNIT / ctx.scale;
+      });
     }
     function equipmentScore(eq, state, prefs) {
+      return withScoringPass(state, () => equipmentScoreFrom(eq, state, prefs));
+    }
+    function equipmentScoreFrom(eq, state, prefs) {
       const weights = gearWeights(state, prefs), ctx = combatContext(state, prefs);
       const fallback = () => scoreStats(equipmentStats(eq, state?.gemInfos), weights);
-      if (!ctx || !ctx.weights) return fallback();
-      const worn = wornBaseline(state, ctx), slot = num(template(eq).slotType);
-      if (!worn.slots.has(slot)) {
+      if (!ctx) return fallback();
+      const key = wornSignature(state) + ':' + scoringKey([equipmentInputs(eq, state), weights]);
+      return scoreMemo(ctx, 'equipment', key, () => {
+        if (!ctx.weights) return fallback();
+        const worn = wornBaseline(state, ctx), slot = num(template(eq).slotType);
         const rest = worn.items.filter((e) => num(template(e).slotType) !== slot);
-        worn.slots.set(slot, { rest, value: combatValue(equipmentValues(rest, state, ctx), ctx) });
-      }
-      const base = worn.slots.get(slot);
-      const after = combatValue(equipmentValues(base.rest.concat(eq), state, ctx), ctx);
-      return positiveValue(base.value) && positiveValue(after) ?
-        SCORE_UNIT * Math.log(after / base.value) : fallback() * SCORE_UNIT / ctx.scale;
+        if (!worn.slots.has(slot)) {
+          worn.slots.set(slot, { value: combatValue(equipmentValues(rest, state, ctx), ctx) });
+        }
+        const base = worn.slots.get(slot);
+        const after = combatValue(equipmentValues(rest.concat(eq), state, ctx), ctx);
+        return positiveValue(base.value) && positiveValue(after) ?
+          SCORE_UNIT * Math.log(after / base.value) : fallback() * SCORE_UNIT / ctx.scale;
+      });
     }
     const positiveValue = (value) => Number.isFinite(value) && value > 0;
-    function gemScoreOrder(state, prefs, tie = () => 0) {
+    function gemScoreOrder(state, prefs, tie = () => 0, gems = array(state.bagItems).filter((b) => b.itemTmpl)) {
       const scores = new Map();
-      const score = (gem) => {
-        if (!scores.has(gem)) scores.set(gem, statScore({
+      for (const gem of gems)
+        scores.set(gem, statScore({
           [GEM_ATTR[gem.itemTmpl.subType]]: num(gem.itemTmpl.value),
         }, state, prefs));
-        return scores.get(gem);
-      };
-      return (a, b) => score(b) - score(a) || tie(a, b);
+      return (a, b) => scores.get(b) - scores.get(a) || tie(a, b);
     }
     function statScore(values, state, prefs) {
+      return withScoringPass(state, () => statScoreFrom(values, state, prefs));
+    }
+    function statScoreFrom(values, state, prefs) {
       const weights = gearWeights(state, prefs), ctx = combatContext(state, prefs);
-      if (!ctx || !ctx.weights) return scoreStats(values, weights);
-      const next = { ...ctx.me };
-      for (const k of Object.keys(WEIGHTS))
-        next[k] = Math.max(0, next[k] + num(values[k]) * (ctx.statMult[k] ?? 1));
-      const after = combatValue(next, ctx);
-      return positiveValue(ctx.value) && positiveValue(after) ?
-        SCORE_UNIT * Math.log(after / ctx.value) : scoreStats(values, weights) * SCORE_UNIT / ctx.scale;
+      if (!ctx) return scoreStats(values, weights);
+      const key = wornSignature(state) + ':' + scoringKey([values, weights]);
+      return scoreMemo(ctx, 'stat', key, () => {
+        if (!ctx.weights) return scoreStats(values, weights);
+        const next = { ...ctx.me };
+        for (const k of STAT_KEYS)
+          next[k] = Math.max(0, next[k] + num(values[k]) * (ctx.statMult[k] ?? 1));
+        const after = combatValue(next, ctx);
+        return positiveValue(ctx.value) && positiveValue(after) ?
+          SCORE_UNIT * Math.log(after / ctx.value) : scoreStats(values, weights) * SCORE_UNIT / ctx.scale;
+      });
     }
     function sumEquipment(items, state) {
       const out = {};
@@ -517,9 +593,12 @@
       return out;
     }
     function wornBaseline(state, ctx) {
-      if (ctx.worn) return ctx.worn;
-      const items = array(state.equipments).filter((e) => !!e.isEquipped);
-      ctx.worn = { items, stats: sumEquipment(items, state),
+      const key = wornSignature(state), items = array(state.equipments).filter((e) => !!e.isEquipped);
+      if (ctx.worn?.key === key) {
+        ctx.worn.items = items;
+        return ctx.worn;
+      }
+      ctx.worn = { key, items, stats: sumEquipment(items, state),
         sets: setEffects(items, state), slots: new Map() };
       return ctx.worn;
     }
@@ -559,17 +638,35 @@
       return out;
     }
     const MAIN_SOFTCAP = 1.15, ELEMENT_RATE = 2.5;
-    function hitDamage(a, d, la, ld, mult = {}) {
-      const main = ['ext', 'int'].reduce((sum, t) => {
-        const atk = num(a[t + 'Atk']), denominator = MAIN_SOFTCAP * atk + num(d[t + 'Def']);
-        return sum + (denominator ? atk * atk / denominator : 0);
-      }, 0) * (1 + 0.005 * (la - ld));
-      const elem = elements.reduce((sum, e) => sum + Math.max(0,
-        num(a[e + 'Atk']) - num(d[e + 'Def'])) * ELEMENT_RATE * (mult[e] ?? 1), 0);
-      return { main, elem };
+    function hitDamage(a, d, la, ld, mult = EMPTY_MULT, result = {}) {
+      let main = 0, elem = 0;
+      for (const [attack, defense] of MAIN_STATS) {
+        const atk = num(a[attack]), denominator = MAIN_SOFTCAP * atk + num(d[defense]);
+        main += denominator ? atk * atk / denominator : 0;
+      }
+      main *= 1 + 0.005 * (la - ld);
+      for (const [element, attack, defense] of ELEMENT_STATS)
+        elem += Math.max(0, num(a[attack]) - num(d[defense])) * ELEMENT_RATE * (mult[element] ?? 1);
+      result.main = main;
+      result.elem = elem;
+      return result;
     }
-    const combatCache = new WeakMap();
+    const combatCache = new WeakMap(), combatContexts = new Map();
+    function combatSignature(state, prefs) {
+      const gear = scoringKey([prefs.gear.scoring, prefs.gear.autoDefense, prefs.gear.defenseWeight]);
+      if (scoringPass?.state === state && scoringPass.contexts.has(gear)) return scoringPass.contexts.get(gear);
+      // Filler and artifact records retain metadata as well as the fields used in damage formulas.
+      const key = scoringKey([STAT_KEYS.map((k) => num(state.finalAttributes[k])), num(state.role?.level),
+        weaponId(array(state.equipments).filter((e) => !!e.isEquipped)),
+        array(state.skills).map((s) => [s.currentLevel, s.skillDetail]),
+        state.monsters.map((m) => [m.category, m.level, m.base, m.weight]), array(state.artifactSkills),
+        state.aoeTargets, state.survival?.weight, prefs.gear.scoring, prefs.gear.autoDefense, prefs.gear.defenseWeight]);
+      if (scoringPass?.state === state) scoringPass.contexts.set(gear, key);
+      return key;
+    }
     const elements = ['ice', 'fire', 'poison', 'holy'];
+    const MAIN_STATS = [['extAtk', 'extDef'], ['intAtk', 'intDef']],
+      ELEMENT_STATS = elements.map((e) => [e, e + 'Atk', e + 'Def']), EMPTY_MULT = {};
     const calcType = (effect) => String(effect.calc || '').toUpperCase();
     const effectValue = (effect, level) => num(effect.base) + num(effect.grow) * (level - 1);
     function skillTargets(s, state) {
@@ -600,11 +697,17 @@
       if (!state || !prefs) return null;
       let cache = combatCache.get(state);
       if (!cache) combatCache.set(state, cache = new WeakMap());
-      if (cache.has(prefs)) return cache.get(prefs);
       if (prefs.gear?.scoring !== 'combat' || !state.finalAttributes ||
           num(state.finalAttributes.hp) <= 0 || !array(state.monsters).length) {
-        cache.set(prefs, null);
         return null;
+      }
+      const key = combatSignature(state, prefs), prior = cache.get(prefs);
+      const shared = prior?.key === key && combatContexts.get(key) === prior.ctx ? prior.ctx : combatContexts.get(key);
+      if (shared) {
+        combatContexts.delete(key);
+        combatContexts.set(key, shared);
+        cache.set(prefs, { key, ctx: shared });
+        return shared;
       }
       const me = Object.fromEntries(Object.keys(WEIGHTS).map((k) =>
         [k, num(state.finalAttributes[k])]));
@@ -612,8 +715,8 @@
       me.weaponId = weaponId(array(state.equipments).filter((e) => !!e.isEquipped));
       const skills = array(state.skills).filter((s) => num(s.currentLevel) > 0 &&
         s.skillDetail && num(s.skillDetail.unlockLevel) <= me.level).map((s) => ({
-          ...s.skillDetail, level: num(s.currentLevel),
-          effects: array(parse(s.skillDetail.effectConfig, [])),
+          ...copyScoringInput(s.skillDetail), level: num(s.currentLevel),
+          effects: copyScoringInput(array(parse(s.skillDetail.effectConfig, []))),
         }));
       const attacks = skills.filter((s) => num(s.type) === 1 && num(s.cd) > 0 &&
         !(s.effects.length && s.effects.every((e) => e.target === 'SELF')));
@@ -662,11 +765,14 @@
       casts.push(cast(filler, filler ? Math.max(0, 1 - used) : 1));
       const normal = state.monsters.filter((m) => m.category === 'MONSTER');
       const ctx = { me, ...enemyEffects(skills, state), targets: (normal.length ? normal : state.monsters).map((m) =>
-        ({ level: num(m.level), base: m.base, weight: m.weight })), casts, buffs, buffMult, elementMult, statMult,
-        tau, filler, rotation: casts.concat(buffCasts), artifactSkills: array(state.artifactSkills),
+        ({ level: num(m.level), base: copyScoringInput(m.base), weight: m.weight })), casts, buffs, buffMult, elementMult, statMult,
+        tau, filler, rotation: casts.concat(buffCasts), artifactSkills: copyScoringInput(array(state.artifactSkills)),
+        memos: { equipment: new Map(), gain: new Map(), stat: new Map(), character: new Map() },
         defenseWeight: prefs.gear.autoDefense && Number.isFinite(state.survival?.weight)
           ? state.survival.weight : prefs.gear.defenseWeight };
-      cache.set(prefs, ctx);
+      cache.set(prefs, { key, ctx });
+      combatContexts.set(key, ctx);
+      if (combatContexts.size > 8) combatContexts.delete(combatContexts.keys().next().value);
       return ctx;
     }
     const CRIT_CHANCE_OFFSET = 11;
@@ -695,36 +801,42 @@
       return { skillName: skill.skillName, weaponId: id, uptime, selfMult, targetMult,
         damageMult: 1 + num(skill.triggerChance) * num(skill.extraDamagePct) };
     }
+    function combatPlus(a, b, out) {
+      for (const k of STAT_KEYS) out[k] = Math.max(0, num(a[k]) + num(b[k]));
+      return out;
+    }
+    function combatMultiply(a, factors) {
+      for (const k in factors) if (Object.hasOwn(factors, k)) a[k] = num(a[k]) * factors[k];
+      return a;
+    }
+    function combatDamage(a, d, la, ld, mult, parts) {
+      const { main, elem } = hitDamage(a, d, la, ld, mult, parts),
+        precision = num(a.precision), avoidance = num(d.avoidance),
+        ratio = precision + avoidance === 0 ? 0 : precision / (precision + avoidance);
+      return ratio * (main * (1 + (critMultiplier(num(a.critRate), num(d.critDef)) - 1) *
+        num(a.critRate) / (num(a.critRate) + num(d.critDef) + CRIT_CHANCE_OFFSET)) + elem);
+    }
     function combatParts(values, ctx) {
-      const plus = (a, b) => Object.fromEntries(Object.keys(WEIGHTS).map((k) =>
-        [k, Math.max(0, num(a[k]) + num(b[k]))]));
-      const me = plus(values, ctx.buffs);
-      const multiply = (a, factors) => {
-        for (const [k, factor] of Object.entries(factors || {})) a[k] = num(a[k]) * factor;
-        return a;
-      };
-      multiply(me, ctx.buffMult);
-      const ratio = (a, b) => a + b === 0 ? 0 : a / (a + b);
-      const damage = (a, d, la, ld, mult = {}) => {
-        const { main, elem } = hitDamage(a, d, la, ld, mult);
-        return ratio(num(a.precision), num(d.avoidance)) *
-          (main * (1 + (critMultiplier(num(a.critRate), num(d.critDef)) - 1) *
-            num(a.critRate) / (num(a.critRate) + num(d.critDef) + CRIT_CHANCE_OFFSET)) + elem);
-      };
+      const me = combatPlus(values, ctx.buffs, {}), castValues = {}, enemy = {}, activeMe = {}, parts = {};
+      combatMultiply(me, ctx.buffMult);
       let out = 0, taken = 0, hp = 0, weight = 0, artifact = null, uptime = 0;
       for (const target of ctx.targets) {
-        const enemy = multiply({ ...target.base }, ctx.defenseMult);
+        for (const k of STAT_KEYS) {
+          enemy[k] = Object.hasOwn(target.base || EMPTY_MULT, k) ? target.base[k] : undefined;
+          activeMe[k] = me[k];
+        }
+        combatMultiply(enemy, ctx.defenseMult);
         const effect = artifactEffects(me, enemy, ctx, values.weaponId);
-        const activeMe = multiply({ ...me }, effect?.selfMult);
-        multiply(enemy, effect?.targetMult);
+        combatMultiply(activeMe, effect?.selfMult);
+        combatMultiply(enemy, effect?.targetMult);
         const w = target.weight ?? 1;
         weight += w;
         hp += w * activeMe.hp;
         if (effect) { artifact = effect; uptime += w * effect.uptime; }
         for (const cast of ctx.casts)
           out += w * cast.share * (cast.multiplier ?? 1) * (effect?.damageMult ?? 1) *
-            damage(plus(activeMe, cast.bonus), enemy, ctx.me.level, target.level, ctx.elementMult);
-        taken += w * damage(enemy, activeMe, target.level, ctx.me.level);
+            combatDamage(combatPlus(activeMe, cast.bonus, castValues), enemy, ctx.me.level, target.level, ctx.elementMult, parts);
+        taken += w * combatDamage(enemy, activeMe, target.level, ctx.me.level, EMPTY_MULT, parts);
       }
       return { out: out / weight, taken: taken / weight * (ctx.stun ?? 1), hp: hp / weight,
         ...(artifact ? { artifact: { skillName: artifact.skillName, uptime: uptime / weight } } : {}) };
@@ -737,6 +849,9 @@
     }
     const SCORE_ATTRIBUTES = Object.entries({ hp: '气血', extAtk: '外攻', intAtk: '内攻', extDef: '外防', intDef: '内防', critRate: '会心', critDef: '会防', avoidance: '闪避', precision: '命中', iceAtk: '冰攻', fireAtk: '火攻', poisonAtk: '毒攻', holyAtk: '玄攻', iceDef: '冰抗', fireDef: '火抗', poisonDef: '毒抗', holyDef: '玄抗' });
     function scoringDetail(state, prefs) {
+      return withScoringPass(state, () => scoringDetailFrom(state, prefs));
+    }
+    function scoringDetailFrom(state, prefs) {
       const ctx = combatContext(state, prefs);
       if (!ctx) return null;
       return { value: combatValue(ctx.me, ctx), parts: combatParts(ctx.me, ctx), weight: ctx.defenseWeight,
@@ -767,25 +882,31 @@
     }
 
     function projectedGain(candidate, state, prefs) {
+      return withScoringPass(state, () => projectedGainFrom(candidate, state, prefs));
+    }
+    function projectedGainFrom(candidate, state, prefs) {
       const equipped = array(state.equipments).filter((e) => !!e.isEquipped),
         slot = num(template(candidate).slotType);
       const next = equipped.filter((e) => num(template(e).slotType) !== slot).concat(candidate);
       if (prefs.gear.scoring === 'combat') {
         const ctx = combatContext(state, prefs);
         if (!ctx) return { current: 0, after: 0, gain: 0, percent: 0, pending: true };
-        const values = equipmentValues(next, state, ctx);
-        if (!ctx.gainBaseline) {
-          const parts = combatParts(ctx.me, ctx);
-          ctx.gainBaseline = { parts, value: combatPartsValue(parts, ctx) };
-        }
-        const beforeParts = ctx.gainBaseline.parts, afterParts = combatParts(values, ctx);
-        const current = ctx.gainBaseline.value, after = combatPartsValue(afterParts, ctx);
-        const percent = (a, b) => a > 0 ? (b - a) / a * 100 : b > 0 ? 100 : 0;
-        const survival = (p) => p.taken > 0 ? p.hp / p.taken : 0;
-        return { current, after, gain: after - current, percent: percent(current, after),
-          outputPercent: percent(beforeParts.out, afterParts.out),
-          survivalPercent: percent(survival(beforeParts), survival(afterParts)),
-        };
+        const key = wornSignature(state) + ':' + scoringKey(equipmentInputs(candidate, state));
+        return { ...scoreMemo(ctx, 'gain', key, () => {
+          const values = equipmentValues(next, state, ctx);
+          if (!ctx.gainBaseline) {
+            const parts = combatParts(ctx.me, ctx);
+            ctx.gainBaseline = { parts, value: combatPartsValue(parts, ctx) };
+          }
+          const beforeParts = ctx.gainBaseline.parts, afterParts = combatParts(values, ctx);
+          const current = ctx.gainBaseline.value, after = combatPartsValue(afterParts, ctx);
+          const percent = (a, b) => a > 0 ? (b - a) / a * 100 : b > 0 ? 100 : 0;
+          const survival = (p) => p.taken > 0 ? p.hp / p.taken : 0;
+          return { current, after, gain: after - current, percent: percent(current, after),
+            outputPercent: percent(beforeParts.out, afterParts.out),
+            survivalPercent: percent(survival(beforeParts), survival(afterParts)),
+          };
+        }) };
       }
       const current = setScore(equipped, state, prefs),
         after = setScore(next, state, prefs);
@@ -1484,11 +1605,13 @@
       const templates = new Map(array(s.potionTemplates).map((t) => [num(t.id), t]));
       for (const b of array(s.bagItems)) if (b.itemTmpl) templates.set(num(b.itemId), b.itemTmpl);
       return [...templates.values()]
-        .filter((t) => num(t.reqLevel) <= num(s.role.level) && potionEffect(t, attr) > 0)
-        .sort((a, b) => potionEffect(b, attr) - potionEffect(a, attr));
+        .filter((t) => num(t.reqLevel) <= num(s.role.level))
+        .map((t) => ({ template: t, heal: potionEffect(t, attr) }))
+        .filter((entry) => entry.heal > 0)
+        .sort((a, b) => b.heal - a.heal).map((entry) => entry.template);
     }
     function potionOrder(list, attr, s, p) {
-      const heal = (t) => potionEffect(t, attr),
+      const scores = new Map(list.map((t) => [t, potionEffect(t, attr)])), heal = (t) => scores.get(t),
         strong = [...list].sort((a, b) => heal(b) - heal(a));
       if (p.potions.order === 'strong') return strong;
       if (p.potions.order === 'weak') return strong.reverse();
@@ -1884,6 +2007,9 @@
       return { ...result, ready: true };
     }
     function plans(s, prefs, ledger, now = Date.now()) {
+      return withScoringPass(s, () => plansFrom(s, prefs, ledger, now));
+    }
+    function plansFrom(s, prefs, ledger, now) {
       const p = config(prefs),
         out = [];
       if (!s?.role || !num(s.role.id)) return out;
@@ -2409,8 +2535,8 @@
                 gemUsable(s, b) &&
                 num(b.itemTmpl.gemLevel) <= p.gems.maxLevel &&
                 types.includes(b.itemTmpl.gemType),
-            )
-            .sort(gemScoreOrder(s, p));
+            );
+          candidates.sort(gemScoreOrder(s, p, undefined, candidates));
           if (p.gems.inlay && all.includes(0))
             for (const gem of candidates) {
               if (occupied.some((g) => g.gemType === gem.itemTmpl.gemType)) continue;
@@ -2797,9 +2923,11 @@
         return material ? result([eq, material]) : result([], '没有可用的打孔材料或装备');
       }
       if (mode === 'GEM_INLAY') {
-        const fitting = (e) => gems.filter((b) => (ATTACK_SLOTS.concat(12).includes(num(template(e).slotType)) ? GEM_TYPES.attack : DEFENSE_SLOTS.includes(num(template(e).slotType)) ? GEM_TYPES.defense : []).includes(b.itemTmpl.gemType))
-          .filter((b) => !slots(e).some((n) => gemTemplate(s, n)?.gemType === b.itemTmpl.gemType))
-          .sort(gemScoreOrder(s, p, bound));
+        const fitting = (e) => {
+          const list = gems.filter((b) => (ATTACK_SLOTS.concat(12).includes(num(template(e).slotType)) ? GEM_TYPES.attack : DEFENSE_SLOTS.includes(num(template(e).slotType)) ? GEM_TYPES.defense : []).includes(b.itemTmpl.gemType))
+            .filter((b) => !slots(e).some((n) => gemTemplate(s, n)?.gemType === b.itemTmpl.gemType));
+          return list.sort(gemScoreOrder(s, p, bound, list));
+        };
         const eq = current.selectedEquip && slots(current.selectedEquip).includes(0) ? current.selectedEquip : equipped.find((e) => slots(e).includes(0) && fitting(e).length);
         const gem = eq && fitting(eq)[0];
         return gem ? result([eq !== current.selectedEquip && eq, gem, find(5053, 5052)]) : result([], '没有可镶嵌的宝石或空孔');
@@ -2853,8 +2981,10 @@
         if (mode === 'GEM_REMOVE') return eqs.filter((e) => slots(e).some((n) => n > 0));
       }
       if (kind === 'material' && mode === 'GEM_DRILL') return bags.filter((b) => num(b.itemTmpl.functionType) === 2 && (!eq || materialSupports(b, '装备', num(template(eq).reqLevel))));
-      if (kind === 'gem' && mode === 'GEM_INLAY') return gems.filter((b) => !eq || ((ATTACK_SLOTS.concat(12).includes(num(template(eq).slotType)) ? GEM_TYPES.attack : GEM_TYPES.defense).includes(b.itemTmpl.gemType) && !slots(eq).some((n) => gemTemplate(s, n)?.gemType === b.itemTmpl.gemType)))
-        .sort(gemScoreOrder(s, p, bound));
+      if (kind === 'gem' && mode === 'GEM_INLAY') {
+        const list = gems.filter((b) => !eq || ((ATTACK_SLOTS.concat(12).includes(num(template(eq).slotType)) ? GEM_TYPES.attack : GEM_TYPES.defense).includes(b.itemTmpl.gemType) && !slots(eq).some((n) => gemTemplate(s, n)?.gemType === b.itemTmpl.gemType)));
+        return list.sort(gemScoreOrder(s, p, bound, list));
+      }
       if (kind === 'gem' && mode === 'GEM_SYNTH') {
         const total = (b) => gems.filter((v) => id(v) === id(b)).reduce((n, v) => n + num(v.count), 0);
         return gems.filter((b) => level(b) < 6).sort((a, b) => Number(total(b) >= 2) - Number(total(a) >= 2) || Math.min(5, total(b)) - Math.min(5, total(a)) || level(a) - level(b) || id(a) - id(b) || bound(a, b));
@@ -2895,7 +3025,7 @@
       stats,
       slots,
       lookup,
-      template, equipQuality, setTemplateIds, sellPlan,
+      template, equipQuality, setTemplateIds, sellPlan, gemScoreOrder,
       poolMaps, scoreTargets, survivalWeight, healPerSecond, scoringStatus, scoringText, SUSTAIN_LINE, LOW_HP_SHARE, HP_LINE,
       viewedState, isViewedProfile, profileState, profileScoreText, tooltipContext,
       CRIT_BASE, CRIT_RATE, CRIT_FLOOR, CRIT_DEF_OFFSET, CRIT_DEF_RATE, CRIT_DEF_DIVISOR, critMultiplier,
@@ -3038,7 +3168,7 @@
     };
     const copy = (v) => {
       try {
-        return JSON.parse(JSON.stringify(v));
+        return JSON.parse(JSON.stringify(raw(v)));
       } catch {
         return null;
       }
@@ -3190,21 +3320,42 @@
       };
     }
     const raw = (v) => v?.__v_raw ?? v;
+    const monotonicNow = () => typeof performance === 'undefined' ? Date.now() : performance.now();
+    function createPaintScheduler(paint, { now = monotonicNow, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+      let last = -Infinity, timer = null;
+      const request = (immediate = false) => {
+        const time = now();
+        if (immediate || time - last >= 250) {
+          if (timer !== null) clearTimer(timer);
+          timer = null;
+          last = time;
+          paint();
+        } else if (timer === null) {
+          timer = setTimer(() => { timer = null; request(); }, 250 - (time - last));
+        }
+      };
+      return request;
+    }
     // The raw target of a pinia setup store holds refs; `_rawValue` is the ref's raw value and reading it is not tracked.
     const storeField = (store, key) => {
       const v = raw(raw(store)?.[key]);
       return v?.__v_isRef ? raw('_rawValue' in v ? v._rawValue : store[key]) : v;
     };
-    function scoringState(c, bridge, prefs = P.DEFAULTS, untracked = false) {
+    function scoringState(c, bridge, prefs = P.DEFAULTS, untracked = false, now = bridge.scoringNow?.() ?? Date.now()) {
       const field = (k) => untracked ? storeField(c, k) : c[k];
       const s = { role: field('role'), maps: field('maps'), bagItems: field('bagItems'),
         potionTemplates: bridge.cache.potions, monsterTemplates: bridge.cache.monsterTemplates,
         lastMapId: bridge.cache.targets.mapId, aoeTargets: bridge.cache.targets.alive };
       const selected = P.scoreTargets(s, prefs, farmTargets(bridge.cache.targets, s.maps));
-      return { aoeTargets: s.aoeTargets, monsters: selected.list, scoreTargets: { source: selected.source, mapIds: selected.mapIds },
+      const pressure = bridge.pressure?.(s.maps), heal = P.healPerSecond(s),
+        survival = P.survivalWeight(pressure, heal), held = bridge.scoringHold;
+      if (!held || now - held.at >= 60000 || held.mapId !== s.lastMapId ||
+          (held.survival === null) !== (survival === null))
+        bridge.scoringHold = { at: now, mapId: s.lastMapId, survival, aoeTargets: s.aoeTargets };
+      return { aoeTargets: bridge.scoringHold.aoeTargets, monsters: selected.list, scoreTargets: { source: selected.source, mapIds: selected.mapIds },
         monsterTemplates: s.monsterTemplates, monsterTemplatesAt: bridge.cache.monsterTemplatesAt,
-        survivalReason: !P.healPerSecond(s) ? 'potions' : bridge.pressure?.(s.maps)?.battle < 1800000 ? 'data' : undefined,
-        survival: P.survivalWeight(bridge.pressure?.(s.maps), P.healPerSecond(s)) };
+        survivalReason: !heal ? 'potions' : pressure?.battle < 1800000 ? 'data' : undefined,
+        survival: bridge.scoringHold.survival };
     }
     function farmTargets(targets, maps) {
       return P.farmMap(P.array(maps).find((map) => P.num(map.id) === P.num(targets?.mapId)))
@@ -4144,7 +4295,7 @@
           t.id, t.slotType, t.reqLevel, raw(t.baseStats), raw(t.extraStats), t.qualityBase]);
       }
       static prepare(owner, state, prefs, mode = prefs.market.sort) {
-        // Each pass has a fresh combat context; only listing results survive between passes.
+        // The listing cache tracks display preferences separately from policy scoring.
         state = Object.fromEntries(Object.entries(raw(state)).map(([k, v]) => [k, raw(v)]));
         state.equipments = P.array(state.equipments).map(raw);
         const combat = MarketScore.scorePrefs(prefs, 'combat'),
@@ -4663,12 +4814,18 @@
     class Controller {
       resetScoring() {
         this.stats?.resetPressure();
+        this.bridge.scoringHold = null;
         this.bridge.cache.monsterTemplates.clear();
         this.bridge.cache.monsterTemplatesAt = 0;
         writeStorage(PREFIX + ':monsters', null);
         this.log('已重置评分数据：生存权重从现在起重新统计，怪物属性将重新读取');
       }
-      constructor({ logStore = createLogStore() } = {}) {
+      constructor({ logStore = createLogStore(), now = () => Date.now(), planNow = monotonicNow } = {}) {
+        this.now = now;
+        this.planNow = planNow;
+        this.perf = { lastMs: 0, maxMs: 0, avgMs: 0 };
+        this.perfSamples = [];
+        this.perfRecent = [];
         this.prefs = P.config(readStorage(CONFIG, {}));
         writeStorage(CONFIG, this.prefs);
         this.enabled = !!(
@@ -4702,6 +4859,7 @@
         this.manualUntil = 0;
         this.reloads = readStorage(PREFIX + ':reloads', []);
         this.bridge = new Bridge((text, level) => this.log(text, level));
+        this.bridge.scoringNow = now;
         this.bridge.onMessage = (type, packet) => this.received(type, packet);
         this.bridge.onLateResponse = (waiter, packet, elapsedMs) =>
           this.log(waiter.label + '：服务器迟到的回应已收到（' + Math.round(elapsedMs / 1000) + ' 秒）', 'info');
@@ -4725,7 +4883,7 @@
           this.reason = '等待原游戏重连';
           if (!this.prefs.reconnect.enabled) this.pause('连接中断，自动恢复已关闭');
         };
-        this.paint = () => {};
+        this.paint = createPaintScheduler(() => this.panel?.paint());
         this.logReady = this.syncLogStorage();
         this.logPruneTimer = setInterval(() => this.pruneLogs(), 3600000);
         if (this.logs.length) this.log('—— 页面重新加载 ——');
@@ -5095,7 +5253,7 @@
         if (!s) return [];
         this.setRole(P.num(s.role.id));
         this.cleanPetLedger(s.pets);
-        return P.plans(this.gearState(s), this.prefs, this.ledger)
+        return this.planningPass(s, this.prefs)
           .map((a) => ({
             type: a.type,
             label: a.label,
@@ -5164,6 +5322,7 @@
             });
         }
         return {
+          perf: this.perfStatus(),
           gear: this.gearStatus(s),
           stats: this.stats ? { summary: this.stats.summary(), rates: this.stats.rates() } : null,
           potions: Object.fromEntries(['HP', 'MP'].map((attr) => {
@@ -5234,6 +5393,32 @@
         if (type === 'CAMP_ENTER_RESPONSE' && packet.success)
           delete this.bridge.cache.activityStatus.camp;
         this.paint();
+      }
+      perfStatus() {
+        const now = this.now?.() ?? Date.now();
+        this.perfSamples = (this.perfSamples || []).filter((sample) => now - sample.at <= 600000);
+        this.perf ||= { lastMs: 0, maxMs: 0, avgMs: 0 };
+        this.perf.maxMs = this.perfSamples.reduce((max, sample) => Math.max(max, sample.ms), 0);
+        return { ...this.perf };
+      }
+      planningPass(state, prefs, now = Date.now()) {
+        const clock = this.planNow || monotonicNow, started = clock();
+        try {
+          return P.plans(this.gearState(state, now), prefs, this.ledger, now);
+        } finally {
+          const ended = clock(), ms = Math.max(0, ended - started), at = this.now?.() ?? Date.now();
+          this.nextPlanAt = ended + 4 * ms;
+          (this.perfSamples ||= []).push({ at, ms });
+          (this.perfRecent ||= []).push(ms);
+          if (this.perfRecent.length > 20) this.perfRecent.shift();
+          this.perf = { lastMs: ms, maxMs: 0,
+            avgMs: this.perfRecent.reduce((sum, value) => sum + value, 0) / this.perfRecent.length };
+          this.perfStatus();
+          if (ms > 200 && (this.perfWarningAt == null || at - this.perfWarningAt >= 3600000)) {
+            this.perfWarningAt = at;
+            this.log('策略计算耗时 ' + Math.round(ms) + ' 毫秒，已自动放慢检查频率；请把这条日志反馈给作者', 'warning');
+          }
+        }
       }
       suppress(a, ms = 300000) {
         this.suppressed.set(a.key, Date.now() + ms);
@@ -5602,9 +5787,13 @@
         this.updateGearCheck(s, now);
         if (this.maybeApplyUpdate(now)) return;
         if (P.num(s.role.mapId) === 20070 || s.trial?.run) {
+          if ((this.planNow || monotonicNow)() < (this.nextPlanAt ?? -Infinity)) {
+            this.paint();
+            return;
+          }
           const prefs = s.trial?.run ? { ...this.prefs,
             hidden: { ...this.prefs.hidden, enabled: true } } : this.prefs;
-          const a = P.plans(this.gearState(s, now), prefs, this.ledger, now)
+          const a = this.planningPass(s, prefs, now)
             .sort((a, b) => Number(b.type === 'TRIAL_COMMAND') -
               Number(a.type === 'TRIAL_COMMAND')).find((a) =>
             (a.readOnly || a.type === 'UPDATE_SETTINGS') &&
@@ -5671,7 +5860,11 @@
         }
         const rushTown = P.arenaRush(this.prefs, now) && P.num(s.role.level) >= 30
           ? P.townFor(s, P.NPC.arena) : null;
-        let plans = P.plans(this.gearState(s, now), this.prefs, this.ledger, now).filter(
+        if ((this.planNow || monotonicNow)() < (this.nextPlanAt ?? -Infinity)) {
+          this.paint();
+          return;
+        }
+        let plans = this.planningPass(s, this.prefs, now).filter(
           (a) =>
             (!rushTown || !a.activity) &&
             (this.suppressed.get(a.key) || 0) < now &&
@@ -6009,7 +6202,7 @@
     }
     const arraySafe = (v) => (Array.isArray(v) ? v : []);
     return {
-      Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake, createLogStore, showConflictNotice,
+      Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake, createLogStore, showConflictNotice, createPaintScheduler, scoringState, copy,
     };
   })();
   if (typeof module !== 'undefined' && module.exports) module.exports.TLRuntime = TLRuntime;
@@ -6208,6 +6401,8 @@
     class Panel {
       constructor(controller) {
         this.controller = controller;
+        this.collapsed = false;
+        this.bodyDirty = true;
         this.section = 'status';
         this.pending = TLPolicy.clone(controller.prefs);
         this.dirty = false;
@@ -6238,41 +6433,42 @@
           if (!b) return;
           const action = b.dataset.action;
           if (b.classList.contains('launcher') || action === 'collapse') {
-            this.root.querySelector('.wrap').classList.toggle('collapsed');
+            this.collapsed = this.root.querySelector('.wrap').classList.toggle('collapsed');
+            if (!this.collapsed) this.controller.paint(true);
             return;
           }
           if (b.dataset.tab) {
             this.section = b.dataset.tab;
-            this.renderBody();
+            this.requestBody();
             if (this.section === 'settings') await this.queryDatabaseUsage();
             return;
           }
           if (action === 'start') this.controller.start();
           else if (action === 'clearGearRejected') {
             this.controller.clearGearRejected();
-            this.renderBody();
+            this.requestBody();
           }
           else if (action === 'resetScoring' && confirm('重置评分数据？自动生存权重将从现在起重新统计。')) {
             this.controller.resetScoring();
-            this.renderBody();
+            this.requestBody();
           }
           else if (action === 'clearStats' && confirm('清空全部收益统计？')) {
             this.controller.stats?.clear();
-            this.renderBody();
+            this.requestBody();
           }
           else if (action === 'pause') this.controller.pause(undefined, true);
           else if (action === 'stopBattle') this.controller.stopBattle();
           else if (action === 'save') {
             this.pending = this.controller.updateConfig(this.pending);
             this.dirty = false;
-            this.renderBody();
+            this.requestBody();
           } else if (action === 'preview') {
             this.previewPlans = this.controller.preview();
-            this.renderBody();
+            this.requestBody();
           } else if (action === 'defaults') {
             this.pending = TLPolicy.clone(TLPolicy.DEFAULTS);
             this.dirty = true;
-            this.renderBody();
+            this.requestBody();
           } else if (action === 'export') this.download('天龙托管配置.json', this.pending);
           else if (action === 'diagnostics')
             this.download('天龙托管诊断.json', this.controller.status());
@@ -6295,7 +6491,7 @@
               if (line) line.textContent = '日志操作失败：' + error.message;
             }
           }
-          this.paint();
+          this.controller.paint();
         });
         this.root.addEventListener('input', (e) => {
           const path = e.target.dataset.path;
@@ -6340,7 +6536,7 @@
           if (action === 'checkUpdate')
             this.controller.updates
               ?.check(true)
-              .then(() => this.renderBody())
+              .then(() => this.requestBody())
               .catch(() => {});
           else if (action === 'openUpdate')
             window.open(this.controller.updates.status().page, '_blank', 'noopener,noreferrer');
@@ -6348,13 +6544,19 @@
             window.open(this.controller.updates.status().installUrl, '_blank', 'noopener,noreferrer');
           else if (action === 'dismissUpdate') {
             this.controller.updates?.dismiss();
-            this.renderBody();
+            this.requestBody();
           }
         });
         this.root.querySelector('style').textContent += BUDGET_CSS;
-        this.controller.paint = () => this.paint();
-        this.renderBody();
-        this.paint();
+        this.controller.panel = this;
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) this.controller.paint(true);
+        });
+        this.controller.paint(true);
+      }
+      requestBody() {
+        this.bodyDirty = true;
+        this.controller.paint();
       }
       field(label, path, options = {}) {
         const value = pathGet(this.pending, path);
@@ -6372,7 +6574,7 @@
           this.pending = TLPolicy.config(JSON.parse(text));
           this.dirty = true;
           this.controller.log('JSON配置已载入，点击保存生效');
-          this.renderBody();
+          this.requestBody();
         } catch (error) {
           const line = this.root.querySelector('.error');
           if (line) line.textContent = 'JSON格式错误：' + error.message;
@@ -6412,13 +6614,12 @@
         }
         this.root.querySelector('.log-usage').textContent = this.logUsageText();
       }
-      renderBody() {
-        const f = (l, p, o) => this.field(l, p, o),
-          s = this.controller.bridge.state(),
-          status = this.controller.status();
+      renderBody(status = this.controller.status(), s = this.controller.bridge.state()) {
+        const f = (l, p, o) => this.field(l, p, o);
+        this.bodyDirty = false;
         let html = '';
         if (this.section === 'stats') {
-          html = this.statsHTML(status.stats, s?.maps);
+          html = this.statsHTML(status.stats, s?.maps, status);
           this.statsKey = html;
           this.statsPaintAt = Date.now();
         }
@@ -6664,7 +6865,10 @@
             ['当日冶炼经验预算', usage(status.experienceBudgets?.smelt.used, status.budget.smeltExpPerDay)],
           ];
         if (status.ledger) rows.push(['今日经验总投入', fmt(status.ledger.exp)]);
-        return rows.map(([label, value]) => `<div class="budget-card"><span>${label}</span><span>${value}</span></div>`).join('');
+        const perf = status.perf || { lastMs: 0, avgMs: 0, maxMs: 0 };
+        return rows.map(([label, value]) => `<div class="budget-card"><span>${label}</span><span>${value}</span></div>`).join('') +
+          '<div class="hint">策略计算耗时：最近 ' + Math.round(perf.lastMs) + ' 毫秒 · 平均 ' + Math.round(perf.avgMs) +
+          ' 毫秒 · 10 分钟内最长 ' + Math.round(perf.maxMs) + ' 毫秒</div>';
       }
       logsHTML(logs) {
         return logs.length
@@ -6798,7 +7002,7 @@
         ].map(esc).join('<br>') + '</div><div class="hint">评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。战斗数据不足 30 分钟时生存权重用手动值。</div>' +
           '<div class="hint">自动生存权重按门槛计算：安全时只等于生命药费占金币收入的比例（接近 0，防御和抗性几乎不加分）。实战评分每 100 分约等于整体实战能力的 1%；人物面板的实战评分是全身装备的合计贡献，换一件装备后它的变化等于两件装备的分数差。</div></div>';
       }
-      statsHTML(stats, maps) {
+      statsHTML(stats, maps, status = this.controller.status()) {
         if (!stats) return '<div class="hint">等待角色数据</div>';
         const fmt = TLRuntime.statsNumber, duration = TLRuntime.statsDuration;
         const rate = (n, time) => fmt(time ? n * 3600000 / time : 0);
@@ -6818,7 +7022,6 @@
             .map((v) => '<td>' + v + '</td>').join('') + '</tr>';
         }).join('');
         const r = stats.rates;
-        const status = this.controller.status();
         return card('近 1 小时', stats.summary.recent) + card('今日', stats.summary.today) + card('上一小时', stats.summary.previous) +
           '<div class="section"><h3>按地图（近 72 小时）</h3><table class="income-table"><thead><tr>' +
           ['地图', '战斗时长', '经验/时', '单倍经验/时', '金币/时', '药费/时', '净金币/时', '阵亡'].map((v) => '<th>' + v + '</th>').join('') +
@@ -6832,15 +7035,8 @@
           '</div><button class="btn" type="button" data-action="clearStats">清空统计</button>' +
           '<div class="hint">经验按击杀前后的差值统计；“单倍经验”把天灵丹双倍时段折半，方便比较地图。每小时数值按在线时间折算，地图表按战斗时间折算。</div>';
       }
-      paint() {
-        if (!this.root) return;
-        const s = this.controller.status(),
-          fmt = (n) =>
-            Math.abs(Number(n || 0)) >= 1e12
-              ? Number(n).toExponential(2)
-              : Number(n || 0).toLocaleString('zh-CN');
-        const u = s.updates,
-          tab = this.root.querySelector('[data-tab="updates"]');
+      paintUpdates(u, status) {
+        const tab = this.root.querySelector('[data-tab="updates"]');
         if (tab) {
           tab.classList.toggle('has-update', !!u?.newer);
           tab.textContent = u?.newer ? '更新 · 新' : '更新';
@@ -6854,19 +7050,40 @@
         ) {
           this.notifiedVersion = u.latestVersion;
           this.section = 'updates';
+          this.collapsed = false;
           this.root.querySelector('.wrap').classList.remove('collapsed');
-          this.renderBody();
+          this.renderBody(status || { updates: u }, null);
         }
+      }
+      paint() {
+        if (!this.root) return;
+        if ((typeof document !== 'undefined' && document.hidden) || this.collapsed) {
+          const now = Date.now();
+          if (this.updatePaintAt == null || now - this.updatePaintAt >= 5000) {
+            this.updatePaintAt = now;
+            this.paintUpdates(this.controller.updates?.status());
+          }
+          return;
+        }
+        const s = this.controller.status(),
+          fmt = (n) =>
+            Math.abs(Number(n || 0)) >= 1e12
+              ? Number(n).toExponential(2)
+              : Number(n || 0).toLocaleString('zh-CN');
+        const u = s.updates;
+        this.updatePaintAt = Date.now();
+        this.paintUpdates(u, s);
+        if (this.bodyDirty) this.renderBody(s);
         if (!this.dirty && JSON.stringify(this.pending) !== JSON.stringify(this.controller.prefs)) {
           this.pending = TLPolicy.clone(this.controller.prefs);
-          this.renderBody();
+          this.renderBody(s);
         }
         if (this.section === 'updates' && !this.dirty && this.updateKey !== JSON.stringify(u))
-          this.renderBody();
+          this.renderBody(s);
         if (this.section === 'stats' && !this.dirty && Date.now() - this.statsPaintAt >= 5000 &&
-          this.statsKey !== this.statsHTML(s.stats, this.controller.bridge.state()?.maps)) this.renderBody();
+          this.statsKey !== this.statsHTML(s.stats, this.controller.bridge.state()?.maps, s)) this.renderBody(s);
         if (this.section === 'score' && !this.dirty && Date.now() - this.scorePaintAt >= 5000 &&
-          this.scoreKey !== this.scoreHTML(s, TLPolicy.scoringDetail(this.controller.bridge.state(), this.pending))) this.renderBody();
+          this.scoreKey !== this.scoreHTML(s, TLPolicy.scoringDetail(this.controller.bridge.state(), this.pending))) this.renderBody(s);
         if (this.section === 'battle') {
           const welfare = this.root.querySelector('.welfare-status');
           if (welfare) welfare.innerHTML = this.welfareHTML(this.controller.bridge.state(), s.ledger);
@@ -6920,7 +7137,7 @@
         const key = s.role?.id || '';
         if (key && key !== this.roleKey && !this.dirty) {
           this.roleKey = key;
-          this.renderBody();
+          this.renderBody(s);
         }
       }
       download(name, value, type = 'application/json') {
