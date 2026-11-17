@@ -675,7 +675,9 @@
         ...(artifact ? { artifact: { skillName: artifact.skillName, uptime: uptime / weight } } : {}) };
     }
     function combatValue(values, ctx) {
-      const p = combatParts(values, ctx);
+      return combatPartsValue(combatParts(values, ctx), ctx);
+    }
+    function combatPartsValue(p, ctx) {
       return p.out * (p.taken > 0 && p.hp > 0 ? (p.hp / p.taken) ** ctx.defenseWeight : 1);
     }
     const SCORE_ATTRIBUTES = Object.entries({ hp: '气血', extAtk: '外攻', intAtk: '内攻', extDef: '外防', intDef: '内防', critRate: '会心', critDef: '会防', avoidance: '闪避', precision: '命中', iceAtk: '冰攻', fireAtk: '火攻', poisonAtk: '毒攻', holyAtk: '玄攻', iceDef: '冰抗', fireDef: '火抗', poisonDef: '毒抗', holyDef: '玄抗' });
@@ -717,8 +719,12 @@
         const ctx = combatContext(state, prefs);
         if (!ctx) return { current: 0, after: 0, gain: 0, percent: 0, pending: true };
         const values = equipmentValues(next, state, ctx);
-        const current = combatValue(ctx.me, ctx), after = combatValue(values, ctx);
-        const beforeParts = combatParts(ctx.me, ctx), afterParts = combatParts(values, ctx);
+        if (!ctx.gainBaseline) {
+          const parts = combatParts(ctx.me, ctx);
+          ctx.gainBaseline = { parts, value: combatPartsValue(parts, ctx) };
+        }
+        const beforeParts = ctx.gainBaseline.parts, afterParts = combatParts(values, ctx);
+        const current = ctx.gainBaseline.value, after = combatPartsValue(afterParts, ctx);
         const percent = (a, b) => a > 0 ? (b - a) / a * 100 : b > 0 ? 100 : 0;
         const survival = (p) => p.taken > 0 ? p.hp / p.taken : 0;
         return { current, after, gain: after - current, percent: percent(current, after),
@@ -3055,15 +3061,22 @@
         },
       };
     }
-    function scoringState(c, bridge, prefs = P.DEFAULTS) {
-      const s = { role: c.role, maps: c.maps, bagItems: c.bagItems,
+    const raw = (v) => v?.__v_raw ?? v;
+    // The raw target of a pinia setup store holds refs; `_rawValue` is the ref's raw value and reading it is not tracked.
+    const storeField = (store, key) => {
+      const v = raw(raw(store)?.[key]);
+      return v?.__v_isRef ? raw('_rawValue' in v ? v._rawValue : store[key]) : v;
+    };
+    function scoringState(c, bridge, prefs = P.DEFAULTS, untracked = false) {
+      const field = (k) => untracked ? storeField(c, k) : c[k];
+      const s = { role: field('role'), maps: field('maps'), bagItems: field('bagItems'),
         potionTemplates: bridge.cache.potions, monsterTemplates: bridge.cache.monsterTemplates,
         lastMapId: bridge.cache.targets.mapId, aoeTargets: bridge.cache.targets.alive };
-      const selected = P.scoreTargets(s, prefs, farmTargets(bridge.cache.targets, c.maps));
+      const selected = P.scoreTargets(s, prefs, farmTargets(bridge.cache.targets, s.maps));
       return { aoeTargets: s.aoeTargets, monsters: selected.list, scoreTargets: { source: selected.source, mapIds: selected.mapIds },
         monsterTemplates: s.monsterTemplates, monsterTemplatesAt: bridge.cache.monsterTemplatesAt,
-        survivalReason: !P.healPerSecond(s) ? 'potions' : bridge.pressure?.(c.maps)?.battle < 1800000 ? 'data' : undefined,
-        survival: P.survivalWeight(bridge.pressure?.(c.maps), P.healPerSecond(s)) };
+        survivalReason: !P.healPerSecond(s) ? 'potions' : bridge.pressure?.(s.maps)?.battle < 1800000 ? 'data' : undefined,
+        survival: P.survivalWeight(bridge.pressure?.(s.maps), P.healPerSecond(s)) };
     }
     function farmTargets(targets, maps) {
       return P.farmMap(P.array(maps).find((map) => P.num(map.id) === P.num(targets?.mapId)))
@@ -3308,7 +3321,7 @@
         this.authFailed = false;
         this.manualUntil = 0;
         this.packetTypes = [];
-        this.cache = { potions: [], activityStatus: {}, forgePreviews: {}, consignment: new Map(), viewedPlayers: new Map() };
+        this.cache = { potions: [], activityStatus: {}, forgePreviews: {}, consignment: new Map(), consignmentVersion: 0, viewedPlayers: new Map() };
         const potions = readStorage(PREFIX + ':potions', null);
         if (Number.isFinite(potions?.at) && Array.isArray(potions.list) && potions.list.every((p) => p && typeof p === 'object' && !Array.isArray(p)))
           this.cache.potions = potions.list;
@@ -3400,9 +3413,11 @@
               if (
                 packet.type === 'CONSIGNMENT_LIST' &&
                 P.num(packet.payload?.page) === 1 &&
-                !packet.payload?.myList
-              )
+                !packet.payload?.myList && bridge.cache.consignment.size
+              ) {
                 bridge.cache.consignment.clear();
+                bridge.cache.consignmentVersion = P.num(bridge.cache.consignmentVersion) + 1;
+              }
               if (!bridge.sending && bridge.waiter && !bridge.waiter.petHatch && packet.type === bridge.waiter.type && !['ARENA_COMMAND', 'PET_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(packet.type))
                 bridge.waiter.interference = true;
             } catch {}
@@ -3494,9 +3509,11 @@
             Array.isArray(packet.data?.items)
           ) {
             const market = this.cache.consignment;
+            let changed = false;
             for (const item of packet.data.items)
-              if (item && item.id != null) market.set(item.id, item);
+              if (item && item.id != null) { market.set(item.id, item); changed = true; }
             while (market.size > 4000) market.delete(market.keys().next().value);
+            if (changed) this.cache.consignmentVersion = P.num(this.cache.consignmentVersion) + 1;
           }
           if (type === 'GET_MONSTER_TMPL_RESPONSE' && packet.success && Array.isArray(packet.data)) {
             for (const entry of packet.data.filter((e) => e.template))
@@ -3971,38 +3988,89 @@
           cached = {};
           MarketScore.scoreCache.set(prefs, cached);
         }
-        if (!cached[type]) {
-          const scoring = type === 'power' ? 'linear' : 'combat';
-          const weights = type === 'power' ? P.WEIGHTS : prefs.gear.weights;
+        const scoring = type === 'power' ? 'linear' : 'combat';
+        const weights = type === 'power' ? P.WEIGHTS : prefs.gear.weights;
+        if (!cached[type] || cached[type].gear.scoring !== scoring || cached[type].gear.weights !== weights ||
+            cached[type].gear.defenseWeight !== prefs.gear.defenseWeight || cached[type].gear.autoDefense !== prefs.gear.autoDefense) {
           cached[type] = prefs.gear.scoring === scoring && prefs.gear.weights === weights
             ? prefs : { ...prefs, gear: { ...prefs.gear, scoring, weights } };
         }
         return cached[type];
       }
       static equipment(it, state) {
+        it = raw(it);
         if (!it) return null;
         if (!(P.num(it.itemType) === 1 || it.equipTmpl)) return null;
-        const tmpl =
+        const tmpl = raw(
           it.equipTmpl ||
           state.allEquipTemplates?.get?.(P.num(it.itemId)) ||
-          P.lookup(state.allEquipTemplates, it.itemId);
+          P.lookup(state.allEquipTemplates, it.itemId));
         if (!tmpl) return null;
         return { ...it, equipTmpl: tmpl, tmplId: it.tmplId ?? tmpl.id, isEquipped: 0 };
       }
+      static equipmentSignature(eq) {
+        eq = raw(eq);
+        const t = raw(eq.equipTmpl || eq.tmpl || eq);
+        return JSON.stringify([eq.id, eq.tmplId, eq.itemId, eq.enhanceLevel, raw(eq.gemSlots),
+          eq.isAppraisal, raw(eq.appraisalStats), raw(eq.extraStats), eq.quality,
+          t.id, t.slotType, t.reqLevel, raw(t.baseStats), raw(t.extraStats), t.qualityBase]);
+      }
+      static prepare(owner, state, prefs, mode = prefs.market.sort) {
+        // Each pass has a fresh combat context; only listing results survive between passes.
+        state = Object.fromEntries(Object.entries(raw(state)).map(([k, v]) => [k, raw(v)]));
+        state.equipments = P.array(state.equipments).map(raw);
+        const combat = MarketScore.scorePrefs(prefs, 'combat'),
+          weights = P.combatWeights(state, combat), ctx = P.combatContext(state, combat),
+          structural = JSON.stringify([mode, prefs.gear.scoring, prefs.gear.weights, state.role?.id, state.role?.level,
+            state.equipments.filter((e) => e.isEquipped).map(MarketScore.equipmentSignature), !!ctx, weights !== null]),
+          numeric = JSON.stringify([weights, ctx?.defenseWeight]), now = Date.now();
+        let cache = Object.hasOwn(owner, 'listingScores') ? owner.listingScores : null;
+        if (!cache || cache.weights !== prefs.gear.weights || cache.structural !== structural ||
+            (cache.numeric !== numeric && now - cache.at >= 60000))
+          owner.listingScores = cache = { structural, numeric, weights: prefs.gear.weights,
+            at: now, listings: new Map(), bags: new Map() };
+        return { cache, state, prefs, combat, power: MarketScore.scorePrefs(prefs, 'power'), ready: weights !== null };
+      }
+      static entry(view, item, bag = false) {
+        item = raw(item);
+        if (!item) return null;
+        const eq = bag ? item : MarketScore.equipment(item, view.state),
+          signature = eq ? MarketScore.equipmentSignature(eq) : '',
+          entries = bag ? view.cache.bags : view.cache.listings, id = item.id ?? item;
+        let entry = entries.get(id);
+        if (!entry || entry.signature !== signature) {
+          entry = { signature, eq, scores: {}, gains: {}, labels: {} };
+          entries.set(id, entry);
+        }
+        return entry;
+      }
+      static score(entry, type, view) {
+        if (!Object.hasOwn(entry.scores, type))
+          entry.scores[type] = type === 'power'
+            ? P.scoreStats(P.equipmentStats(entry.eq, view.state.gemInfos), P.WEIGHTS)
+            : P.equipmentScore(entry.eq, view.state, view.combat);
+        return entry.scores[type];
+      }
+      static gain(entry, type, view) {
+        if (!Object.hasOwn(entry.gains, type))
+          entry.gains[type] = P.projectedGain(entry.eq, view.state, view[type]);
+        return entry.gains[type];
+      }
       sortListings(list, mode, state, prefs) {
         if (mode === 'off' || !state) return null;
-        const scoring = MarketScore.scorePrefs(prefs, 'combat');
-        if (mode !== 'power' && P.combatWeights(state, scoring) === null) return null;
+        const view = MarketScore.prepare(this, state, prefs, mode);
+        if (mode !== 'power' && !view.ready) return null;
         const keys = new Map();
-        for (const it of list) {
+        for (const value of raw(list)) {
+          const it = raw(value);
           if (keys.has(it)) continue;
-          const eq = MarketScore.equipment(it, state);
-          keys.set(it, eq ? { equipment: true, value: mode === 'power'
-            ? P.scoreStats(P.equipmentStats(eq, state.gemInfos), P.WEIGHTS)
-            : mode === 'combat' ? P.equipmentScore(eq, state, scoring)
-            : P.projectedGain(eq, state, scoring).percent } : { equipment: false, value: 0 });
+          const entry = MarketScore.entry(view, it);
+          keys.set(it, entry?.eq ? { equipment: true, value: mode === 'gain'
+            ? MarketScore.gain(entry, 'combat', view).percent : MarketScore.score(entry, mode, view) }
+            : { equipment: false, value: 0 });
         }
         return (a, b) => {
+          a = raw(a); b = raw(b);
           if (a == null || b == null) return a == null ? (b == null ? 0 : 1) : -1;
           const x = keys.get(a), y = keys.get(b);
           return Number(y.equipment) - Number(x.equipment) || y.value - x.value || (b.id || 0) - (a.id || 0);
@@ -4014,7 +4082,7 @@
           try {
             const prefs = market.controller.prefs;
             if (prefs.market.showScore !== false && prefs.market.sort !== 'off' && isOpen() && this.length) {
-              const first = this.find((it) => it != null);
+              const first = raw(raw(this).find((it) => it != null));
               if (first && typeof first === 'object' && 'sellerName' in first && 'price' in first)
                 selected = market.sortListings(this, prefs.market.sort, market.state(), prefs) || compare;
             }
@@ -4072,27 +4140,42 @@
           currency: price?.classList.contains('yuanbao-price') ? 2 : 1,
         };
       }
-      label(card, state, prefs) {
+      static cardKey(it) {
+        it = raw(it);
+        return JSON.stringify([String(it.itemName || '').trim(), String(it.sellerName || '').trim(),
+          P.num(it.price), P.num(it.currency, 1)]);
+      }
+      static index(owner) {
+        const cache = owner.controller.bridge.cache, source = cache.consignment, version = cache.consignmentVersion;
+        let index = owner.marketIndex;
+        if (!index || index.source !== source || index.version !== version) {
+          index = { source, version, items: new Map() };
+          for (const item of source.values()) {
+            if (!item) continue;
+            const key = MarketScore.cardKey(item), matches = index.items.get(key) || [];
+            matches.push(raw(item));
+            index.items.set(key, matches);
+          }
+          owner.marketIndex = index;
+        }
+        return index.items;
+      }
+      label(card, state, prefs, view) {
         const scoringPrefs = MarketScore.scorePrefs(prefs, prefs.market.scoreType);
         const info = this.read(card);
         if (!info.name || info.price < 0) return null;
-        const matches = [];
-        for (const it of this.controller.bridge.cache.consignment.values())
-          if (
-            it &&
-            String(it.itemName || '').trim() === info.name &&
-            String(it.sellerName || '').trim() === info.seller &&
-            P.num(it.price) === info.price &&
-            P.num(it.currency, 1) === info.currency
-          )
-            matches.push(it);
+        const key = JSON.stringify([info.name, info.seller, info.price, info.currency]),
+          matches = MarketScore.index(this).get(key) || [];
+        if (!matches.length) return null;
+        view ||= MarketScore.prepare(this, state, prefs);
         const scored = [];
         for (const it of matches) {
-          const eq = MarketScore.equipment(it, state);
-          if (!eq) continue;
+          if (MarketScore.cardKey(it) !== key) continue;
+          const entry = MarketScore.entry(view, it);
+          if (!entry.eq) continue;
           scored.push({
-            score: P.equipmentScore(eq, state, scoringPrefs),
-            gain: P.projectedGain(eq, state, scoringPrefs),
+            score: MarketScore.score(entry, prefs.market.scoreType, view),
+            gain: MarketScore.gain(entry, prefs.market.scoreType, view),
           });
         }
         if (!scored.length) return null;
@@ -4236,21 +4319,22 @@
         };
       }
       state() {
-        const c = this.controller.bridge.character();
-        return c?.role?.id
+        const c = this.controller.bridge.character(), field = (k) => c ? storeField(c, k) : undefined,
+          role = field('role');
+        return role?.id
           ? {
-              role: c.role,
+              role,
               ...(this.controller.bridge.noBatchSell ? { batchSell: false } : {}),
-              skills: copy(c.skills),
-              artifactSkills: copy(Array.from(c.artifactSkillConfigs?.values() || [])),
-              maps: c.maps,
-              finalAttributes: copy(c.finalAttributes),
-              ...scoringState(c, this.controller.bridge, this.controller.prefs),
-              equipments: c.equipments,
-              warehouseEquips: c.warehouseEquips,
-              equipSets: c.equipSets,
-              gemInfos: c.gemInfos,
-              allEquipTemplates: c.allEquipTemplates,
+              skills: copy(field('skills')),
+              artifactSkills: copy(Array.from(field('artifactSkillConfigs')?.values() || [])),
+              maps: field('maps'),
+              finalAttributes: copy(field('finalAttributes')),
+              ...scoringState(c, this.controller.bridge, this.controller.prefs, true),
+              equipments: field('equipments'),
+              warehouseEquips: field('warehouseEquips'),
+              equipSets: field('equipSets'),
+              gemInfos: field('gemInfos'),
+              allEquipTemplates: field('allEquipTemplates'),
             }
           : null;
       }
@@ -4302,7 +4386,7 @@
         if (!cards.length && !grids.length && !tips.length && !profiles.length) return;
         const prefs = this.controller.prefs,
           state = this.state();
-        const instances = state && prefs.market.tipScore !== false ? Array.from(this.controller.bridge.components()) : [],
+        const instances = (tips.length || profiles.length) && state && prefs.market.tipScore !== false ? Array.from(this.controller.bridge.components()) : [],
           profileInstances = instances.filter((vm) => vm.type?.__name === 'CharacterProfile' && vm.props?.modelValue),
           entries = this.controller.bridge.cache?.viewedPlayers;
         if (tips.length && state && prefs.market.tipScore !== false) {
@@ -4358,24 +4442,28 @@
         if (filled !== Math.min(items.length, slots.length)) return null;
         return { slots, items };
       }
-      bagLabel(eq, state, prefs) {
+      bagLabel(eq, state, prefs, view) {
+        view ||= MarketScore.prepare(this, state, prefs);
+        const entry = MarketScore.entry(view, eq, true),
+          key = JSON.stringify([prefs.market.bagScoreType, prefs.gear?.minGainPercent]);
+        if (Object.hasOwn(entry.labels, key)) return entry.labels[key];
         const scoringPrefs = MarketScore.scorePrefs(prefs, prefs.market.bagScoreType);
-        const score = Math.round(P.equipmentScore(eq, state, scoringPrefs)),
-          gain = P.projectedGain(eq, state, scoringPrefs),
+        const score = Math.round(MarketScore.score(entry, prefs.market.bagScoreType, view)),
+          gain = MarketScore.gain(entry, prefs.market.bagScoreType, view),
           pct = gain.percent,
           sign = pct > 0 ? '+' : '',
           up = pct >= P.num(prefs.gear?.minGainPercent, 1),
           short = score >= 10000 ? (score / 10000).toFixed(score >= 100000 ? 0 : 1) + '万' : String(score);
         if (gain.pending || scoringPrefs.gear.scoring === 'combat') {
           const signed = (v) => (v >= 0 ? '+' : '') + v.toFixed(1);
-          return { text: (!gain.pending && pct > 0 ? '▲' : '') + short,
+          return entry.labels[key] = { text: (!gain.pending && pct > 0 ? '▲' : '') + short,
             color: gain.pending ? '#e0e0e0' : up ? '#69f0ae' : pct > 0 ? '#c5e1a5' : '#e0e0e0',
             title: '战力 ' + score + '\n' + (gain.pending ? '实战评分等待战斗数据' :
               '换上后实战评分 ' + signed(pct) + '%（输出 ' + signed(gain.outputPercent) +
               '%，生存 ' + signed(gain.survivalPercent) + '%）'),
           };
         }
-        return {
+        return entry.labels[key] = {
           text: (pct > 0 ? '▲' : '') + short,
           color: up ? '#69f0ae' : pct > 0 ? '#c5e1a5' : '#e0e0e0',
           title:
@@ -4392,13 +4480,14 @@
         };
       }
       scanBag(grids, state, prefs) {
+        const view = state ? MarketScore.prepare(this, state, prefs) : null;
         for (const grid of grids) {
           const list = this.bagList(grid, state),
             slots = list?.slots || Array.from(grid.querySelectorAll('.grid-slot'));
           slots.forEach((slot, i) => {
             const old = slot.querySelector(':scope > .tl-bag-score'),
               eq = list ? list.items[i] : null,
-              want = eq && !slot.classList.contains('empty-slot') ? this.bagLabel(eq, state, prefs) : null;
+              want = eq && !slot.classList.contains('empty-slot') ? this.bagLabel(eq, state, prefs, view) : null;
             if (!want) {
               old?.remove();
               return;
@@ -4419,10 +4508,11 @@
         }
       }
       scanMarket(cards, state, prefs) {
+        const view = state ? MarketScore.prepare(this, state, prefs) : null;
         for (const card of cards) {
           const row = card.querySelector('.item-title')?.parentElement,
             old = Array.from(card.querySelectorAll('.tl-market-score'));
-          const want = state && row ? this.label(card, state, prefs) : null;
+          const want = state && row ? this.label(card, state, prefs, view) : null;
           const keep = want && old.find((n) => n.parentElement === row);
           for (const n of old) if (n !== keep) n.remove();
           if (!want) continue;
