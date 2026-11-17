@@ -6548,19 +6548,12 @@
         (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
       );
     const groups = [
-      ['status', '状态'],
-      ['stats', '统计'],
-      ['score', '评分'],
-      ['battle', '挂机日常'],
-      ['growth', '成长装备'],
-      ['pets', '珍兽'],
-      ['craft', '宝石工艺'],
-      ['economy', '出售补药'],
-      ['budget', '预算设置'],
-      ['updates', '更新'],
-      ['settings', '设置'],
-      ['logs', '日志'],
+      ['overview', '概览', [['status', '状态'], ['stats', '统计'], ['logs', '日志']]],
+      ['strategy', '策略', [['battle', '挂机日常'], ['growth', '成长装备'], ['pets', '珍兽'], ['craft', '宝石工艺'], ['economy', '出售补药'], ['budget', '预算']]],
+      ['score', '评分', [['score', '评分']]],
+      ['system', '系统', [['settings', '设置'], ['updates', '更新']]],
     ];
+    const PANEL_KEY = 'tl-autopilot-v1:panel';
     const qualityChoices = [
       [1, '白色（1）'],
       [2, '蓝色（2）'],
@@ -6575,16 +6568,33 @@
       for (const k of ks.slice(0, -1)) cur = cur[k];
       cur[ks.at(-1)] = value;
     };
-    const BUDGET_CSS =
-      '.income-table{width:100%;border-collapse:collapse;font-size:12px}.income-table th,.income-table td{padding:4px;text-align:right}.income-table th:first-child,.income-table td:first-child{text-align:left}' +
-      '.tabs button.has-update{color:#f4d37a}.update-summary ul{padding-left:18px;margin:8px 0}.update-summary li{margin:5px 0}.update-summary .notice{margin-bottom:10px}@media(max-height:600px){.tabs{gap:1px}.tabs button{font-size:10px;padding:5px 2px}.summary{padding-top:5px}}';
-    const CSS = `:host{all:initial;font-family:"Microsoft YaHei","Segoe UI",sans-serif;color:#e9f0e4;font-size:12px}*{box-sizing:border-box}button,input,select,textarea{font:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid #e6c477;outline-offset:2px}.shell{width:390px;max-width:calc(100vw - 24px);background:#183a32f5;border:1px solid #73936d;border-radius:12px;box-shadow:0 8px 28px #0007;pointer-events:auto;overflow:hidden}.head{display:flex;justify-content:space-between;align-items:center;padding:13px 16px;border-bottom:1px solid #456149;background:#20483b}.head strong{color:#f4dfa3;font-size:14px;letter-spacing:.08em}.version{font-size:10px;color:#afc6ab;margin-top:4px}.head button{background:none;color:#d4ddc6;border:0;padding:5px}.controls{display:flex;gap:7px;padding:12px 14px 7px}.btn{padding:8px 13px;border-radius:6px;border:1px solid #71896b;background:#30543f;color:#edf4e7}.btn.primary{background:#dbb862;color:#283d24;border-color:#ecd58d;font-weight:700}.btn.warn{border-color:#8c7257;background:#4c4934}.controls .btn{flex:1;padding:8px 5px;font-size:11px}.summary{padding:7px 15px 12px;line-height:1.6;color:#e9f0e4}.status-line{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;font-size:11px}.status-label{display:flex;align-items:center;gap:8px;flex-shrink:0;white-space:nowrap}.role-name{min-width:0;text-align:right;overflow-wrap:anywhere}.dot{width:7px;height:7px;background:#84977a;border-radius:50%;flex-shrink:0}.dot.on{background:#b9df8e}.reason{padding-top:6px;color:#e9d5a6;font-size:12px;font-weight:700;overflow-wrap:anywhere}.facts{display:grid;row-gap:3px;margin:7px 0 0;padding-top:6px;border-top:1px solid #3d5c42;font-size:11px;line-height:1.6}.facts>div{display:grid;grid-template-columns:2em minmax(0,1fr);column-gap:10px}.facts dt{color:#aeca9e;white-space:nowrap}.facts dd{margin:0;min-width:0;color:#e9f0e4;text-align:left;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.summary-login{margin-top:6px;font-size:11px;color:#aeca9e}.tabs{display:flex;gap:3px;flex-wrap:wrap;padding:0 11px 9px;border-bottom:1px solid #3d5c42}.tabs button{border:0;background:none;color:#abc2a4;padding:6px 7px;border-radius:5px;font-size:11px}.tabs button.active{background:#476447;color:#f1dda2}.body{padding:15px;max-height:min(62vh,600px);overflow:auto;line-height:1.8}.body h3{font-size:12px;color:#eddaaa;margin:0 0 10px;letter-spacing:.03em}.hint{font-size:11px;color:#aeca9e;line-height:1.85;margin:5px 0 13px}.section{border-top:1px solid #3d5c42;padding-top:13px;margin-top:14px}.field{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:9px 0;color:#d1e0c8}.field span{max-width:69%;font-size:12px}.field input[type=number],.field input[type=text],.field select{width:112px;max-width:48%;border:1px solid #668060;background:#244432;color:#ebf1df;border-radius:5px;padding:5px 8px;min-height:30px}.field select.wide{width:200px;max-width:65%;font-size:11px}.field input[type=checkbox]{accent-color:#dcb85f;width:16px;height:16px;flex-shrink:0}.footer{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-top:1px solid #496449;background:#204335}.dirty{font-size:10px;color:#b6ceaa}.footer .btn{font-size:11px;padding:6px 15px}.plan{padding:10px 12px;border:1px solid #607858;background:#2b4b34;border-radius:7px;margin-bottom:8px;font-size:11px;color:#d4e3c7}.plan small{display:block;color:#acc29d;font-size:10px;margin-top:5px}.log{border-bottom:1px solid #355438;padding:8px 0;font-size:11px;color:#c7d9be;overflow-wrap:anywhere}.log time{font-size:10px;color:#98b18a;margin-right:7px}.log.success{color:#b8df91}.log.warning{color:#eed39c}textarea{width:100%;background:#183323;border:1px solid #668060;border-radius:6px;color:#dfeccf;padding:10px;font:11px/1.65 Consolas,monospace;min-height:230px;resize:vertical}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.actions .btn{font-size:11px}.launcher{display:none;background:#dbb862;color:#243b28;border:1px solid #ecd58d;border-radius:22px;padding:11px 16px;box-shadow:0 5px 17px #0006;font-weight:700;pointer-events:auto}.collapsed .shell{display:none}.collapsed .launcher{display:block}.notice{padding:10px 12px;background:#2e4d35;border-left:3px solid #d8b768;font-size:11px;color:#dfe2bd;margin-bottom:12px}.error{color:#ffd9a2;font-size:11px;min-height:17px}.budget-card{display:flex;justify-content:space-between;padding:9px 11px;background:#244734;border-radius:6px;margin:7px 0;font-size:11px;color:#c2d5b2}.shell{display:flex;flex-direction:column;max-height:calc(100vh - 24px)}.head,.controls,.summary,.tabs,.footer{flex-shrink:0}.body{min-height:0;flex:1}@media(max-height:600px){.facts .fact-detail{display:none}.reason{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary{padding-bottom:8px}}@media(max-width:700px){.shell{width:350px}.body{max-height:52vh}.field span{font-size:11px}.head{padding:11px 14px}.tabs button{font-size:10px}.summary{padding-bottom:9px}}`;
+    const CSS = `:host{all:initial;font-family:"Microsoft YaHei","Segoe UI",sans-serif;--text:#e9f0e4;--dim:#aeca9e;--gold:#eddaaa;--success:#b8df91;--warning:#eed39c;color:var(--text);font-size:13px;line-height:1.6}
+*{box-sizing:border-box}[hidden]{display:none!important}button,input,select,textarea{font:inherit;color:inherit}button,summary{cursor:pointer}
+button,summary,input[role=switch]{transition:color 120ms,background-color 120ms,border-color 120ms}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+button:hover,summary:hover{background-color:#476447}input:hover,select:hover,textarea:hover{border-color:var(--gold)}
+.shell{display:flex;flex-direction:column;width:390px;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);background:#183a32f5;border:1px solid #73936d;border-radius:12px;box-shadow:0 8px 28px #0007;pointer-events:auto;overflow:hidden}
+.head,.controls,.summary,.tabs,.footer{flex-shrink:0}.head{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;border-bottom:1px solid #456149;background:#20483b}.head strong{color:var(--gold);font-size:13px;letter-spacing:.08em}.version{font-size:12px;color:var(--dim)}.head button{background:none;border:0;padding:5px}.head button:hover{background:#476447}
+.controls{display:flex;gap:7px;padding:8px 14px 4px}.btn{padding:6px 12px;border-radius:6px;border:1px solid #71896b;background:#30543f}.btn.primary{background:#4c4934;color:var(--gold);border-color:#dbb862;font-weight:700}.btn.warn{color:var(--warning);border-color:#8c7257;background:#4c4934}.btn:hover{background:#476447}.controls .btn{flex:1;padding:6px 4px}
+.summary{padding:6px 14px 9px}.status-line{display:flex;align-items:center;gap:8px}.status-label{display:flex;align-items:center;gap:6px;white-space:nowrap}.role-name{margin-top:3px;color:var(--dim);overflow-wrap:anywhere}.text-button{border:0;border-radius:4px;background:none;color:var(--gold);padding:2px 4px;margin-left:auto;white-space:nowrap}.dot{width:7px;height:7px;background:#84977a;border-radius:50%;flex-shrink:0}.dot.on{background:var(--success)}.reason{padding-top:3px;color:var(--gold);font-weight:700;overflow-wrap:anywhere}
+.facts{display:grid;row-gap:3px;margin:5px 0 0;padding-top:5px;border-top:1px solid #3d5c42}.facts>div{display:grid;grid-template-columns:2em minmax(0,1fr);column-gap:10px}.facts dt{color:var(--dim);white-space:nowrap}.facts dd{margin:0;min-width:0;text-align:left;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.summary-login{margin-top:5px;font-size:12px;color:var(--dim)}
+.tabs{display:flex;flex-wrap:nowrap;gap:3px;padding:3px 11px 6px;border-bottom:1px solid #3d5c42;overflow-x:auto;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}.tabs button{flex:none;border:0;background:none;color:var(--dim);padding:5px 7px;border-radius:5px;white-space:nowrap}.group-tabs button{flex:1}.tabs button.active,.tabs button:hover{background:#476447;color:var(--gold)}.tabs button.has-update{color:var(--gold)}
+.body{padding:10px 14px;max-height:min(62vh,600px);overflow:auto;min-height:0;flex:1}.group{border-top:1px solid #3d5c42;margin-top:8px}.group:first-child{margin-top:0;border-top:0}.group>summary{display:flex;align-items:center;gap:8px;padding:8px 2px;list-style:none;border-radius:4px;color:var(--gold);font-weight:700}.group>summary::-webkit-details-marker{display:none}.group>summary::before{content:'▸';flex:none}.group[open]>summary::before{content:'▾'}.section-title{min-width:0}.section-state{margin-left:auto;font-size:12px;font-weight:400;color:var(--dim)}.group[open]>.group-summary .section-state{visibility:hidden}.master{display:flex;align-items:center;margin-left:auto}.section-state+.master{margin-left:0}.section-content{padding:0 2px 5px}
+.hint,.note,.more{font-size:12px;color:var(--dim)}.hint{margin:5px 0 10px;overflow-wrap:anywhere}.more{margin:6px 0 10px}.more>summary{padding:3px;border-radius:4px}.more>.hint{margin-top:5px}.field{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:8px;row-gap:3px;margin:9px 0}.field-label{white-space:nowrap}.field-control{display:flex;align-items:center;gap:5px}.field.dependent{margin-left:12px}.field.disabled{opacity:.5}.note,.field-error{grid-column:1/-1}.unit{font-size:11px;color:var(--dim);white-space:nowrap}.instant{font-size:12px;color:var(--gold);margin-left:6px;white-space:nowrap}
+.control-input,.control-select{border:1px solid #668060;background:#244432;border-radius:5px;padding:4px 6px;min-height:30px}.control-input{width:96px}.control-select{width:176px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
+input[role=switch]{appearance:none;position:relative;width:32px;height:18px;margin:0;border:1px solid #71896b;border-radius:10px;background:#244432;cursor:pointer;flex:none}input[role=switch]::before{content:'';position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--text)}input[role=switch]:checked{background-color:#dbb862;border-color:#dbb862}input[role=switch]:checked::before{left:16px;background:#183a32}input[role=switch]:disabled{cursor:default}
+.footer{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid #496449;background:#204335}.dirty{font-size:12px;color:var(--dim)}.footer .btn{padding:5px 12px;white-space:nowrap}.plan{padding:10px 12px;border:1px solid #607858;background:#2b4b34;border-radius:7px;margin-bottom:8px}.plan small{display:block;color:var(--dim);font-size:12px;margin-top:5px}
+.log{border-bottom:1px solid #355438;padding:8px 0;overflow-wrap:anywhere}.log time{font-size:11px;color:var(--dim);margin-right:7px}.log.success{color:var(--success)}.log.warning{color:var(--warning)}textarea{width:100%;background:#183323;border:1px solid #668060;border-radius:6px;padding:10px;font:13px/1.6 Consolas,monospace;min-height:230px;resize:vertical}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.launcher{display:none;background:#30543f;color:var(--gold);border:1px solid #ecd58d;border-radius:22px;padding:11px 16px;box-shadow:0 5px 17px #0006;font-weight:700;pointer-events:auto}.launcher:hover{background:#476447}.collapsed .shell{display:none}.collapsed .launcher{display:block}.notice{padding:9px 11px;background:#2e4d35;border-left:3px solid #d8b768;font-size:12px;color:var(--dim);margin-bottom:10px}.error{color:var(--warning);font-size:12px;min-height:17px}.field-error{color:#ee8585;font-size:12px}[aria-invalid=true]{outline:1px solid #ee8585;border-color:#ee8585}
+.budget-card{display:flex;justify-content:space-between;gap:8px;padding:7px 9px;background:#244734;border-radius:6px;margin:6px 0}.income-table{width:100%;border-collapse:collapse;font-size:12px}.income-table th,.income-table td{padding:4px;text-align:right}.income-table th:first-child,.income-table td:first-child{text-align:left}.table-scroll{overflow-x:auto}.update-summary ul{padding-left:18px;margin:8px 0}.update-summary li{margin:5px 0}
+@media(max-height:600px){.facts .fact-detail{display:none}.reason{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary{padding-bottom:8px}}@media(max-width:700px){.shell{width:350px}.body{max-height:52vh}}@media(prefers-reduced-motion:reduce){button,summary,input[role=switch]{transition:none}}`;
     class Panel {
       constructor(controller) {
         this.controller = controller;
         this.collapsed = false;
         this.bodyDirty = true;
-        this.section = 'status';
+        this.loadPanelState();
+        this.section = this.panelState.page;
         this.pending = TLPolicy.clone(controller.prefs);
         this.dirty = false;
         this.previewPlans = [];
@@ -6608,8 +6618,12 @@
         });
         document.documentElement.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: 'open' });
-        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.3.2</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div><nav class="tabs">${groups.map(([id, name]) => `<button type="button" data-tab="${id}">${name}</button>`).join('')}</nav><div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div><strong>TL挂机助手</strong><div class="version">完整策略 · v0.3.2</div></div><button type="button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary" data-action="start">开始托管</button><button type="button" class="btn" data-action="pause">暂停托管</button><button type="button" class="btn warn" data-action="stopBattle">停止战斗</button></div><div class="summary"></div>${this.navigationHTML()}<div class="body"></div><footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
         this.root.addEventListener('click', async (e) => {
+          if (e.target.closest('.master')?.classList.contains('master')) {
+            e.stopPropagation();
+            return;
+          }
           const b = e.target.closest('button');
           if (!b) return;
           const action = b.dataset.action;
@@ -6618,22 +6632,29 @@
             if (!this.collapsed) this.controller.paint(true);
             return;
           }
-          if (b.dataset.tab) {
-            this.section = b.dataset.tab;
-            this.requestBody();
+          if (b.dataset.group || b.dataset.tab) {
+            const group = groups.find(([id]) => id === b.dataset.group);
+            this.selectPage(group ? this.uiState().last[group[0]] || group[2][0][0] : b.dataset.tab);
             if (this.section === 'settings') await this.queryDatabaseUsage();
             return;
           }
+          if (action === 'summary') {
+            this.uiState().expanded = !this.uiState().expanded;
+            this.savePanelState();
+            this.controller.paint();
+            return;
+          }
+          if (['clearLogs', 'clearDatabase', 'clearStats', 'clearGearRejected', 'resetScoring'].includes(action) && !this.confirmAction(b)) return;
           if (action === 'start') this.controller.start();
           else if (action === 'clearGearRejected') {
             this.controller.clearGearRejected();
             this.requestBody();
           }
-          else if (action === 'resetScoring' && confirm('重置评分数据？自动生存权重将从现在起重新统计。')) {
+          else if (action === 'resetScoring') {
             this.controller.resetScoring();
             this.requestBody();
           }
-          else if (action === 'clearStats' && confirm('清空全部收益统计？')) {
+          else if (action === 'clearStats') {
             this.controller.stats?.clear();
             this.requestBody();
           }
@@ -6660,10 +6681,10 @@
               if (action === 'exportLogs') {
                 const date = new Date(), stamp = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('');
                 this.download('TL挂机助手日志-' + location.host + '-' + stamp + '.txt', await this.controller.exportLogs(), 'text/plain');
-              } else if (action === 'clearLogs' && confirm('确定清空全部日志？')) {
+              } else if (action === 'clearLogs') {
                 await this.controller.clearLogs();
                 await this.queryDatabaseUsage();
-              } else if (action === 'clearDatabase' && confirm('确定清理浏览器数据库中的全部日志？')) {
+              } else if (action === 'clearDatabase') {
                 await this.controller.clearLogDatabase();
                 await this.queryDatabaseUsage();
               }
@@ -6690,15 +6711,41 @@
                       .filter((n) => Number.isFinite(n) && n > 0)
                   : e.target.value;
           pathSet(this.pending, path, value);
+          this.syncFields();
+          this.validateInput(e.target);
           if (path === 'logs.level') {
             this.controller.prefs.logs.level = TLPolicy.config(this.pending).logs.level;
             TLRuntime.writeStorage(TLRuntime.PREFIX + ':config', this.controller.prefs);
             this.paintLogs();
             return;
           }
+          if (path === 'market.sort') {
+            const current = this.controller.prefs;
+            this.controller.updateConfig({ ...current, market: { ...current.market, sort: value } });
+            return;
+          }
           this.dirty = true;
-          this.root.querySelector('.dirty').textContent = '有未保存的配置';
+          this.paintDirty();
         });
+        this.root.addEventListener('keydown', (e) => {
+          if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+          const button = e.target.closest('[role="tab"]'), row = button?.closest('[role="tablist"]');
+          if (!row) return;
+          const buttons = [...row.querySelectorAll('[role="tab"]')].filter((tab) => !tab.hidden),
+            index = buttons.indexOf(button), next = buttons[(index + (e.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length];
+          e.preventDefault();
+          next.focus();
+          next.click();
+          next.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        });
+        this.root.addEventListener('toggle', (e) => {
+          const section = e.target;
+          if (!section.matches('details.group')) return;
+          const state = this.uiState(), key = section.dataset.section;
+          if ((state.sections[key] ?? (section.dataset.defaultOpen === 'true')) === section.open) return;
+          state.sections[key] = section.open;
+          this.savePanelState();
+        }, true);
         this.root.addEventListener('change', async (e) => {
           if (!e.target.matches('.config-file') || !e.target.files?.[0]) return;
           try {
@@ -6728,7 +6775,6 @@
             this.requestBody();
           }
         });
-        this.root.querySelector('style').textContent += BUDGET_CSS;
         this.controller.panel = this;
         document.addEventListener('visibilitychange', () => {
           if (!document.hidden) this.controller.paint(true);
@@ -6739,16 +6785,183 @@
         this.bodyDirty = true;
         this.controller.paint();
       }
+      loadPanelState() {
+        let saved;
+        try { saved = JSON.parse(localStorage.getItem(PANEL_KEY)); } catch {}
+        const pages = groups.flatMap(([, , items]) => items.map(([id]) => id));
+        this.panelState = { page: pages.includes(saved?.page) ? saved.page : 'status', last: {}, sections: {}, expanded: saved?.expanded === true };
+        for (const [id, , items] of groups)
+          this.panelState.last[id] = items.some(([page]) => page === saved?.last?.[id]) ? saved.last[id] : items[0][0];
+        for (const [key, value] of Object.entries(saved?.sections && typeof saved.sections === 'object' ? saved.sections : {}))
+          if (pages.includes(key.split(':')[0]) && typeof value === 'boolean') this.panelState.sections[key] = value;
+        this.panelStateJSON = JSON.stringify(this.panelState);
+      }
+      uiState() {
+        if (!this.panelState) this.loadPanelState();
+        return this.panelState;
+      }
+      savePanelState() {
+        const value = JSON.stringify(this.uiState());
+        if (value === this.panelStateJSON) return;
+        this.panelStateJSON = value;
+        try { localStorage.setItem(PANEL_KEY, value); } catch {}
+      }
+      rememberPage() {
+        const group = groups.find(([, , items]) => items.some(([id]) => id === this.section));
+        if (!group) return;
+        const state = this.uiState();
+        state.page = this.section;
+        state.last[group[0]] = this.section;
+        this.savePanelState();
+      }
+      selectPage(page) {
+        if (page === this.section || !groups.some(([, , items]) => items.some(([id]) => id === page))) return;
+        this.section = page;
+        this.rememberPage();
+        this.requestBody();
+      }
+      navigationHTML() {
+        return '<nav class="tabs group-tabs" role="tablist" aria-label="功能分组">' + groups.map(([id, name]) =>
+          `<button type="button" role="tab" data-group="${id}"${id === 'score' ? ' data-tab="score"' : ''} aria-selected="false" tabindex="-1">${name}</button>`).join('') +
+          '</nav><nav class="tabs page-tabs" role="tablist" aria-label="分组页面">' + groups.filter(([id]) => id !== 'score').flatMap(([, , items]) => items.map(([id, name]) =>
+            `<button type="button" role="tab" data-tab="${id}" aria-selected="false" tabindex="-1">${name}</button>`)).join('') + '</nav>';
+      }
+      paintNavigation() {
+        const group = groups.find(([, , items]) => items.some(([id]) => id === this.section)) || groups[0],
+          row = this.root.querySelector('.page-tabs');
+        if (row && row.hidden !== (group[0] === 'score')) row.hidden = group[0] === 'score';
+        const select = (button, active) => {
+          if (button.classList.contains('active') !== active) button.classList.toggle('active', active);
+          if (button.getAttribute('aria-selected') !== String(active)) button.setAttribute('aria-selected', String(active));
+          if (button.tabIndex !== (active ? 0 : -1)) button.tabIndex = active ? 0 : -1;
+        };
+        this.root.querySelectorAll('[data-group]').forEach((button) => select(button, button.dataset.group === group[0]));
+        this.root.querySelectorAll('[data-tab]').forEach((button) => {
+          if (!button.dataset.group) {
+            const hidden = !group[2].some(([id]) => id === button.dataset.tab);
+            if (button.hidden !== hidden) button.hidden = hidden;
+          }
+          select(button, button.dataset.tab === this.section);
+        });
+      }
+      confirmAction(button) {
+        this.confirmations ||= new Map();
+        const previous = this.confirmations.get(button), now = Date.now();
+        if (previous) {
+          this.resetConfirmation(button);
+          if (now < previous.until) return true;
+        }
+        const pending = { label: button.textContent, warn: button.classList.contains('warn'), until: now + 3000 };
+        button.textContent = '再点一次确认';
+        button.classList.toggle('warn', true);
+        pending.timer = setTimeout(() => this.resetConfirmation(button), 3000);
+        this.confirmations.set(button, pending);
+        return false;
+      }
+      resetConfirmation(button) {
+        const pending = this.confirmations?.get(button);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        button.textContent = pending.label;
+        button.classList.toggle('warn', pending.warn);
+        this.confirmations.delete(button);
+      }
+      paintDirty(status) {
+        const line = this.root.querySelector('.dirty'), button = this.root.querySelector('[data-action="save"]'),
+          text = this.dirty ? '有未保存的配置' : '配置已保存' + (status ? ' · ' + (status.enabled ? '托管运行中' : '托管已暂停') : '');
+        if (line && line.textContent !== text) line.textContent = text;
+        if (button && button.classList.contains('primary') !== this.dirty) button.classList.toggle('primary', this.dirty);
+      }
       field(label, path, options = {}) {
-        const value = pathGet(this.pending, path);
+        const value = pathGet(this.pending, path), id = 'tl-field-' + path.replaceAll('.', '-'),
+          dependency = typeof options.dependsOn === 'string' ? { path: options.dependsOn, value: true } : options.dependsOn,
+          disabled = dependency && pathGet(this.pending, dependency.path) !== dependency.value,
+          message = disabled ? '' : this.validationMessage(path, value, options),
+          described = [options.note ? id + '-note' : '', id + '-error'].filter(Boolean).join(' '),
+          attrs = `data-path="${path}"${disabled ? ' disabled' : ''}${dependency ? ` data-depends-on="${dependency.path}" data-depends-value="${esc(JSON.stringify(dependency.value))}"` : ''}`;
         let control;
         if (typeof value === 'boolean')
-          control = `<input type="checkbox" data-path="${path}" ${value ? 'checked' : ''} aria-label="${esc(label)}">`;
+          control = `<input type="checkbox" role="switch" ${attrs} ${value ? 'checked' : ''}${path.endsWith('.enabled') || label.includes('总开关') ? ' data-master="true"' : ''} aria-label="${esc(label)}" aria-describedby="${described}">`;
         else if (options.choices)
-          control = `<select class="wide" data-path="${path}" aria-label="${esc(label)}">${options.choices.map(([v, t]) => `<option value="${esc(v)}" ${String(value) === String(v) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+          control = `<select class="control-select" ${attrs} aria-label="${esc(label)}" aria-describedby="${described}" title="${esc(options.choices.find(([v]) => String(v) === String(value))?.[1] || '')}">${options.choices.map(([v, t]) => `<option value="${esc(v)}" ${String(value) === String(v) ? 'selected' : ''} title="${esc(t)}">${esc(t)}</option>`).join('')}</select>`;
         else
-          control = `<input type="${options.type === 'text' || Array.isArray(value) ? 'text' : 'number'}" data-path="${path}" value="${esc(Array.isArray(value) ? value.join(',') : value)}" min="${options.min ?? 0}" ${options.max != null ? 'max="' + options.max + '"' : ''} ${options.step != null ? 'step="' + options.step + '"' : ''} aria-label="${esc(label)}">`;
-        return `<label class="field"><span>${esc(label)}</span>${control}</label>`;
+          control = `<input type="${options.type === 'text' || Array.isArray(value) ? 'text' : 'number'}" class="control-input" ${attrs} value="${esc(Array.isArray(value) ? value.join(',') : value)}" min="${options.min ?? 0}" ${options.max != null ? 'max="' + options.max + '"' : ''} ${options.step != null ? 'step="' + options.step + '"' : ''} aria-label="${esc(label)}" aria-describedby="${described}" aria-invalid="${!!message}">`;
+        return `<label class="field${dependency ? ' dependent' : ''}${disabled ? ' disabled' : ''}"><span class="field-label">${esc(label)}</span><span class="field-control">${control}${options.unit ? `<span class="unit">${esc(options.unit)}</span>` : ''}</span>${options.note ? `<span class="note" id="${id}-note">${esc(options.note)}</span>` : ''}${options.immediate ? '<span class="note"><span class="instant">即时生效</span></span>' : ''}<span class="field-error" id="${id}-error" aria-live="polite"${message ? '' : ' hidden'}>${esc(message)}</span></label>`;
+      }
+      validationMessage(path, value, options = {}) {
+        if (path === 'welfare.numbers') return TLPolicy.welfareNumbers(value) ? '' : '需要 3 个 1～25 的不同数字';
+        if (typeof pathGet(TLPolicy.DEFAULTS, path) !== 'number' || options.choices) return '';
+        const min = options.min ?? 0, max = options.max ?? Infinity, number = Number(value);
+        return !Number.isFinite(number) || number < min || number > max ? '范围 ' + min + '–' + (max === Infinity ? '∞' : max) : '';
+      }
+      validateInput(control) {
+        const field = control.closest?.('.field');
+        if (!field) return;
+        const error = field.querySelector('.field-error');
+        if (!error) return;
+        const message = control.disabled || control.tagName === 'SELECT' ? '' : this.validationMessage(control.dataset.path, control.value, {
+          min: control.min === '' ? 0 : Number(control.min), max: control.max === '' ? undefined : Number(control.max),
+        });
+        if (control.getAttribute('aria-invalid') !== String(!!message)) control.setAttribute('aria-invalid', String(!!message));
+        if (error.textContent !== message) error.textContent = message;
+        if (error.hidden !== !message) error.hidden = !message;
+      }
+      syncFields() {
+        this.root.querySelectorAll('.group').forEach((section) => {
+          const master = section.querySelector('.master input'), state = section.querySelector('.section-state');
+          if (state) {
+            const text = master.checked ? '已开启' : '已关闭';
+            if (state.textContent !== text) state.textContent = text;
+          }
+          section.querySelectorAll('[data-path]').forEach((control) => {
+            const dependency = control.dataset.dependsOn,
+              disabled = !!((master && control !== master && !master.checked) ||
+                (dependency && pathGet(this.pending, dependency) !== JSON.parse(control.dataset.dependsValue)));
+            if (control.disabled !== disabled) control.disabled = disabled;
+            const field = control.closest('.field');
+            if (field && field.classList.contains('disabled') !== disabled) field.classList.toggle('disabled', disabled);
+            if (control.tagName === 'SELECT') {
+              const title = control.selectedOptions[0]?.textContent || '';
+              if (control.title !== title) control.title = title;
+            }
+            this.validateInput(control);
+          });
+        });
+      }
+      sectionHTML(title, content, first = false, id = title) {
+        const key = this.section + ':' + id, open = this.uiState().sections[key] ?? first,
+          firstField = content.match(/^<label class="field[^>]*>[\s\S]*?<\/label>/)?.[0],
+          master = firstField?.match(/<input\b[^>]*data-master="true"[^>]*>/)?.[0];
+        let summary = `<span class="section-title">${esc(title)}</span>`;
+        if (master) {
+          const enabled = /\schecked(?:\s|>)/.test(master),
+            note = firstField.match(/<span class="note"[^>]*>[\s\S]*?<\/span>/)?.[0] || '';
+          const switchHTML = master.replace(/ aria-describedby="[^"]*"/, note ? ' aria-describedby="' + note.match(/id="([^"]*)"/)[1] + '"' : '');
+          summary += `<span class="section-state">${enabled ? '已开启' : '已关闭'}</span><label class="master">${switchHTML}</label>`;
+          content = note + content.slice(firstField.length);
+          if (!enabled) content = content.replace(/<label class="field([^\"]*)"([\s\S]*?)<\/label>/g, (_, classes, rest) =>
+            '<label class="field' + (classes.includes(' disabled') ? classes : classes + ' disabled') + '"' +
+            rest.replace(/<(input|select)\b([^>]*)>/g, (tag, name, attrs) => /\sdisabled(?:\s|$)/.test(attrs) ? tag : '<' + name + attrs + ' disabled>') + '</label>');
+        }
+        return `<details class="group" data-section="${esc(key)}" data-default-open="${first}"${open ? ' open' : ''}><summary class="group-summary">${summary}</summary><div class="section-content">${this.discloseHints(content)}</div></details>`;
+      }
+      discloseHints(html) {
+        return html.replace(/<details class="more">[\s\S]*?<\/details>|<div class="hint(?: [^\"]*)?">[\s\S]*?<\/div>/g, (hint) => {
+          if (hint.startsWith('<details')) return hint;
+          const text = hint.replace(/<[^>]*>/g, '').replace(/&(?:amp|lt|gt|quot|#39);/g, 'x');
+          return text.length > 120 ? '<details class="more"><summary>说明</summary>' + hint + '</details>' : hint;
+        });
+      }
+      liveContentKey(html) {
+        return html.replace(/(<details class="group"[^>]*?) open(?=>)/g, '$1');
+      }
+      paintFragment(selector, html) {
+        const element = this.root.querySelector(selector), key = this.liveContentKey(html);
+        this.fragmentKeys ||= {};
+        if (element && this.fragmentKeys[selector] !== key) {
+          element.innerHTML = html;
+          this.fragmentKeys[selector] = key;
+        }
       }
       applyJSON(text) {
         try {
@@ -6801,156 +7014,165 @@
       }
       renderBody(status = this.controller.status(), s = this.controller.bridge.state()) {
         const f = (l, p, o) => this.field(l, p, o);
+        const g = (title, content, first = false) => this.sectionHTML(title, content, first);
         this.bodyDirty = false;
         let html = '';
         if (this.section === 'stats') {
           html = this.statsHTML(status.stats, s?.maps, status);
-          this.statsKey = html;
+          this.statsKey = this.liveContentKey(html);
           this.statsPaintAt = Date.now();
         }
         if (this.section === 'score') {
           html = this.scoreHTML(status, TLPolicy.scoringDetail(s, this.pending));
-          this.scoreKey = html;
+          this.scoreKey = this.liveContentKey(html);
           this.scorePaintAt = Date.now();
         }
         if (this.section === 'status') {
           this.statusBudgetsKey = this.statusBudgetsHTML(status);
-          html = `<div class="notice">先在原游戏完成登录，然后开始托管。人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。</div><div class="hint network-status">${esc(this.networkText(status))}</div><h3>已保存的资源策略</h3><div class="status-budgets">${this.statusBudgetsKey}</div><div class="hint">默认保留强化、镶宝、星级、鉴定装备和套装部件；自动回收品质1的普通装备。宝石默认目标3级，强化默认目标+3。</div><div class="actions"><button class="btn" type="button" data-action="preview">预览下一步计划</button><button class="btn" type="button" data-action="diagnostics">导出当前诊断</button></div><div class="section"><h3>计划预览</h3>${this.previewPlans.length ? this.previewPlans.map((a) => `<div class="plan">${esc(a.label)}<small>预计金币 ${a.coinCost} · 经验 ${a.expCost}${a.requiresTown ? ' · 在对应城镇处理' : ''}</small></div>`).join('') : '<div class="hint">点击预览可查看当前角色满足条件的动作。</div>'}</div>`;
+          html = '<div class="notice">先在原游戏完成登录，然后开始托管。人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。</div><div class="hint network-status">' + esc(this.networkText(status)) + '</div>' +
+            g('已保存的资源策略', '<div class="status-budgets">' + this.statusBudgetsKey + '</div><div class="hint">默认保留强化、镶宝、星级、鉴定装备和套装部件；自动回收品质1的普通装备。宝石默认目标3级，强化默认目标+3。</div>', true) +
+            g('计划预览', '<div class="actions"><button class="btn" type="button" data-action="preview">预览下一步计划</button><button class="btn" type="button" data-action="diagnostics">导出当前诊断</button></div>' +
+              (this.previewPlans.length ? this.previewPlans.map((a) => `<div class="plan">${esc(a.label)}<small>预计金币 ${a.coinCost} · 经验 ${a.expCost}${a.requiresTown ? ' · 在对应城镇处理' : ''}</small></div>`).join('') : '<div class="hint">点击预览可查看当前角色满足条件的动作。</div>'));
         }
         if (this.section === 'battle') {
           html =
-            '<h3>挂机与恢复</h3>' +
+            g('挂机与恢复',
             f('自动开始原游戏战斗', 'battle.enabled') +
             f('挂机地图', 'battle.mapId', { choices: TLPolicy.mapChoices(s?.maps) }) +
-            f('比角色低几级选图', 'battle.levelOffset') +
+            f('选图等级差', 'battle.levelOffset', { unit: '级', note: '比角色低多少级选图', dependsOn: { path: 'battle.mapId', value: 0 } }) +
             f('阵亡后返城重新选择', 'battle.recoverDeath') +
-            f('每小时允许阵亡次数', 'battle.maxDeathsPerHour') +
-            '<div class="section"><h3>日常活动</h3>' +
+            f('每小时阵亡上限', 'battle.maxDeathsPerHour', { unit: '次', dependsOn: 'battle.recoverDeath' }), true) +
+            g('日常活动',
             f('自动完成日常', 'activities.enabled') +
             f('珍珑棋局', 'activities.zl') +
-            f('珍珑每日最多进入', 'activities.zlRuns') +
+            f('珍珑每日最多进入', 'activities.zlRuns', { unit: '次', dependsOn: 'activities.zl' }) +
             f('伪宋军领地', 'activities.camp') +
-            f('伪宋军每日最多进入', 'activities.campRuns', { max: 5 }) +
+            f('伪宋军每日最多进入', 'activities.campRuns', { max: 5, unit: '次', dependsOn: 'activities.camp' }) +
             f('熊林', 'activities.bear') +
-            f('熊林每日最多进入', 'activities.bearRuns') +
-            f('每日领取天灵丹（需回洛阳）', 'activities.tianlingClaim') +
-            f('没有双倍经验时自动使用天灵丹', 'activities.tianlingUse') +
-            f('自动抽取在线抽奖次数（需回苏州）', 'activities.lotteryDraw') +
-            f('攒够多少次抽一次（当天次数发完时也会抽）', 'activities.lotteryBatch') +
-            '<div class="hint">珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合原游戏返回的资格数据核对。</div></div><div class="section"><h3>快活叁福彩</h3>' +
-            f('自动投注（需回苏州）', 'welfare.enabled') +
-            f('币种', 'welfare.currency', { choices: [['GOLD', '金币 · 10万/倍'], ['YUANBAO', '元宝 · 100/倍（奖金为赠送元宝）']] }) +
-            f('倍数（1～5）', 'welfare.multiplier', { min: 1, max: 5, step: 1 }) +
-            f('每期投几注', 'welfare.betsPerDraw', { min: 1, max: 10, step: 1 }) +
-            f('每日投注上限（所选币种，0 为不限）', 'welfare.dailyCost', { step: 1 }) +
-            f('选号', 'welfare.pick', { choices: [['random', '每注随机'], ['fixed', '固定号码']] }) +
-            f('固定号码（3 个 1～25 的不同数字，如 3,8,15）', 'welfare.numbers', { type: 'text' }) +
-            '<div class="hint welfare-status">' + this.welfareHTML(s, status.ledger) + '</div></div><div class="section"><h3>比武天梯</h3>' +
-            f('自动比武（总开关）', 'arena.enabled') +
-            f('每日点赞', 'arena.like') +
-            f('领取名次奖励（需回洛阳）', 'arena.claim') +
-            f('自动挑战（需回洛阳）', 'arena.challenge') +
-            f('每日挑战次数上限（0 不限）', 'arena.maxPerDay') +
-            f('只挑战战力不超过自己 × 倍数的对手', 'arena.maxPowerRatio') +
-            f('比武榜刷新间隔（分钟）', 'arena.refreshMinutes') +
-            f('结算前冲榜分钟数（0 关闭）', 'arena.rushMinutes') +
-            '<div class="hint">比武 30 级开放。挑战和领奖需要回洛阳找比武校尉，会中断挂机。点赞不中断。每天 0 点（东八区）结算前的这段时间，托管回洛阳驻守并连续挑战：榜单每 30 秒刷新一次，不受每日挑战次数上限限制，期间不进副本。</div></div>';
+            f('熊林每日最多进入', 'activities.bearRuns', { unit: '次', dependsOn: 'activities.bear' }) +
+            f('每日领取天灵丹', 'activities.tianlingClaim', { note: '需回洛阳' }) +
+            f('自动使用天灵丹', 'activities.tianlingUse', { note: '没有双倍经验时使用' }) +
+            f('自动在线抽奖', 'activities.lotteryDraw', { note: '需回苏州' }) +
+            f('攒够多少次抽一次', 'activities.lotteryBatch', { unit: '次', note: '当天次数发完时也会抽', dependsOn: 'activities.lotteryDraw' }) +
+            '<div class="hint">珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合原游戏返回的资格数据核对。</div>') +
+            g('快活叁福彩',
+            f('自动投注', 'welfare.enabled', { note: '需回苏州' }) +
+            f('币种', 'welfare.currency', { dependsOn: 'welfare.enabled', choices: [['GOLD', '金币 · 10万/倍'], ['YUANBAO', '元宝 · 100/倍（奖金为赠送元宝）']] }) +
+            f('倍数', 'welfare.multiplier', { min: 1, max: 5, step: 1, note: '1～5', dependsOn: 'welfare.enabled' }) +
+            f('每期投注', 'welfare.betsPerDraw', { min: 1, max: 10, step: 1, unit: '注', dependsOn: 'welfare.enabled' }) +
+            f('每日投注上限', 'welfare.dailyCost', { step: 1, note: '所选币种，0 为不限', dependsOn: 'welfare.enabled' }) +
+            f('选号', 'welfare.pick', { dependsOn: 'welfare.enabled', choices: [['random', '每注随机'], ['fixed', '固定号码']] }) +
+            f('固定号码', 'welfare.numbers', { type: 'text', note: '3 个 1～25 的不同数字，如 3,8,15', dependsOn: { path: 'welfare.pick', value: 'fixed' } }) +
+            '<div class="welfare-status"><div class="hint">' + this.welfareHTML(s, status.ledger) + '</div></div>') +
+            g('比武天梯',
+            f('自动比武', 'arena.enabled', { note: '总开关' }) +
+            f('每日点赞', 'arena.like', { dependsOn: 'arena.enabled' }) +
+            f('领取名次奖励', 'arena.claim', { note: '需回洛阳', dependsOn: 'arena.enabled' }) +
+            f('自动挑战', 'arena.challenge', { note: '需回洛阳', dependsOn: 'arena.enabled' }) +
+            f('每日挑战上限', 'arena.maxPerDay', { unit: '次', note: '0 不限', dependsOn: 'arena.challenge' }) +
+            f('对手战力上限', 'arena.maxPowerRatio', { unit: '倍', note: '只挑战战力不超过自己 × 此倍数的对手', dependsOn: 'arena.challenge' }) +
+            f('比武榜刷新间隔', 'arena.refreshMinutes', { unit: '分钟', dependsOn: 'arena.enabled' }) +
+            f('结算前冲榜时长', 'arena.rushMinutes', { unit: '分钟', note: '0 关闭', dependsOn: 'arena.challenge' }) +
+            '<div class="hint">比武 30 级开放。挑战和领奖需要回洛阳找比武校尉，会中断挂机。点赞不中断。每天 0 点（东八区）结算前的这段时间，托管回洛阳驻守并连续挑战：榜单每 30 秒刷新一次，不受每日挑战次数上限限制，期间不进副本。</div>');
         }
         if (this.section === 'growth')
           html =
-            '<h3>人物与技能</h3>' +
+            g('人物与技能',
             f('自动升级人物', 'growth.level') +
-            f('人物目标等级', 'growth.maxLevel') +
+            f('人物目标等级', 'growth.maxLevel', { unit: '级', dependsOn: 'growth.level' }) +
             f('自动升级技能', 'growth.skills') +
-            f('技能最高等级', 'growth.maxSkillLevel') +
-            f('技能优先于人物升级', 'growth.skillBeforeLevel') +
-            f('优先技能模板ID（逗号分隔）', 'growth.skillPriority') +
-            '<div class="section"><h3>装备选择</h3>' +
+            f('技能最高等级', 'growth.maxSkillLevel', { unit: '级', dependsOn: 'growth.skills' }) +
+            f('技能优先于人物升级', 'growth.skillBeforeLevel', { dependsOn: 'growth.skills' }) +
+            f('优先技能模板ID', 'growth.skillPriority', { note: '逗号分隔', dependsOn: 'growth.skills' }), true) +
+            g('装备选择',
             f('按评分自动穿戴', 'gear.enabled') +
-            f('最低评分增益 %', 'gear.minGainPercent', { step: 0.1 }) +
+            f('最低评分增益', 'gear.minGainPercent', { step: 0.1, unit: '%' }) +
             f('允许穿戴后绑定', 'gear.allowBinding') +
-            f('自动穿戴时也从仓库取出更好的装备', 'gear.fromWarehouse') +
-            f('换装后用实测击杀核对（变差自动换回）', 'gear.fieldCheck') +
-            f('换装后至少攒多少分钟战斗数据', 'gear.fieldMinutes', { min: 10, max: 180, step: 1 }) +
-            f('每小时击杀下降超过多少 % 才换回', 'gear.fieldDropPercent', { min: 1, max: 50, step: 0.1 }) +
+            f('从仓库选择更好的装备', 'gear.fromWarehouse', { note: '自动穿戴时取出' }) +
+            f('换装后用实测击杀核对', 'gear.fieldCheck', { note: '变差自动换回' }) +
+            f('换装后最少战斗时长', 'gear.fieldMinutes', { min: 10, max: 180, step: 1, unit: '分钟', dependsOn: 'gear.fieldCheck' }) +
+            f('换回的击杀降幅', 'gear.fieldDropPercent', { min: 1, max: 50, step: 0.1, unit: '%', note: '每小时击杀下降超过此值才换回', dependsOn: 'gear.fieldCheck' }) +
             '<div class="hint">比较同一张图上换装前后的每小时击杀；只有下降超过设定值且统计上可信（约 2 个标准差）才换回，换装后出现阵亡也会换回。核对期间不换其他装备。被换下的装备留在背包，不会自动出售。</div>' +
             '<div class="gear-check-status">' + this.gearCheckHTML(status.gear) + '</div>' +
             '<div class="actions"><button class="btn" type="button" data-action="clearGearRejected">清空换回名单</button></div>' +
-            '<div class="hint">评分方式、权重和计算公式在“评分”页。</div></div><div class="section"><h3>暗器养成</h3>' +
-            f('暗器养成（总开关）', 'hidden.enabled') +
-            f('自动领取暗器（50 级，回洛阳找薛飞）', 'hidden.claim') +
-            f('领取时的初始属攻', 'hidden.claimElement', { choices: [
+            '<div class="hint">评分方式、权重和计算公式在“评分”页。</div>') +
+            g('暗器养成',
+            f('暗器养成', 'hidden.enabled', { note: '总开关' }) +
+            f('自动领取暗器', 'hidden.claim', { note: '50 级，回洛阳找薛飞', dependsOn: 'hidden.enabled' }) +
+            f('初始属攻', 'hidden.claimElement', { dependsOn: 'hidden.claim', note: '领取时使用', choices: [
               ['auto', '自动（当前最高的属性攻击）'], ['ice', '冰攻'], ['fire', '火攻'],
               ['poison', '毒攻'], ['holy', '玄攻'],
             ] }) +
             '<div class="hint">领取前请确认属攻；领错后转换要 5 砂。</div>' +
-            f('自动洗炼属性（5 砂/次）', 'hidden.wash') +
-            f('自动洗炼品质（1 玉/次）', 'hidden.washQuality') +
-            f('领取暂存奖励', 'hidden.inbox') +
-            f('用人物经验喂养暗器', 'hidden.feed') +
-            f('暗器目标等级', 'hidden.maxLevel') +
-            f('喂养后至少保留经验', 'hidden.keepExp') +
-            f('暗器状态刷新间隔（分钟）', 'hidden.refreshMinutes') +
-            '<div class="hint">洗炼和喂养需要回洛阳找薛飞，会中断挂机。无相浮屠（300 万金币/轮）不会自动进入；手动进塔时托管不干预。</div></div>';
+            f('自动洗炼属性', 'hidden.wash', { note: '5 砂/次', dependsOn: 'hidden.enabled' }) +
+            f('自动洗炼品质', 'hidden.washQuality', { note: '1 玉/次', dependsOn: 'hidden.enabled' }) +
+            f('领取暂存奖励', 'hidden.inbox', { dependsOn: 'hidden.enabled' }) +
+            f('用人物经验喂养暗器', 'hidden.feed', { dependsOn: 'hidden.enabled' }) +
+            f('暗器目标等级', 'hidden.maxLevel', { unit: '级', dependsOn: 'hidden.feed' }) +
+            f('喂养后至少保留经验', 'hidden.keepExp', { dependsOn: 'hidden.feed' }) +
+            f('暗器状态刷新间隔', 'hidden.refreshMinutes', { unit: '分钟', dependsOn: 'hidden.enabled' }) +
+            '<div class="hint">洗炼和喂养需要回洛阳找薛飞，会中断挂机。无相浮屠（300 万金币/轮）不会自动进入；手动进塔时托管不干预。</div>');
         if (this.section === 'pets')
-          html = '<h3>珍兽</h3>' +
-            f('珍兽托管（总开关）', 'pets.enabled') +
-            f('没有出战珍兽时让战力最高的出战', 'pets.summon') +
+          html = g('珍兽',
+            f('珍兽托管', 'pets.enabled', { note: '总开关' }) +
+            f('自动出战最强珍兽', 'pets.summon', { note: '没有出战珍兽时使用' }) +
             f('自动领取珍兽掉落', 'pets.claim') +
             f('自动孵蛋并筛选', 'pets.hatch') +
-            f('保留的最低资质均值（宝宝满值 120）', 'pets.keepMinAverage', { step: 0.5 }) +
-            f('也孵化变异珍兽蛋', 'pets.hatchMutant') +
+            f('保留的最低资质均值', 'pets.keepMinAverage', { step: 0.5, note: '宝宝满值 120', dependsOn: 'pets.hatch' }) +
+            f('也孵化变异珍兽蛋', 'pets.hatchMutant', { dependsOn: 'pets.hatch' }) +
             f('用人物经验喂养出战珍兽', 'pets.feed') +
-            f('喂养后至少保留经验', 'pets.feedKeepExp') +
-            f('珍兽状态刷新间隔（分钟）', 'pets.refreshMinutes') +
+            f('喂养后至少保留经验', 'pets.feedKeepExp', { dependsOn: 'pets.feed' }) +
+            f('珍兽状态刷新间隔', 'pets.refreshMinutes', { unit: '分钟' }) +
             '<div class="hint">孵蛋、出战、喂养、领取都要先停止战斗（不用回城）。放生不可恢复：只放生脚本自己刚孵出的、1 级、未锁定、未出战、资质均值低于设定值的普通宝宝；达标的自动锁定。变异和二代珍兽不会被放生。</div>' +
-            (status.pets.list?.length ? status.pets.list.map((entry) => '<div>' +
+            (status.pets?.list?.length ? status.pets.list.map((entry) => '<div>' +
               esc(entry.pet.name) + ' · ' + ({ BABY: '宝宝', SECOND: '二代', MUTANT: '变异' }[entry.pet.form] || '') +
               ' · Lv.' + entry.pet.level + ' · 资质 ' + esc(entry.average) + ' · ' + esc(entry.quality) +
               ' · 战力 ' + esc(entry.combatPower) + (status.pets.active?.pet.id === entry.pet.id ? ' · 出战' : '') +
-              (entry.pet.locked ? ' · 锁定' : '') + '</div>').join('') : '尚未读取珍兽数据');
+              (entry.pet.locked ? ' · 锁定' : '') + '</div>').join('') : '尚未读取珍兽数据'), true);
         if (this.section === 'craft')
           html =
-            '<h3>宝石策略</h3>' +
-            f('在游戏窗口显示“一键放入”按钮', 'fill.enabled') +
-            f('完成后自动补回同种符和材料', 'fill.refill') +
-            '<div class="hint">宝石、铁匠、裁缝窗口和云飘飘珍兽面板的标题栏出现“一键放入”：按当前功能页把最合适的装备、宝石、符和材料放进槽位，执行仍需自己点。镶嵌、打孔、合成、摘除、雕琢成功后，自动从背包补回刚用掉的同种符、打孔材料和宝石（合成、雕琢），直到用完。</div>' +
+            g('一键放入',
+            f('显示“一键放入”按钮', 'fill.enabled', { note: '在游戏窗口显示' }) +
+            f('完成后补回同种符和材料', 'fill.refill', { dependsOn: 'fill.enabled' }) +
+            '<div class="hint">宝石、铁匠、裁缝窗口和云飘飘珍兽面板的标题栏出现“一键放入”：按当前功能页把最合适的装备、宝石、符和材料放进槽位，执行仍需自己点。镶嵌、打孔、合成、摘除、雕琢成功后，自动从背包补回刚用掉的同种符、打孔材料和宝石（合成、雕琢），直到用完。</div>', true) +
+            g('宝石策略',
             f('启用宝石托管', 'gems.enabled') +
             f('自动打孔', 'gems.drill') +
-            f('每件装备目标孔数', 'gems.maxHoles', { max: 3 }) +
+            f('每件装备目标孔数', 'gems.maxHoles', { max: 3, unit: '孔', dependsOn: 'gems.drill' }) +
             f('自动镶嵌', 'gems.inlay') +
-            f('自动合成（每次5颗）', 'gems.synth') +
-            f('宝石目标等级', 'gems.maxLevel', { max: 6 }) +
-            f('最低合成成功率 %', 'gems.minSynthSuccess', { max: 100 }) +
+            f('自动合成', 'gems.synth', { note: '每次5颗' }) +
+            f('宝石目标等级', 'gems.maxLevel', { max: 6, unit: '级' }) +
+            f('最低合成成功率', 'gems.minSynthSuccess', { max: 100, unit: '%', dependsOn: 'gems.synth' }) +
             f('智慧/魅力宝石雕琢', 'gems.polish') +
-            f('摘除旧宝石后替换', 'gems.replace') +
-            f('每日宝石操作上限', 'gems.maxPerDay') +
-            '<div class="section"><h3>铁匠与神器</h3>' +
+            f('摘除旧宝石后替换', 'gems.replace', { dependsOn: 'gems.inlay' }) +
+            f('每日宝石操作上限', 'gems.maxPerDay', { unit: '次', note: '0 不限' })) +
+            g('铁匠与神器',
             f('启用铁匠托管', 'smithy.enabled') +
             f('自动鉴定50级以上武器', 'smithy.appraisal') +
             f('自动强化穿戴装备', 'smithy.enhance') +
-            f('目标强化等级', 'smithy.targetEnhance', { max: 9 }) +
-            f('最低强化成功率 %', 'smithy.minEnhanceSuccess', { max: 100 }) +
+            f('目标强化等级', 'smithy.targetEnhance', { max: 9, unit: '级', dependsOn: 'smithy.enhance' }) +
+            f('最低强化成功率', 'smithy.minEnhanceSuccess', { max: 100, unit: '%', dependsOn: 'smithy.enhance' }) +
             f('神器冶炼', 'smithy.smelt') +
-            f('允许投入当前穿戴武器', 'smithy.allowSmeltEquipped') +
-            f('攒够多少经验投入一次（挂机中直接投入，不回城）', 'smithy.investChunk') +
+            f('允许投入当前穿戴武器', 'smithy.allowSmeltEquipped', { dependsOn: 'smithy.smelt' }) +
+            f('攒够多少经验投入一次', 'smithy.investChunk', { note: '挂机中直接投入，不回城', dependsOn: 'smithy.smelt' }) +
             f('神节与神符匹配修复', 'smithy.repair') +
             f('完整神节打造神器', 'smithy.forge') +
-            f('目标神器ID（留空自动评分）', 'smithy.artifactIds') +
-            f('每日铁匠操作上限', 'smithy.maxPerDay') +
-            '<div class="section"><h3>裁缝与御赐套装</h3>' +
+            f('目标神器ID', 'smithy.artifactIds', { note: '留空自动评分', dependsOn: 'smithy.forge' }) +
+            f('每日铁匠操作上限', 'smithy.maxPerDay', { unit: '次', note: '0 不限' })) +
+            g('裁缝与御赐套装',
             f('启用装备打造', 'craft.enabled') +
             f('棉布/秘银打造', 'craft.tailor') +
             f('万灵石兑换套装', 'craft.exchange') +
-            f('目标装备ID（留空自动评分）', 'craft.targetIds') +
-            f('最低装备评分增益 %', 'craft.minGainPercent', { step: 0.1 }) +
-            f('每日打造/兑换上限', 'craft.maxPerDay') +
-            '<div class="hint">打造按角色已持有材料处理，目标以当前下发的模板与神器预览为准。</div></div></div>';
+            f('目标装备ID', 'craft.targetIds', { note: '留空自动评分' }) +
+            f('最低装备评分增益', 'craft.minGainPercent', { step: 0.1, unit: '%' }) +
+            f('每日打造/兑换上限', 'craft.maxPerDay', { unit: '次', note: '0 不限' }) +
+            '<div class="hint">打造按角色已持有材料处理，目标以当前下发的模板与神器预览为准。</div>');
         if (this.section === 'economy')
           html =
-            '<h3>装备回收</h3>' +
+            g('装备回收',
             f('自动出售普通装备', 'sell.enabled') +
-            f('允许出售的最高品质（≤此品质）', 'sell.maxQuality', {
+            f('出售最高品质', 'sell.maxQuality', {
+              note: '≤此品质',
               choices: this.pending.sell.maxQuality === 0
                 ? [[0, '不按品质出售（0）'], ...qualityChoices]
                 : qualityChoices,
@@ -6959,31 +7181,35 @@
             f('保留尚未达到等级的装备', 'sell.keepFuture') +
             f('保留各部位最佳备用装', 'sell.keepBestBackup') +
             f('保留托管新打造装备', 'sell.keepCrafted') +
-            f('保留已鉴定装备（不勾选时只保留双完美武器）', 'sell.keepAppraised') +
+            f('保留已鉴定装备', 'sell.keepAppraised', { note: '不勾选时只保留双完美武器' }) +
             '<div class="hint">不勾选时，资质不是外攻、内攻双完美（都高于 1500）的已鉴定武器按其余规则出售；品质上限、强化、套装等保护照常生效。</div>' +
-            f('攒够几件再出售（1 = 有就卖）', 'sell.batchMin', { min: 1, max: 20 }) +
-            f('永不出售的模板ID（可填预览里的模板ID，逗号分隔）', 'sell.keepTemplateIds') +
+            f('攒够几件再出售', 'sell.batchMin', { min: 1, max: 20, unit: '件', note: '1 = 有就卖' }) +
+            f('永不出售的模板ID', 'sell.keepTemplateIds', { note: '可填预览里的模板ID，逗号分隔' }) +
             f('明确允许出售的材料ID', 'sell.materialIds') +
-            f('每日出售操作上限', 'sell.maxPerDay') +
+            f('每日出售操作上限', 'sell.maxPerDay', { unit: '次', note: '0 不限' }) +
             '<div class="sell-preview">' + this.sellPreview(s) + '</div>' +
-            '<div class="hint">穿戴、强化、镶宝和星级装备始终保留。材料仅按填写的模板ID处理。</div><div class="section"><h3>自动存入仓库</h3>' +
+            '<div class="hint">穿戴、强化、镶宝和星级装备始终保留。材料仅按填写的模板ID处理。</div>', true) +
+            g('自动存入仓库',
             f('自动将装备存入仓库', 'warehouse.enabled') +
-            f('存仓最低品质（≥此品质）', 'warehouse.minQuality', {
-              choices: qualityChoices,
+            f('存仓最低品质', 'warehouse.minQuality', {
+              choices: qualityChoices, note: '≥此品质', dependsOn: 'warehouse.enabled',
             }) +
-            f('套装装备一律存仓（无视品质）', 'warehouse.sets') +
-            f('自动存入双完美资质装备', 'warehouse.perfect') +
-            '<div class="hint">只处理背包中未穿戴的装备；可穿戴的更优装备会先穿戴。仓库装备格满 200 时暂停存仓。符合存仓条件的装备不会被自动出售。</div></div><div class="section"><h3>金币补药与自动回复</h3>' +
+            f('套装装备一律存仓', 'warehouse.sets', { note: '无视品质', dependsOn: 'warehouse.enabled' }) +
+            f('自动存入双完美资质装备', 'warehouse.perfect', { dependsOn: 'warehouse.enabled' }) +
+            '<div class="hint">只处理背包中未穿戴的装备；可穿戴的更优装备会先穿戴。仓库装备格满 200 时暂停存仓。符合存仓条件的装备不会被自动出售。</div>') +
+            g('金币补药',
             f('金币购买等级适用药品', 'shop.enabled') +
-            f('少于此数量时补充', 'shop.minimumStock') +
-            f('目标库存数量', 'shop.targetStock') +
-            f('单次购买最大数量', 'shop.maxBatch') +
+            f('少于此数量时补充', 'shop.minimumStock', { unit: '个' }) +
+            f('目标库存数量', 'shop.targetStock', { unit: '个' }) +
+            f('单次购买最大数量', 'shop.maxBatch', { unit: '个' })) +
+            g('自动回复',
             f('自动配置内置用药', 'potions.enabled') +
-            f('生命回复阈值 %', 'potions.hpThreshold', { min: 10, max: 80 }) +
-            f('内力回复阈值 %', 'potions.mpThreshold', { min: 10, max: 80 }) +
-            f('按实测掉血自动抬高生命阈值', 'potions.autoThreshold') +
+            f('生命回复阈值', 'potions.hpThreshold', { min: 10, max: 80, unit: '%' }) +
+            f('内力回复阈值', 'potions.mpThreshold', { min: 10, max: 80, unit: '%' }) +
+            f('按实测掉血抬高生命阈值', 'potions.autoThreshold') +
             f('自动按药效选择优先级', 'potions.autoChoose') +
             f('用药顺序', 'potions.order', {
+              dependsOn: 'potions.autoChoose',
               choices: [
                 ['fit', '按缺口智能选择（推荐）'],
                 ['weak', '低级药优先（先清库存）'],
@@ -6994,59 +7220,58 @@
             f('指定生命药模板ID', 'potions.hpPriority') +
             f('指定内力药模板ID', 'potions.mpPriority') +
             '<div class="hint">回血量长期等于掉血量，阈值高低不改变吃药数量，只决定安全余量。智能顺序按实测的每秒掉血和耗蓝，选回复速度够用、每金币回复最多的药，并改买这种药；血量低于 35% 或阵亡后一段时间内改用最强的药。</div>' +
-            '<div class="hint">游戏自动回复每次只用一颗药且有冷却。智能选择会按“最大值×(100%−阈值)”算出触发时的缺口，优先用刚好补满缺口的最小药，补不满的低级药排在后面兜底。填写指定模板ID时按填写顺序。</div></div>';
+            '<div class="hint">游戏自动回复每次只用一颗药且有冷却。智能选择会按“最大值×(100%−阈值)”算出触发时的缺口，优先用刚好补满缺口的最小药，补不满的低级药排在后面兜底。填写指定模板ID时按填写顺序。</div>');
         if (this.section === 'budget')
           html =
-            '<h3>资源预算（本机日期）</h3><div class="hint">人物升级按目标等级和保留经验执行。技能升级、冶炼各有每日额度。向下滚动查看全部设置。</div>' +
-            f('保留金币', 'budget.moneyReserve') +
-            f('每日金币支出额度', 'budget.moneyPerDay') +
+            g('资源预算', '<div class="hint">按本机日期统计。人物升级按目标等级和保留经验执行。技能升级、冶炼各有每日额度。</div>' +
+            f('保留金币', 'budget.moneyReserve', { unit: '金币' }) +
+            f('每日金币支出额度', 'budget.moneyPerDay', { unit: '金币' }) +
             f('保留经验', 'budget.expReserve') +
             f('每日技能经验额度', 'budget.skillExpPerDay') +
             f('每日冶炼经验额度', 'budget.smeltExpPerDay') +
-            '<div class="hint">三项每日额度及各功能的每日操作上限填 0 均表示不限（仍受保留金币、保留经验约束）。保存不会清零已用额度。托管暂停时，保存后需点击“开始托管”。</div><div class="hint legacy-experience-note"></div>';
+            '<div class="hint">三项每日额度及各功能的每日操作上限填 0 均表示不限（仍受保留金币、保留经验约束）。保存不会清零已用额度。托管暂停时，保存后需点击“开始托管”。</div><div class="hint legacy-experience-note"></div>', true);
         if (this.section === 'settings')
           html =
-            '<h3>恢复与调度</h3>' +
+            g('恢复与调度',
             f('页面刷新后恢复托管', 'resumeAfterReload') +
-            f('托管运行时持有 Web Lock（防标签页睡眠）', 'keepAwake') +
+            f('托管时持有 Web Lock', 'keepAwake', { note: '防标签页睡眠' }) +
             f('连接恢复后继续托管', 'reconnect.enabled') +
             f('长时间断线时刷新页面', 'reconnect.autoReload') +
-            f('断线多久后刷新（秒）', 'reconnect.reloadAfterSeconds') +
-            f('每小时最多自动刷新', 'reconnect.maxReloadsPerHour') +
-            f('策略检查间隔（毫秒）', 'tickMs', { min: 700 }) +
-            f('动作响应超时（毫秒）', 'requestTimeoutMs', { min: 6000 }) +
-            '<div class="section"><h3>配置</h3><label for="tl-config-json">高级配置JSON</label><div class="hint">修改后先载入，再保存。模板ID与评分权重均保存在本机配置中。</div><textarea id="tl-config-json" spellcheck="false" aria-label="高级配置JSON">' +
+            f('断线多久后刷新', 'reconnect.reloadAfterSeconds', { unit: '秒', dependsOn: 'reconnect.autoReload' }) +
+            f('每小时最多自动刷新', 'reconnect.maxReloadsPerHour', { unit: '次', dependsOn: 'reconnect.autoReload' }) +
+            f('策略检查间隔', 'tickMs', { min: 700, unit: '毫秒' }) +
+            f('动作响应超时', 'requestTimeoutMs', { min: 6000, unit: '毫秒' }), true) +
+            g('配置', '<label for="tl-config-json">高级配置JSON</label><div class="hint">修改后先载入，再保存。模板ID与评分权重均保存在本机配置中。</div><textarea id="tl-config-json" spellcheck="false" aria-label="高级配置JSON">' +
             esc(JSON.stringify(this.pending, null, 2)) +
-            '</textarea><input class="config-file" type="file" accept=".json" hidden><div class="error"></div><div class="actions"><button type="button" class="btn" data-action="applyJson">载入JSON配置</button><button type="button" class="btn" data-action="importConfig">导入配置文件</button><button type="button" class="btn" data-action="export">导出配置</button><button type="button" class="btn" data-action="defaults">载入默认策略</button><button type="button" class="btn" data-action="diagnostics">导出诊断</button></div></div>' +
-            '<div class="section"><h3>浏览器数据库</h3>' + f('使用浏览器数据库保存日志', 'storage.indexedDB') +
+            '</textarea><input class="config-file" type="file" accept=".json" hidden><div class="error"></div><div class="actions"><button type="button" class="btn" data-action="applyJson">载入JSON配置</button><button type="button" class="btn" data-action="importConfig">导入配置文件</button><button type="button" class="btn" data-action="export">导出配置</button><button type="button" class="btn" data-action="defaults">载入默认策略</button><button type="button" class="btn" data-action="diagnostics">导出诊断</button></div>') +
+            g('浏览器数据库', f('使用浏览器数据库保存日志', 'storage.indexedDB') +
             '<div class="database-status">' + esc(this.controller.logStorageStatus()) + '</div><div class="hint database-usage">' + this.databaseUsageText() +
-            '</div><button type="button" class="btn" data-action="clearDatabase">清理数据库</button></div>';
+            '</div><button type="button" class="btn" data-action="clearDatabase">清理数据库</button>');
         if (this.section === 'logs') {
           this.logKey = null;
-          html = '<h3>日志</h3>' + f('显示等级', 'logs.level', { choices: [['all', '全部'], ['notice', '成功和警告'], ['warning', '仅警告']] }) +
+          html = g('日志', f('显示等级', 'logs.level', { immediate: true, choices: [['all', '全部'], ['notice', '成功和警告'], ['warning', '仅警告']] }) +
             '<div class="hint log-usage">' + this.logUsageText() + '</div><div class="actions"><button type="button" class="btn" data-action="exportLogs">导出日志</button><button type="button" class="btn" data-action="clearLogs">清空日志</button></div>' +
-            f('保存日志天数', 'logs.keepDays', { min: 1, max: 90, step: 1 }) +
-            f('面板显示条数', 'logs.showCount', { min: 20, max: 500, step: 1 }) +
-            '<div class="error"></div><div class="live-logs"></div>';
+            f('保存日志天数', 'logs.keepDays', { min: 1, max: 90, step: 1, unit: '天' }) +
+            f('面板显示条数', 'logs.showCount', { min: 20, max: 500, step: 1, unit: '条' }) +
+            '<div class="error"></div><div class="live-logs"></div>', true);
         }
         if (this.section === 'updates') {
           const u = status.updates || { currentVersion: status.version, error: '', notes: null };
           this.updateKey = JSON.stringify(u);
           html =
-            '<h3>版本与更新</h3>' +
+            g('版本与更新',
             f('开启自动更新', 'updates.checkDaily') +
             f('发现新版本时提醒', 'updates.remind') +
-            f('发现新版本后自动刷新页面启用', 'updates.autoApply') +
+            f('新版本自动刷新启用', 'updates.autoApply'), true) +
             this.updateHTML(u);
         }
+        for (const button of this.confirmations?.keys() || []) this.resetConfirmation(button);
         this.root.querySelector('.body').innerHTML = html;
+        this.fragmentKeys = {};
+        this.syncFields();
         if (this.section === 'logs') this.paintLogs();
-        this.root
-          .querySelectorAll('[data-tab]')
-          .forEach((b) => b.classList.toggle('active', b.dataset.tab === this.section));
-        this.root.querySelector('.dirty').textContent = this.dirty
-          ? '有未保存的配置'
-          : '配置已保存';
+        this.paintNavigation();
+        this.paintDirty();
       }
       statusBudgetsHTML(status) {
         const fmt = (n) => Number(n || 0).toLocaleString('zh-CN'),
@@ -7097,9 +7322,9 @@
         return '<div class="hint">' + (check ? '正在核对「' + esc(check.itemName) + '」· ' + esc(check.mapName) +
           ' · 战斗 ' + fmt(check.afterMinutes) + ' / ' + check.needMinutes + ' 分钟 · 每小时击杀 ' +
           fmt(check.beforeRate) + ' → ' + fmt(check.afterRate) + (check.state === 'worse' ? ' · 等待换回' : '') :
-          '没有正在核对的换装') + '</div><h3>最近核对结果</h3>' +
+          '没有正在核对的换装') + '</div>' + this.sectionHTML('最近核对结果',
           (gear?.results?.length ? '<ul>' + gear.results.map((r) => '<li>' + esc(r.text) + '</li>').join('') + '</ul>' :
-            '<div class="hint">暂无核对结果</div>');
+            '<div class="hint">暂无核对结果</div>'));
       }
       welfareHTML(s, ledger, now = Date.now()) {
         const P = TLPolicy, state = s?.welfare, used = ledger?.welfare || {},
@@ -7122,26 +7347,26 @@
       }
       updateHTML(u) {
         const sections = Array.isArray(u.notes?.sections) ? u.notes.sections : [];
-        return `<div class="update-summary"><div class="notice">当前运行 v${esc(u.currentVersion)}${u.latestVersion ? ' · GitHub 最新版本 v' + esc(u.latestVersion) : ''}${u.newer ? '<br>发现新版本。' : ''}</div>${u.newer && u.apply?.exhausted ? '<div class="hint">已自动刷新 5 次仍是旧版本，请点“安装新版本”。</div>' : ''}${u.notes ? `<h3>${esc(u.notes.title)}</h3>${sections.map((s) => `<div class="hint"><strong>${esc(s.title)}</strong></div><ul>${s.items.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`).join('')}` : u.newer ? '<div class="hint">更新内容暂未读取，可在发布页查看。</div>' : ''}<div class="hint">${u.busy ? '正在读取公开版本信息' : u.error ? esc(u.error) : u.checkedAt ? '最近检查：' + esc(new Date(u.checkedAt).toLocaleString()) : '尚未检查公开版本'}${u.nextCheckAt ? '<br>下次可检查：' + esc(new Date(u.nextCheckAt).toLocaleString()) : ''}<br>自动检查：打开或刷新页面时一次，之后每小时一次；手动检查间隔至少 60 秒。</div><div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开发布页</button>${u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : ''}</div><div class="section"><h3>选择自动更新</h3><div class="hint">在油猴管理面板打开本脚本的设置，启用“检查更新”。新版本由 Tampermonkey 自动安装；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。</div></div></div>`;
+        return `<div class="update-summary"><div class="notice">当前运行 v${esc(u.currentVersion)}${u.latestVersion ? ' · GitHub 最新版本 v' + esc(u.latestVersion) : ''}${u.newer ? '<br>发现新版本。' : ''}</div>${u.newer && u.apply?.exhausted ? '<div class="hint">已自动刷新 5 次仍是旧版本，请点“安装新版本”。</div>' : ''}${u.notes ? this.sectionHTML(u.notes.title, sections.map((s) => `<div class="hint"><strong>${esc(s.title)}</strong></div><ul>${s.items.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`).join(''), false, 'release-notes') : u.newer ? '<div class="hint">更新内容暂未读取，可在发布页查看。</div>' : ''}${this.discloseHints(`<div class="hint">${u.busy ? '正在读取公开版本信息' : u.error ? esc(u.error) : u.checkedAt ? '最近检查：' + esc(new Date(u.checkedAt).toLocaleString()) : '尚未检查公开版本'}${u.nextCheckAt ? '<br>下次可检查：' + esc(new Date(u.nextCheckAt).toLocaleString()) : ''}<br>自动检查：打开或刷新页面时一次，之后每小时一次；手动检查间隔至少 60 秒。</div>`)}<div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开发布页</button>${u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : ''}</div>${this.sectionHTML('选择自动更新', '<div class="hint">在油猴管理面板打开本脚本的设置，启用“检查更新”。新版本由 Tampermonkey 自动安装；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。</div>')}</div>`;
       }
       scoreHTML(status, detail) {
         const f = (l, p, o) => this.field(l, p, o);
-        return '<div class="section"><h3>评分方式</h3>' +
+        return this.sectionHTML('评分设置',
           f('评分方式', 'gear.scoring', { choices: [['combat', '实战评分（按伤害公式，推荐）'], ['linear', '固定权重（同游戏战力）']] }) +
-          f('评分参照的怪物', 'gear.targets', { choices: [['pool', '可进入的最高 6 张挂机地图（推荐）'], ['map', '只看最近挂机的地图']] }) +
-          f('按实测战况自动调整生存权重', 'gear.autoDefense') +
-          f('生存权重（自动关闭或数据不足时使用；0 只看输出，1 输出与生存并重）', 'gear.defenseWeight', { min: 0, max: 1, step: 0.1 }) +
+          f('评分参照怪物', 'gear.targets', { choices: [['pool', '可进入的最高 6 张挂机地图（推荐）'], ['map', '只看最近挂机的地图']] }) +
+          f('自动调整生存权重', 'gear.autoDefense', { note: '按实测战况调整' }) +
+          f('生存权重', 'gear.defenseWeight', { min: 0, max: 1, step: 0.1, note: '自动关闭或数据不足时使用；0 只看输出，1 输出与生存并重' }) +
           f('逛摊淘宝显示装备评分', 'market.showScore') +
-          f('背包和仓库装备图标显示评分', 'market.bagScore') +
-          f('逛摊显示的评分', 'market.scoreType', { choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
-          f('背包和仓库图标显示的评分', 'market.bagScoreType', { choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
-          f('装备详情和人物面板显示实战评分', 'market.tipScore') +
-          f('逛摊按脚本排序', 'market.sort', { choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }) +
-          '</div>' + this.scoreLiveHTML(status, detail) + this.scoreFormulaHTML(status);
+          f('背包和仓库图标显示评分', 'market.bagScore') +
+          f('逛摊评分类型', 'market.scoreType', { dependsOn: 'market.showScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
+          f('背包仓库评分类型', 'market.bagScoreType', { dependsOn: 'market.bagScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
+          f('详情和人物面板显示实战评分', 'market.tipScore', { note: '装备详情及人物面板' }) +
+          f('逛摊按脚本排序', 'market.sort', { immediate: true, choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }), true) +
+          this.scoreLiveHTML(status, detail) + this.scoreFormulaHTML(status);
       }
       scoreTableHTML(headers, rows) {
-        return '<table class="income-table"><thead><tr>' + headers.map((v) => '<th>' + esc(v) + '</th>').join('') +
-          '</tr></thead><tbody>' + rows.map((row) => '<tr>' + row.map((v) => '<td>' + esc(v) + '</td>').join('') + '</tr>').join('') + '</tbody></table>';
+        return '<div class="table-scroll"><table class="income-table"><thead><tr>' + headers.map((v) => '<th>' + esc(v) + '</th>').join('') +
+          '</tr></thead><tbody>' + rows.map((row) => '<tr>' + row.map((v) => '<td>' + esc(v) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
       }
       scoreDangerHTML(v) {
         if (!v) return '';
@@ -7151,9 +7376,9 @@
           v.burst.toFixed(2) + '；阵亡 ' + v.deaths + ' 次 → ' + v.death.toFixed(2) + '</div>';
       }
       scoreLiveHTML(status, detail) {
-        let html = '<div class="section"><h3>当前状态</h3><div class="hint">' + esc(TLPolicy.scoringText(status.scoring)) + '</div>' + this.scoreDangerHTML(status.scoring.survival);
+        let table, html = '<div class="hint">' + esc(TLPolicy.scoringText(status.scoring)) + '</div>' + this.scoreDangerHTML(status.scoring?.survival);
         html += '<button class="btn" type="button" data-action="resetScoring">重置评分数据</button><div class="hint">重置只影响自动生存权重用的实测数据和怪物属性缓存，统计页的收益数据不变。重置后战斗满 30 分钟前使用手动权重。</div>';
-        if (status.scoring.since != null) {
+        if (status.scoring?.since != null) {
           const d = new Date(status.scoring.since), pad = n => String(n).padStart(2, '0');
           html += '<div class="hint">评分数据自 ' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ' 起统计</div>';
         }
@@ -7166,16 +7391,15 @@
           if (detail.parts.artifact)
             html += '<div class="hint">神器技能：' + esc(detail.parts.artifact.skillName) + ' · 覆盖率 ' +
               (detail.parts.artifact.uptime * 100).toFixed(1) + '%</div>';
-          html += '<h3>当前每点属性的分数</h3>';
-          html += this.scoreTableHTML(['属性', '当前值', '+1 点', '+100 点'], detail.rows.map((r) => [r.name, Math.round(r.current), r.one.toFixed(2), r.hundred.toFixed(1)]));
-          html += '<div class="hint">分数按当前属性和参照怪物实时计算，每 100 分约等于整体实战能力的 1%。点数指装备上的点数，已计入被动技能的加成。抗性只在低于怪物对应元素攻击时有用，超出的部分不加分，所以抗性的“+100 点”远小于“+1 点”的 100 倍。</div>';
-        } else if (this.pending.gear.scoring === 'combat') html += '<div class="hint">实战评分等待怪物数据</div>';
-        else html += this.scoreTableHTML(['属性', '每点分数'], Object.entries(this.pending.gear.weights).map(([k, v]) => [Object.fromEntries(TLPolicy.SCORE_ATTRIBUTES)[k] || (k === 'mp' ? '真气' : k), v])) + '<div class="hint">固定权重与游戏战力相同，可在高级JSON配置中调整。</div>';
-        return html + '</div>';
+          table = this.scoreTableHTML(['属性', '当前值', '+1 点', '+100 点'], detail.rows.map((r) => [r.name, Math.round(r.current), r.one.toFixed(2), r.hundred.toFixed(1)]));
+          table += '<div class="hint">点数指装备上的点数，已计入被动技能的加成。详细说明见“计算公式”。</div>';
+        } else if (this.pending.gear.scoring === 'combat') table = '<div class="hint">实战评分等待怪物数据</div>';
+        else table = this.scoreTableHTML(['属性', '每点分数'], Object.entries(this.pending.gear.weights).map(([k, v]) => [Object.fromEntries(TLPolicy.SCORE_ATTRIBUTES)[k] || (k === 'mp' ? '真气' : k), v])) + '<div class="hint">固定权重与游戏战力相同，可在高级JSON配置中调整。</div>';
+        return this.sectionHTML('当前状态', html) + this.sectionHTML('每点属性的分数', table);
       }
       scoreFormulaHTML(status) {
         const p = TLPolicy, percent = (v) => Math.round(v * 100) + '%';
-        return '<div class="section"><h3>计算公式</h3><div class="hint">' + [
+        return this.sectionHTML('计算公式', '<div class="hint">' + [
           '实战值 = 每次行动输出 ×（气血 ÷ 每次受击伤害）^ 生存权重',
           `分数 = ${p.SCORE_UNIT} × ln（实战值之比）；每 100 分约等于 1%`,
           `单件装备分数 = ${p.SCORE_UNIT} × ln（穿上它的实战值 ÷ 该部位空着的实战值）`,
@@ -7193,20 +7417,21 @@
           `危险度 = max（（掉血占回血能力 − ${percent(p.SUSTAIN_LINE)}）÷ ${percent(1 - p.SUSTAIN_LINE)}，低血量时间占比 ÷ ${percent(p.LOW_HP_SHARE)}，有阵亡时 0.5）`,
           `低血量 = 气血低于 ${percent(p.HP_LINE)}；回血能力 = 最强可用生命药回复量 ÷ 3 秒`
         ].map(esc).join('<br>') + '</div><div class="hint">评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。战斗数据不足 30 分钟时生存权重用手动值。</div>' +
-          '<div class="hint">自动生存权重按门槛计算：安全时只等于生命药费占金币收入的比例（接近 0，防御和抗性几乎不加分）。实战评分每 100 分约等于整体实战能力的 1%；人物面板的实战评分是全身装备的合计贡献，换一件装备后它的变化等于两件装备的分数差。</div></div>';
+          '<div class="hint">自动生存权重按门槛计算：安全时只等于生命药费占金币收入的比例（接近 0，防御和抗性几乎不加分）。实战评分每 100 分约等于整体实战能力的 1%；人物面板的实战评分是全身装备的合计贡献，换一件装备后它的变化等于两件装备的分数差。</div>' +
+          '<div class="hint">分数按当前属性和参照怪物实时计算，每 100 分约等于整体实战能力的 1%。点数指装备上的点数，已计入被动技能的加成。抗性只在低于怪物对应元素攻击时有用，超出的部分不加分，所以抗性的“+100 点”远小于“+1 点”的 100 倍。</div>');
       }
       statsHTML(stats, maps, status = this.controller.status()) {
-        if (!stats) return '<div class="hint">等待角色数据</div>';
+        if (!stats) return this.sectionHTML('收益统计', '<div class="hint">等待角色数据</div>', true);
         const fmt = TLRuntime.statsNumber, duration = TLRuntime.statsDuration;
         const rate = (n, time) => fmt(time ? n * 3600000 / time : 0);
-        const card = (title, b) => {
+        const card = (title, b, first = false) => {
           const net = b.gold + b.sell - b.potion;
           const rows = [['经验', fmt(b.exp) + ' · ' + rate(b.exp, b.wall) + '/时'],
             ['击杀金币', fmt(b.gold)], ['出售收入', fmt(b.sell)], ['药费', fmt(b.potion)],
             ['净金币', fmt(net) + ' · ' + rate(net, b.wall) + '/时'],
             ['战斗占比', (b.wall ? b.battle / b.wall * 100 : 0).toFixed(1) + '%'],
             ['击杀', fmt(b.kills)], ['阵亡', fmt(b.deaths)], ['低血量', duration(b.low)], ['用药', '生命 ' + fmt(b.hpPotions) + ' · 内力 ' + fmt(b.mpPotions)]];
-          return '<h3>' + title + '</h3>' + rows.map(([label, value]) => `<div class="budget-card"><span>${label}</span><span>${value}</span></div>`).join('');
+          return this.sectionHTML(title, rows.map(([label, value]) => `<div class="budget-card"><span>${label}</span><span>${value}</span></div>`).join(''), first);
         };
         const rows = stats.summary.maps.map((b) => {
           const name = (maps || []).find((m) => Number(m.id) === b.mapId)?.name || b.mapId;
@@ -7215,24 +7440,25 @@
             .map((v) => '<td>' + v + '</td>').join('') + '</tr>';
         }).join('');
         const r = stats.rates;
-        return card('近 1 小时', stats.summary.recent) + card('今日', stats.summary.today) + card('上一小时', stats.summary.previous) +
-          '<div class="section"><h3>按地图（近 72 小时）</h3><table class="income-table"><thead><tr>' +
+        return card('近 1 小时', stats.summary.recent, true) + card('今日', stats.summary.today) + card('上一小时', stats.summary.previous) +
+          this.sectionHTML('按地图（近 72 小时）', '<div class="table-scroll"><table class="income-table"><thead><tr>' +
           ['地图', '战斗时长', '经验/时', '单倍经验/时', '金币/时', '药费/时', '净金币/时', '阵亡'].map((v) => '<th>' + v + '</th>').join('') +
-          '</tr></thead><tbody>' + rows + '</tbody></table></div><div class="hint">当前消耗：' +
+          '</tr></thead><tbody>' + rows + '</tbody></table></div>') + this.sectionHTML('当前消耗', '<div class="hint">当前消耗：' +
           (r.seconds < 60 ? '数据不足' : '每秒掉血 ' + fmt(r.hpLossPerSec) + ' · 每秒耗蓝 ' + fmt(r.mpUsePerSec) + ' · 10 秒最大掉血 ' + Math.round(r.worstLoss10Pct) + '% · 样本 ' + fmt(r.seconds) + ' 秒') +
           ['hp', 'mp'].map((key) => {
-            const pick = status.potions[key];
+            const pick = status.potions?.[key];
             return pick ? ' · ' + (key === 'hp' ? '生命药 ' : '内力药 ') + esc(pick.name) + '（回复 ' + fmt(pick.perSecond) + '/秒，需要 ' + fmt(pick.need) + '/秒）' : '';
           }).join('') +
           (this.controller.prefs.potions.autoThreshold ? ' · 生命阈值 ' + status.threshold + '%' : '') +
           '</div><button class="btn" type="button" data-action="clearStats">清空统计</button>' +
-          '<div class="hint">经验按击杀前后的差值统计；“单倍经验”把天灵丹双倍时段折半，方便比较地图。每小时数值按在线时间折算，地图表按战斗时间折算。</div>';
+          '<div class="hint">经验按击杀前后的差值统计；“单倍经验”把天灵丹双倍时段折半，方便比较地图。每小时数值按在线时间折算，地图表按战斗时间折算。</div>');
       }
       paintUpdates(u, status) {
-        const tab = this.root.querySelector('[data-tab="updates"]');
-        if (tab) {
-          tab.classList.toggle('has-update', !!u?.newer);
-          tab.textContent = u?.newer ? '更新 · 新' : '更新';
+        for (const [selector, name] of [['[data-group="system"]', '系统'], ['[data-tab="updates"]', '更新']]) {
+          const tab = this.root.querySelector(selector), text = name + (u?.newer ? ' · 新' : '');
+          if (!tab) continue;
+          if (tab.classList.contains('has-update') !== !!u?.newer) tab.classList.toggle('has-update', !!u?.newer);
+          if (tab.textContent !== text) tab.textContent = text;
         }
         if (
           u?.newer &&
@@ -7243,6 +7469,7 @@
         ) {
           this.notifiedVersion = u.latestVersion;
           this.section = 'updates';
+          this.rememberPage();
           this.collapsed = false;
           this.root.querySelector('.wrap').classList.remove('collapsed');
           this.renderBody(status || { updates: u }, null);
@@ -7274,20 +7501,17 @@
         if (this.section === 'updates' && !this.dirty && this.updateKey !== JSON.stringify(u))
           this.renderBody(s);
         if (this.section === 'stats' && !this.dirty && Date.now() - this.statsPaintAt >= 5000 &&
-          this.statsKey !== this.statsHTML(s.stats, this.controller.bridge.state()?.maps, s)) this.renderBody(s);
+          this.statsKey !== this.liveContentKey(this.statsHTML(s.stats, this.controller.bridge.state()?.maps, s))) this.renderBody(s);
         if (this.section === 'score' && !this.dirty && Date.now() - this.scorePaintAt >= 5000 &&
-          this.scoreKey !== this.scoreHTML(s, TLPolicy.scoringDetail(this.controller.bridge.state(), this.pending))) this.renderBody(s);
+          this.scoreKey !== this.liveContentKey(this.scoreHTML(s, TLPolicy.scoringDetail(this.controller.bridge.state(), this.pending)))) this.renderBody(s);
         if (this.section === 'battle') {
-          const welfare = this.root.querySelector('.welfare-status');
-          if (welfare) welfare.innerHTML = this.welfareHTML(this.controller.bridge.state(), s.ledger);
+          this.paintFragment('.welfare-status', this.discloseHints('<div class="hint">' + this.welfareHTML(this.controller.bridge.state(), s.ledger) + '</div>'));
         }
         if (this.section === 'growth') {
-          const gear = this.root.querySelector('.gear-check-status');
-          if (gear) gear.innerHTML = this.gearCheckHTML(s.gear);
+          this.paintFragment('.gear-check-status', this.gearCheckHTML(s.gear));
         }
         if (this.section === 'economy') {
-          const preview = this.root.querySelector('.sell-preview');
-          if (preview) preview.innerHTML = this.sellPreview(this.controller.bridge.state());
+          this.paintFragment('.sell-preview', this.discloseHints(this.sellPreview(this.controller.bridge.state())));
         }
         if (this.section === 'status') {
           const network = this.root.querySelector('.network-status'), text = this.networkText(s);
@@ -7298,9 +7522,10 @@
             this.statusBudgetsKey = html;
           }
         }
-        const fact = (label, value, detail = false, progress = null) => value == null || value === '' ? '' :
+        const expanded = this.uiState().expanded;
+        const fact = (label, value, detail = false, progress = null) => value == null || value === '' || (!expanded && label !== '收益') ? '' :
           `<div${detail ? ' class="fact-detail"' : ''}><dt>${label}</dt><dd${progress ? ' class="level-reason" data-code="' + esc(progress.code) + '"' : ''}>${esc(value)}</dd></div>`;
-        let summary = `<div class="status-line"><span class="status-label"><span class="dot ${s.ready ? 'on' : ''}"></span><span>${s.enabled ? '托管运行中' : '托管已暂停'} · ${s.ready ? '角色在线' : s.connected ? '等待角色' : '等待连接'}</span></span>${s.role ? `<span class="role-name">${esc(s.role.nickname)} · Lv.${esc(s.role.level)}</span>` : ''}</div><div class="reason">${esc(s.reason)}</div>`;
+        let summary = `<div class="status-line"><span class="status-label"><span class="dot ${s.ready ? 'on' : ''}"></span><span>${s.enabled ? '托管运行中' : '托管已暂停'} · ${s.ready ? '角色在线' : s.connected ? '等待角色' : '等待连接'}</span></span><button type="button" class="text-button" data-action="summary" aria-expanded="${expanded}">${expanded ? '收起' : '展开'}</button></div>${expanded && s.role ? `<div class="role-name">${esc(s.role.nickname)} · Lv.${esc(s.role.level)}</div>` : ''}<div class="reason">${esc(s.reason)}</div>`;
         if (s.role) {
           const income = s.stats?.summary?.recent;
           summary += '<dl class="facts">' +
@@ -7324,9 +7549,7 @@
               fmt(s.ledger.unclassifiedExp) +
               '，已占用技能和冶炼预算；人物升级继续按等级目标执行。';
         }
-        this.root.querySelector('.dirty').textContent = this.dirty
-          ? '有未保存的配置'
-          : '配置已保存 · ' + (s.enabled ? '托管运行中' : '托管已暂停');
+        this.paintDirty(s);
         this.paintLogs();
         this.paintDatabase();
         const key = s.role?.id || '';
