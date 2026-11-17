@@ -146,6 +146,7 @@
       gear: {
         scoring: 'combat', targets: 'pool', autoDefense: true, defenseWeight: 0.5, enabled: true,
         minGainPercent: 1, allowBinding: true, fromWarehouse: true, weights: WEIGHTS,
+        fieldCheck: true, fieldMinutes: 20, fieldDropPercent: 5,
       },
       market: { sort: 'off', showScore: true, bagScore: true, tipScore: true, scoreType: 'combat', bagScoreType: 'combat' },
       sell: {
@@ -247,6 +248,8 @@
       p.pets.feedKeepExp = Math.max(0, num(p.pets.feedKeepExp));
       p.pets.refreshMinutes = Math.max(2, Math.min(240, num(p.pets.refreshMinutes)));
       if (!['combat', 'linear'].includes(p.gear.scoring)) p.gear.scoring = 'combat';
+      p.gear.fieldMinutes = Math.max(10, Math.min(180, integer(p.gear.fieldMinutes, 20)));
+      p.gear.fieldDropPercent = Math.max(1, Math.min(50, num(p.gear.fieldDropPercent, 5)));
       if (!['off', 'power', 'combat', 'gain'].includes(p.market.sort)) p.market.sort = 'off';
       for (const key of ['scoreType', 'bagScoreType'])
         if (!['combat', 'power'].includes(p.market[key])) p.market[key] = 'combat';
@@ -1161,6 +1164,94 @@
     function fieldMap(map) {
       return farmMap(map) && num(map.id) >= 10000 && num(map.id) < 20000;
     }
+    const gearCheckCounts = (bucket) => Object.fromEntries(['battle', 'kills', 'deaths']
+      .map((key) => [key, Math.max(0, num(bucket?.[key]))]));
+    const gearCheckWorn = (s, slot) => array(s.equipments)
+      .filter((e) => e.isEquipped && num(template(e).slotType) !== slot)
+      .map((e) => num(e.id)).sort((a, b) => a - b);
+    function gearCheckTotals(buckets, mapId, firstHour, lastHour, base = {}) {
+      const total = gearCheckCounts();
+      for (const [key, bucket] of Object.entries(buckets || {})) {
+        const [hour, map] = key.split(':').map(Number);
+        if (map !== mapId || hour < firstHour || hour > lastHour) continue;
+        for (const field of Object.keys(total))
+          total[field] += Math.max(0, num(bucket[field]) - num(base[key]?.[field]));
+      }
+      return total;
+    }
+    function gearCheckStart(a, before, s, buckets, prefs, now) {
+      if (a.type !== 'EQUIP_ITEM' || a.family !== 'gear' || a.gearSwapBack || s.gearCheck ||
+          !config(prefs).gear.fieldCheck || !farmMap(roleMap(s)) || num(before.role.id) !== num(s.role.id)) return null;
+      const item = array(before.equipments).find((e) => num(e.id) === num(a.payload.roleEquipId));
+      if (!item || item.isEquipped || !array(s.equipments).some((e) => num(e.id) === num(item.id) && e.isEquipped)) return null;
+      const slot = num(template(item).slotType), mapId = num(s.role.mapId), hour = Math.floor(now / 3600000),
+        old = array(before.equipments).find((e) => e.isEquipped && num(template(e).slotType) === slot),
+        key = hour + ':' + mapId;
+      return { itemId: num(item.id), itemName: template(item).name || String(item.id),
+        oldItemId: old ? num(old.id) : null, oldName: old ? template(old).name || String(old.id) : '',
+        slot, mapId, startedAt: now, level: num(s.role.level), worn: gearCheckWorn(s, slot),
+        before: gearCheckTotals(buckets, mapId, hour - 2, hour),
+        base: { [key]: gearCheckCounts(buckets?.[key]) } };
+    }
+    function gearCheckAfter(check, buckets, s) {
+      return { ...gearCheckTotals(buckets, check.mapId, Math.floor(check.startedAt / 3600000), Infinity, check.base),
+        ...(s ? { level: num(s.role.level), worn: gearCheckWorn(s, check.slot),
+          itemId: num(array(s.equipments).find((e) => e.isEquipped && num(template(e).slotType) === check.slot)?.id) } : {}) };
+    }
+    function gearCheckVerdict(check, after, prefs, now) {
+      const gear = config(prefs).gear, before = check.before,
+        tb = num(before.battle) / 3600000, ta = num(after.battle) / 3600000,
+        kb = num(before.kills), ka = num(after.kills),
+        beforeRate = tb > 0 ? kb / tb : null, afterRate = ta > 0 ? ka / ta : null,
+        change = beforeRate > 0 && afterRate !== null ? (afterRate - beforeRate) / beforeRate * 100 : null,
+        spread = tb > 0 && ta > 0 ? Math.sqrt(ka / (ta * ta) + kb / (tb * tb)) : 0,
+        z = spread > 0 ? (afterRate - beforeRate) / spread : 0,
+        afterMinutes = num(after.battle) / 60000, needMinutes = gear.fieldMinutes,
+        deathWorse = num(after.deaths) > 0 && num(before.deaths) === 0 && tb >= 1;
+      const result = { beforeRate, afterRate, change, z, afterMinutes, needMinutes, deathWorse };
+      if (!gear.fieldCheck || (after.level != null && num(after.level) !== check.level) ||
+          (after.worn && JSON.stringify(array(after.worn).map(num).sort((a, b) => a - b)) !== JSON.stringify(check.worn)) ||
+          (after.itemId != null && num(after.itemId) !== check.itemId)) return { ...result, state: 'stale' };
+      // A failed rollback retains the measured verdict until it can be confirmed.
+      if (check.verdict?.state === 'worse') return { ...check.verdict };
+      if (num(before.battle) < needMinutes * 60000) return { ...result, state: 'nobefore' };
+      if (afterMinutes < needMinutes)
+        return { ...result, state: now - check.startedAt >= 10800000 ? 'stale' : 'collecting' };
+      return { ...result, state: (change !== null && change <= -gear.fieldDropPercent && z <= -2) || deathWorse ? 'worse' : 'ok' };
+    }
+    function gearCheckRestored(check, s) {
+      const worn = array(s.equipments).find((e) => e.isEquipped && num(template(e).slotType) === check.slot);
+      return check.oldItemId !== null ? num(worn?.id) === check.oldItemId :
+        !worn && array(s.equipments).some((e) => num(e.id) === check.itemId && !e.isEquipped);
+    }
+    function gearCheckRollback(check, s) {
+      if (!array(s.equipments).some((e) => e.isEquipped && num(e.id) === check.itemId)) return null;
+      if (check.oldItemId !== null && !array(s.equipments).some((e) => !e.isEquipped && num(e.id) === check.oldItemId)) return null;
+      return action('EQUIP_ITEM', { roleEquipId: check.oldItemId ?? check.itemId },
+        check.oldItemId !== null ? '实测变差，换回「' + check.oldName + '」' : '实测变差，脱下「' + check.itemName + '」',
+        'gear', { inBattle: true, gearSwapBack: true });
+    }
+    function gearRejected(entries, now) {
+      const seen = new Set();
+      return array(entries).filter((e) => e && Number.isSafeInteger(e.id) && e.id > 0 &&
+        typeof e.name === 'string' && Number.isFinite(e.at) && now - e.at <= 30 * 86400000)
+        .sort((a, b) => b.at - a.at).filter((e) => {
+          if (seen.has(e.id)) return false;
+          seen.add(e.id);
+          return true;
+        }).slice(0, 200);
+    }
+    function gearCheckText(check, verdict, s, restored = false) {
+      const fmt = (value, digits = 0) => value == null ? '—' : value.toFixed(digits),
+        map = array(s.maps).find((m) => num(m.id) === check.mapId)?.name || check.mapId,
+        ending = { ok: '核对通过，保留装备', nobefore: '换装前战斗数据不足，不作比较',
+          stale: '核对失效（超时、等级或装备变化、核对关闭）' }[verdict.state] ||
+          (restored ? check.oldItemId !== null ? '已换回「' + check.oldName + '」' : '已脱下「' + check.itemName + '」' :
+            '原装备「' + check.oldName + '」不在背包，保留「' + check.itemName + '」');
+      return '实测核对「' + check.itemName + '」· ' + map + '：每小时击杀 ' + fmt(verdict.beforeRate) + ' → ' +
+        fmt(verdict.afterRate) + '（' + fmt(verdict.change, 1) + '%），战斗 ' + fmt(check.before.battle / 60000, 1) +
+        ' → ' + fmt(verdict.afterMinutes, 1) + ' 分钟 / 至少 ' + verdict.needMinutes + ' 分钟，' + ending;
+    }
     function poolMaps(s) {
       return array(s.maps).filter((m) => fieldMap(m) && num(m.reqLevel) <= num(s.role?.level))
         .sort((a, b) => num(b.reqLevel) - num(a.reqLevel) || num(a.id) - num(b.id)).slice(0, 6);
@@ -1693,6 +1784,12 @@
       };
       const role = s.role,
         equipped = array(s.equipments).filter((e) => !!e.isEquipped);
+      const rejected = new Set(gearRejected(s.gearRejected, now).map((e) => e.id)),
+        protectedGear = new Set([...rejected, s.gearCheck?.oldItemId]);
+      if (s.gearCheck?.verdict?.state === 'worse') {
+        const rollback = gearCheckRollback(s.gearCheck, s);
+        if (rollback) add(rollback);
+      }
       const fields = array(s.maps).filter(fieldMap);
       if (p.gear.scoring === 'combat' && fields.length &&
           // A monster the server does not return must not cause a request on every tick.
@@ -1974,11 +2071,12 @@
 
       let gearChosenId = null;
       const warehouseSetIds = setTemplateIds(s);
-      if (p.gear.enabled) {
+      if (p.gear.enabled && !s.gearCheck) {
         const candidatesFrom = (items) => array(items)
           .filter(
             (e) =>
               !e.isEquipped &&
+              !rejected.has(num(e.id)) &&
               e.equipTmpl &&
               num(e.equipTmpl.reqLevel) <= num(role.level) &&
               num(e.equipTmpl.slotType) > 0 &&
@@ -2015,7 +2113,7 @@
       }
       if (p.warehouse.enabled && num(s.warehouseEquipCount) < WAREHOUSE_CAPACITY) {
         const e = array(s.equipments).find(
-          (e) => num(e.id) !== gearChosenId && warehouseEligible(e, p, warehouseSetIds),
+          (e) => num(e.id) !== gearChosenId && !protectedGear.has(num(e.id)) && warehouseEligible(e, p, warehouseSetIds),
         );
         if (e)
           add(
@@ -2046,6 +2144,7 @@
             (e) =>
               !provisional &&
               !e.isEquipped &&
+              !protectedGear.has(num(e.id)) &&
               e.equipTmpl &&
               !e.hiddenWeapon && num(e.equipTmpl.slotType) !== 12 &&
               (!p.warehouse.enabled || !warehouseEligible(e, p, warehouseSetIds)) &&
@@ -2740,6 +2839,7 @@
       townFor,
       farmMap,
       fieldMap,
+      gearCheckStart, gearCheckAfter, gearCheckVerdict, gearCheckRestored, gearCheckRollback, gearRejected, gearCheckText,
       normalMap,
       potionEffect,
       potionChoices,
@@ -4352,12 +4452,90 @@
         this.market = new MarketScore(this);
       }
       ensureStats(id) {
+        this.ensureGearState(id);
         if (!id || this.statsRoleId === id) return;
         this.stats?.flush();
         this.statsRoleId = id;
         const key = PREFIX + ':stats:' + id;
         this.stats = new Stats({ now: () => Date.now(), read: () => readStorage(key, null),
           write: (value) => writeStorage(key, value) });
+      }
+      ensureGearState(id, now = Date.now()) {
+        if (!id || this.gearRoleId === id) return;
+        this.gearRoleId = id;
+        const saved = readStorage(PREFIX + ':gearCheck:' + id, null), check = saved?.check;
+        this.gearCheck = check && Number.isFinite(check.startedAt) && check.before && check.base &&
+          Array.isArray(check.worn) ? check : null;
+        this.gearResults = P.array(saved?.results).filter((r) => r && typeof r.text === 'string').slice(0, 10);
+        this.gearRejected = P.gearRejected(readStorage(PREFIX + ':gearRejected:' + id, []), now);
+        this.saveGearState();
+      }
+      saveGearState() {
+        if (!this.gearRoleId) return;
+        writeStorage(PREFIX + ':gearCheck:' + this.gearRoleId, { check: this.gearCheck, results: this.gearResults });
+        writeStorage(PREFIX + ':gearRejected:' + this.gearRoleId, this.gearRejected);
+      }
+      clearGearRejected() {
+        this.gearRejected = [];
+        this.saveGearState();
+        this.log('已清空换回名单');
+      }
+      gearState(s, now = Date.now()) {
+        const rejected = P.gearRejected(this.gearRejected, now);
+        if (rejected.length !== P.array(this.gearRejected).length) {
+          this.gearRejected = rejected;
+          this.saveGearState();
+        }
+        return { ...s, gearCheck: this.gearCheck, gearRejected: rejected };
+      }
+      gearStatus(s, now = Date.now()) {
+        this.ensureGearState(P.num(s?.role?.id), now);
+        const check = this.gearCheck;
+        return { check: check ? { ...check,
+          mapName: P.array(s?.maps).find((m) => P.num(m.id) === check.mapId)?.name || String(check.mapId),
+          ...P.gearCheckVerdict(check, P.gearCheckAfter(check, this.stats?.buckets, s), this.prefs, now) } : null,
+          results: this.gearResults || [] };
+      }
+      finishGearCheck(verdict, s, now, restored = false) {
+        const check = this.gearCheck, text = P.gearCheckText(check, verdict, s, restored);
+        this.gearResults = [{ itemId: check.itemId, itemName: check.itemName, mapId: check.mapId,
+          at: now, ...verdict, text }, ...P.array(this.gearResults)].slice(0, 10);
+        this.gearCheck = null;
+        this.saveGearState();
+        this.log(text, verdict.state === 'worse' ? 'warning' : 'info');
+      }
+      updateGearCheck(s, now = Date.now()) {
+        const check = this.gearCheck;
+        if (!check) return;
+        if (check.verdict?.state === 'worse' && P.gearCheckRestored(check, s)) {
+          this.finishGearCheck(check.verdict, s, now, true);
+          return;
+        }
+        const verdict = P.gearCheckVerdict(check, P.gearCheckAfter(check, this.stats?.buckets, s), this.prefs, now);
+        if (verdict.state === 'collecting') return;
+        if (verdict.state === 'worse') {
+          if (!check.verdict) {
+            this.gearCheck = { ...check, verdict };
+            this.gearRejected = P.gearRejected([{ id: check.itemId, name: check.itemName, at: now, change: verdict.change },
+              ...P.array(this.gearRejected)], now);
+            this.saveGearState();
+          }
+          if (P.gearCheckRollback(check, s)) return;
+        }
+        this.finishGearCheck(verdict, s, now);
+      }
+      gearEquipped(a, before, after, now = Date.now()) {
+        this.ensureStats(P.num(after.role.id));
+        if (a.gearSwapBack) {
+          this.updateGearCheck(after, now);
+          return;
+        }
+        if (this.gearCheck) return;
+        this.gearCheck = P.gearCheckStart(a, before, after, this.stats?.buckets, this.prefs, now);
+        if (!this.gearCheck) return;
+        this.stats?.flush();
+        this.saveGearState();
+        this.updateGearCheck(after, now);
       }
       installInteractionPause() {
         for (const type of ['pointerdown', 'keydown'])
@@ -4395,6 +4573,7 @@
         if (this.ledger) writeStorage(this.ledgerKey(), this.ledger);
       }
       setRole(id) {
+        this.ensureGearState(id);
         if (this.roleId !== id || this.ledger?.day !== day()) {
           this.roleId = id;
           this.ledger = P.normalizeLedger(readStorage(this.ledgerKey(), null), day());
@@ -4477,6 +4656,8 @@
         this.timer.set(this.prefs.tickMs);
         this.lastSettings = 0;
         this.suppressed.clear();
+        const s = this.bridge.state();
+        if (s && this.gearRoleId === P.num(s.role.id)) this.updateGearCheck(s);
         this.log('策略配置已保存');
         if (this.updates) {
           if (this.prefs.updates.checkDaily) {
@@ -4491,7 +4672,7 @@
         if (!s) return [];
         this.setRole(P.num(s.role.id));
         this.cleanPetLedger(s.pets);
-        return P.plans(s, this.prefs, this.ledger)
+        return P.plans(this.gearState(s), this.prefs, this.ledger)
           .map((a) => ({
             type: a.type,
             label: a.label,
@@ -4560,6 +4741,7 @@
             });
         }
         return {
+          gear: this.gearStatus(s),
           stats: this.stats ? { summary: this.stats.summary(), rates: this.stats.rates() } : null,
           potions: Object.fromEntries(['HP', 'MP'].map((attr) => {
             const pick = s?.role ? P.potionPick(s, this.prefs, attr, Date.now()) : null;
@@ -4751,6 +4933,7 @@
             P.recordExperience(this.ledger, a.type, extraExp);
           }
           const success = result.success ?? result.code === 200;
+          if (success && a.type === 'EQUIP_ITEM') this.gearEquipped(a, before, after);
           if (!success && a.type === 'SHOP_SELL_BATCH') { this.batchFallback(); return; }
           if (!success && a.doubleExp) {
             this.ledger.tianlingUsedAt = 0;
@@ -4922,6 +5105,16 @@
         this.ensureStats(statsRole?.id);
         if (statsRole) this.stats?.tick(statsRole.mapId);
         if (!this.enabled) {
+          if (this.gearCheck && !this.busy && this.bridge.connected && this.bridge.sessionReady) {
+            const s = this.bridge.state();
+            if (s) {
+              this.setRole(P.num(s.role.id));
+              if (this.acquireLease()) {
+                this.updateGearCheck(s);
+                this.releaseLease();
+              }
+            }
+          }
           this.paint();
           return;
         }
@@ -4954,11 +5147,12 @@
           return;
         }
         if (this.busy || now - this.lastLocal < 1200) return;
+        this.updateGearCheck(s, now);
         if (this.maybeApplyUpdate(now)) return;
         if (P.num(s.role.mapId) === 20070 || s.trial?.run) {
           const prefs = s.trial?.run ? { ...this.prefs,
             hidden: { ...this.prefs.hidden, enabled: true } } : this.prefs;
-          const a = P.plans(s, prefs, this.ledger, now)
+          const a = P.plans(this.gearState(s, now), prefs, this.ledger, now)
             .sort((a, b) => Number(b.type === 'TRIAL_COMMAND') -
               Number(a.type === 'TRIAL_COMMAND')).find((a) =>
             (a.readOnly || a.type === 'UPDATE_SETTINGS') &&
@@ -5025,7 +5219,7 @@
         }
         const rushTown = P.arenaRush(this.prefs, now) && P.num(s.role.level) >= 30
           ? P.townFor(s, P.NPC.arena) : null;
-        let plans = P.plans(s, this.prefs, this.ledger, now).filter(
+        let plans = P.plans(this.gearState(s, now), this.prefs, this.ledger, now).filter(
           (a) =>
             (!rushTown || !a.activity) &&
             (this.suppressed.get(a.key) || 0) < now &&
@@ -5600,6 +5794,10 @@
             return;
           }
           if (action === 'start') this.controller.start();
+          else if (action === 'clearGearRejected') {
+            this.controller.clearGearRejected();
+            this.renderBody();
+          }
           else if (action === 'resetScoring' && confirm('重置评分数据？自动生存权重将从现在起重新统计。')) {
             this.controller.resetScoring();
             this.renderBody();
@@ -5758,6 +5956,12 @@
             f('最低评分增益 %', 'gear.minGainPercent', { step: 0.1 }) +
             f('允许穿戴后绑定', 'gear.allowBinding') +
             f('自动穿戴时也从仓库取出更好的装备', 'gear.fromWarehouse') +
+            f('换装后用实测击杀核对（变差自动换回）', 'gear.fieldCheck') +
+            f('换装后至少攒多少分钟战斗数据', 'gear.fieldMinutes', { min: 10, max: 180, step: 1 }) +
+            f('每小时击杀下降超过多少 % 才换回', 'gear.fieldDropPercent', { min: 1, max: 50, step: 0.1 }) +
+            '<div class="hint">比较同一张图上换装前后的每小时击杀；只有下降超过设定值且统计上可信（约 2 个标准差）才换回，换装后出现阵亡也会换回。核对期间不换其他装备。被换下的装备留在背包，不会自动出售。</div>' +
+            '<div class="gear-check-status">' + this.gearCheckHTML(status.gear) + '</div>' +
+            '<div class="actions"><button class="btn" type="button" data-action="clearGearRejected">清空换回名单</button></div>' +
             '<div class="hint">评分方式、权重和计算公式在“评分”页。</div></div><div class="section"><h3>暗器养成</h3>' +
             f('暗器养成（总开关）', 'hidden.enabled') +
             f('自动洗炼属性（5 砂/次）', 'hidden.wash') +
@@ -5920,6 +6124,15 @@
               )
               .join('')
           : '<div class="hint">暂无动作记录。</div>';
+      }
+      gearCheckHTML(gear) {
+        const check = gear?.check, fmt = (n) => n == null ? '—' : n.toFixed(1);
+        return '<div class="hint">' + (check ? '正在核对「' + esc(check.itemName) + '」· ' + esc(check.mapName) +
+          ' · 战斗 ' + fmt(check.afterMinutes) + ' / ' + check.needMinutes + ' 分钟 · 每小时击杀 ' +
+          fmt(check.beforeRate) + ' → ' + fmt(check.afterRate) + (check.state === 'worse' ? ' · 等待换回' : '') :
+          '没有正在核对的换装') + '</div><h3>最近核对结果</h3>' +
+          (gear?.results?.length ? '<ul>' + gear.results.map((r) => '<li>' + esc(r.text) + '</li>').join('') + '</ul>' :
+            '<div class="hint">暂无核对结果</div>');
       }
       welfareHTML(s, ledger, now = Date.now()) {
         const P = TLPolicy, state = s?.welfare, used = ledger?.welfare || {},
@@ -6087,6 +6300,10 @@
         if (this.section === 'battle') {
           const welfare = this.root.querySelector('.welfare-status');
           if (welfare) welfare.innerHTML = this.welfareHTML(this.controller.bridge.state(), s.ledger);
+        }
+        if (this.section === 'growth') {
+          const gear = this.root.querySelector('.gear-check-status');
+          if (gear) gear.innerHTML = this.gearCheckHTML(s.gear);
         }
         const card = (kind, label, value) =>
           `<div data-budget="${kind}"><span class="budget-title">${label}</span><span>${value}</span></div>`;
