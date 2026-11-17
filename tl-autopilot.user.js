@@ -365,6 +365,7 @@
       const weights = gearWeights(state, prefs), ctx = combatContext(state, prefs);
       const values = Object.fromEntries(Object.keys(WEIGHTS).map((k) => [k, num(stats?.[k])]));
       if (!ctx || !ctx.weights) return scoreStats(values, weights);
+      values.weaponId = ctx.me.weaponId;
       const value = combatValue(values, ctx), bare = combatValue(equipmentValues([], state, ctx), ctx);
       return positiveValue(value) && positiveValue(bare) ?
         SCORE_UNIT * Math.log(value / bare) : scoreStats(values, weights) * SCORE_UNIT / ctx.scale;
@@ -422,7 +423,12 @@
       for (const k of Object.keys(WEIGHTS))
         values[k] = Math.max(0, values[k] + (num(next[k]) - num(old.stats[k])) *
           (ctx.statMult[k] ?? 1) + num(sets[k]) - num(old.sets[k]));
+      values.weaponId = weaponId(items);
       return values;
+    }
+    function weaponId(items) {
+      const weapon = items.find((e) => num(template(e).slotType) === 1);
+      return num(weapon?.tmplId || template(weapon).id);
     }
     function setEffects(eqs, state) {
       const out = {}, worn = new Set(eqs.map((e) => num(e.tmplId || template(e).id)));
@@ -458,6 +464,8 @@
     }
     const combatCache = new WeakMap();
     const elements = ['ice', 'fire', 'poison', 'holy'];
+    const calcType = (effect) => String(effect.calc || '').toUpperCase();
+    const effectValue = (effect, level) => num(effect.base) + num(effect.grow) * (level - 1);
     function skillTargets(s, state) {
       const rules = parse(s.combatRules, {}) || {};
       return Math.max(1, Math.min(state.aoeTargets ?? 1, rules.maxTargets ?? 6));
@@ -472,13 +480,12 @@
     function enemyEffects(skills, state) {
       const defenseMult = {};
       let stun = 1;
-      const defenses = ['EXT_DEF', 'INT_DEF', 'ICE_DEF', 'FIRE_DEF', 'POISON_DEF', 'HOLY_DEF', 'CRIT_DEF', 'AVOIDANCE'];
       for (const s of skills) for (const e of s.effects) {
         if (e.type !== 'DEBUFF' || !['ENEMY', 'ALL_ENEMY'].includes(e.target) || !(num(s.cd) > 0)) continue;
         const uptime = Math.min(1, num(e.duration) / num(s.cd));
         const k = camel(e.attr);
-        if (e.calc === 'MULTIPLY' && defenses.includes(e.attr))
-          defenseMult[k] = (defenseMult[k] ?? 1) * (1 - (1 - num(e.base)) * uptime);
+        if (calcType(e) === 'MULTIPLY' && Object.hasOwn(WEIGHTS, k))
+          defenseMult[k] = (defenseMult[k] ?? 1) * (1 - (1 - effectValue(e, s.level)) * uptime);
         if (e.attr === 'DIZZY') stun *= 1 - uptime / (e.target === 'ALL_ENEMY' ? 1 : skillTargets(s, state));
       }
       return { defenseMult, stun };
@@ -496,82 +503,125 @@
       const me = Object.fromEntries(Object.keys(WEIGHTS).map((k) =>
         [k, num(state.finalAttributes[k])]));
       me.level = num(state.role?.level);
+      me.weaponId = weaponId(array(state.equipments).filter((e) => !!e.isEquipped));
       const skills = array(state.skills).filter((s) => num(s.currentLevel) > 0 &&
         s.skillDetail && num(s.skillDetail.unlockLevel) <= me.level).map((s) => ({
           ...s.skillDetail, level: num(s.currentLevel),
           effects: array(parse(s.skillDetail.effectConfig, [])),
         }));
-      const attacks = skills.filter((s) => num(s.type) === 1 && num(s.cd) > 0);
+      const attacks = skills.filter((s) => num(s.type) === 1 && num(s.cd) > 0 &&
+        !(s.effects.length && s.effects.every((e) => e.target === 'SELF')));
       const tau = attacks.length ? Math.min(...attacks.map((s) => num(s.cd))) : 0;
       const filler = attacks.find((s) => num(s.cd) === tau);
-      const casts = [], buffs = {}, statMult = {};
+      const casts = [], buffCasts = [], buffs = {}, buffMult = {}, statMult = {};
       const elementMult = Object.fromEntries(elements.map((e) => [e, 1]));
       let used = 0;
       const bonus = (s) => {
         const out = {};
         for (const e of s.effects)
-          if (e.type === 'INSTANT' && e.calc === 'PLUS')
-            addStats(out, { [camel(e.attr)]: num(e.base) + num(e.grow) * (s.level - 1) });
+          if (e.type === 'INSTANT' && e.target !== 'SELF' && calcType(e) === 'PLUS')
+            addStats(out, { [camel(e.attr)]: effectValue(e, s.level) });
         return out;
       };
+      const cast = (s, share) => ({ id: s?.id, name: s?.name, share,
+        bonus: s ? bonus(s) : {}, multiplier: castMultiplier(s, state),
+        hits: s ? Math.max(1, num(s.hitCount)) *
+          (s.effects.some((e) => e.target === 'ALL_ENEMY') ? skillTargets(s, state) : 1) : 1 });
       for (const s of skills) {
         if (num(s.type) === 3) for (const e of s.effects) {
-          if (e.calc !== 'MULTIPLY') continue;
+          if (calcType(e) !== 'MULTIPLY') continue;
           const k = camel(e.attr), el = String(e.attr).replace(/_DMG$/, '').toLowerCase();
           if (e.type === 'PASSIVE_DMG' && elements.includes(el)) elementMult[el] += num(e.base);
           if (e.type === 'PASSIVE_STAT') statMult[k] = (statMult[k] ?? 1) * (1 + num(e.base));
         }
         if (num(s.type) === 2 && num(s.cd) > 0) {
-          used += Math.min(1, tau / num(s.cd));
-          for (const e of s.effects)
-            if (e.type === 'BUFF' && e.target === 'SELF' && e.calc === 'PLUS')
-              addStats(buffs, { [camel(e.attr)]: (num(e.base) + num(e.grow) * (s.level - 1)) *
-                Math.min(1, num(e.duration) / num(s.cd)) });
+          const share = Math.min(1, tau / num(s.cd));
+          used += share;
+          buffCasts.push({ id: s.id, name: s.name, share, bonus: {}, multiplier: 0, hits: 0 });
+          for (const e of s.effects) {
+            if (e.type !== 'BUFF' || e.target !== 'SELF') continue;
+            const k = camel(e.attr), value = effectValue(e, s.level),
+              uptime = Math.min(1, num(e.duration) / num(s.cd));
+            if (calcType(e) === 'PLUS') addStats(buffs, { [k]: value * uptime });
+            if (calcType(e) === 'MULTIPLY')
+              buffMult[k] = (buffMult[k] ?? 1) * (1 + (value - 1) * uptime);
+          }
         }
         if (attacks.includes(s) && s !== filler) {
           const share = Math.min(1, tau / num(s.cd));
           used += share;
-          casts.push({ share, bonus: bonus(s), multiplier: castMultiplier(s, state) });
+          casts.push(cast(s, share));
         }
       }
-      casts.push({ share: filler ? Math.max(0, 1 - used) : 1, bonus: filler ? bonus(filler) : {}, multiplier: castMultiplier(filler, state) });
+      casts.push(cast(filler, filler ? Math.max(0, 1 - used) : 1));
       const normal = state.monsters.filter((m) => m.category === 'MONSTER');
       const ctx = { me, ...enemyEffects(skills, state), targets: (normal.length ? normal : state.monsters).map((m) =>
-        ({ level: num(m.level), base: m.base, weight: m.weight })), casts, buffs, elementMult, statMult,
+        ({ level: num(m.level), base: m.base, weight: m.weight })), casts, buffs, buffMult, elementMult, statMult,
+        tau, filler, rotation: casts.concat(buffCasts), artifactSkills: array(state.artifactSkills),
         defenseWeight: prefs.gear.autoDefense && Number.isFinite(state.survival?.weight)
           ? state.survival.weight : prefs.gear.defenseWeight };
       cache.set(prefs, ctx);
       return ctx;
     }
-    const MONSTER_CRIT_SCALE = 0.66; // Measured factor; mechanism unknown.
+    const CRIT_CHANCE_OFFSET = 11;
     const CRIT_BASE = 1.5, CRIT_RATE = 0.005, CRIT_FLOOR = 60;
     const CRIT_DEF_OFFSET = 70, CRIT_DEF_RATE = 7, CRIT_DEF_DIVISOR = 3;
     function critMultiplier(critRate, critDef) {
       return CRIT_BASE + CRIT_RATE * Math.max(0, critRate - Math.max(CRIT_FLOOR,
         (CRIT_DEF_OFFSET + CRIT_DEF_RATE * critDef) / CRIT_DEF_DIVISOR));
     }
+    function artifactUptime(triggerChance, ratePerSecond, duration) {
+      if (!(ratePerSecond > 0) || !(duration > 0)) return 0;
+      return 1 - (1 - Math.max(0, Math.min(1, num(triggerChance)))) ** (ratePerSecond * duration);
+    }
+    function artifactEffects(me, enemy, ctx, id) {
+      const skill = array(ctx.artifactSkills).find((s) => num(s.weaponId) === id);
+      if (!skill) return null;
+      const hits = ctx.casts.reduce((sum, cast) => sum + cast.share * (cast.hits ?? 1), 0);
+      const hitChance = me.precision + num(enemy.avoidance) > 0 ? me.precision / (me.precision + num(enemy.avoidance)) : 0;
+      const uptime = artifactUptime(skill.triggerChance, ctx.tau > 0 ? hits * hitChance / ctx.tau : 0, skill.buffDuration);
+      const selfMult = {}, targetMult = {};
+      for (const [effect, calc, mult, sign] of [[skill.selfBuff, 'PLUS_PERCENT', selfMult, 1],
+        [skill.targetDebuff, 'MINUS_PERCENT', targetMult, -1]]) {
+        if (effect && calcType(effect) === calc && Object.hasOwn(WEIGHTS, camel(effect.attr)))
+          mult[camel(effect.attr)] = 1 + sign * num(effect.value) * uptime;
+      }
+      return { skillName: skill.skillName, weaponId: id, uptime, selfMult, targetMult,
+        damageMult: 1 + num(skill.triggerChance) * num(skill.extraDamagePct) };
+    }
     function combatParts(values, ctx) {
       const plus = (a, b) => Object.fromEntries(Object.keys(WEIGHTS).map((k) =>
         [k, Math.max(0, num(a[k]) + num(b[k]))]));
       const me = plus(values, ctx.buffs);
+      const multiply = (a, factors) => {
+        for (const [k, factor] of Object.entries(factors || {})) a[k] = num(a[k]) * factor;
+        return a;
+      };
+      multiply(me, ctx.buffMult);
       const ratio = (a, b) => a + b === 0 ? 0 : a / (a + b);
-      const damage = (a, d, la, ld, mult = {}, critScale = 1) => {
+      const damage = (a, d, la, ld, mult = {}) => {
         const { main, elem } = hitDamage(a, d, la, ld, mult);
         return ratio(num(a.precision), num(d.avoidance)) *
-          (main * (1 + (critMultiplier(num(a.critRate), num(d.critDef)) - 1) * critScale * ratio(num(a.critRate), num(d.critDef))) + elem);
+          (main * (1 + (critMultiplier(num(a.critRate), num(d.critDef)) - 1) *
+            num(a.critRate) / (num(a.critRate) + num(d.critDef) + CRIT_CHANCE_OFFSET)) + elem);
       };
-      let out = 0, taken = 0, weight = 0;
+      let out = 0, taken = 0, hp = 0, weight = 0, artifact = null, uptime = 0;
       for (const target of ctx.targets) {
-        const defense = { ...target.base };
-        for (const [k, factor] of Object.entries(ctx.defenseMult || {})) defense[k] = num(defense[k]) * factor;
+        const enemy = multiply({ ...target.base }, ctx.defenseMult);
+        const effect = artifactEffects(me, enemy, ctx, values.weaponId);
+        const activeMe = multiply({ ...me }, effect?.selfMult);
+        multiply(enemy, effect?.targetMult);
         const w = target.weight ?? 1;
         weight += w;
+        hp += w * activeMe.hp;
+        if (effect) { artifact = effect; uptime += w * effect.uptime; }
         for (const cast of ctx.casts)
-          out += w * cast.share * (cast.multiplier ?? 1) * damage(plus(me, cast.bonus), defense,
-            ctx.me.level, target.level, ctx.elementMult);
-        taken += w * damage(target.base, me, target.level, ctx.me.level, {}, MONSTER_CRIT_SCALE);
+          out += w * cast.share * (cast.multiplier ?? 1) * (effect?.damageMult ?? 1) *
+            damage(plus(activeMe, cast.bonus), enemy, ctx.me.level, target.level, ctx.elementMult);
+        taken += w * damage(enemy, activeMe, target.level, ctx.me.level);
       }
-      return { out: out / weight, taken: taken / weight * (ctx.stun ?? 1), hp: me.hp };
+      return { out: out / weight, taken: taken / weight * (ctx.stun ?? 1), hp: hp / weight,
+        ...(artifact ? { artifact: { skillName: artifact.skillName, uptime: uptime / weight } } : {}) };
     }
     function combatValue(values, ctx) {
       const p = combatParts(values, ctx);
@@ -582,6 +632,7 @@
       const ctx = combatContext(state, prefs);
       if (!ctx) return null;
       return { value: combatValue(ctx.me, ctx), parts: combatParts(ctx.me, ctx), weight: ctx.defenseWeight,
+        buffMult: ctx.buffMult,
         character: characterScore(state.finalAttributes, state, prefs),
         rows: SCORE_ATTRIBUTES.map(([key, name]) => ({ key, name, current: ctx.me[key],
           one: statScore({ [key]: 1 }, state, prefs), hundred: statScore({ [key]: 100 }, state, prefs) })) };
@@ -1126,6 +1177,53 @@
           weight: num(v.count) / total / maps.length }));
       }) };
     }
+    const collectionValues = (value) => Array.isArray(value) ? value : Array.from(value?.values?.() || []);
+    function viewedState(source, own) {
+      if (!source || !own) return null;
+      const data = Array.isArray(source.roleOverride?.skills) ? source.roleOverride : source;
+      if (!Array.isArray(data.skills)) return null;
+      const role = data.role || data, equipments = source.equipmentsOverride ?? data.equipments ?? [];
+      const artifactSkills = new Map(collectionValues(own.artifactSkills).map((s) => [num(s.weaponId), s]));
+      if (data.artifact) artifactSkills.set(num(data.artifact.weaponId), data.artifact);
+      const state = {
+        role: { id: num(role.roleId ?? role.id), level: num(role.level), sect: num(role.sect), nickname: role.nickname },
+        finalAttributes: source.statsOverride ?? data.stats,
+        skills: data.skills.map((s) => s.skillDetail ? s : ({ skillId: s.id, currentLevel: s.level,
+          skillDetail: { id: s.id, name: s.name, type: s.skillType, cd: s.cd, hitCount: s.hitCount,
+            combatRules: s.combatRules, effectConfig: JSON.stringify(s.effects || []), unlockLevel: 0 } })),
+        equipments,
+        gemInfos: collectionValues(source.gemInfosOverride ?? data.gemInfo ?? data.gemInfos ??
+          equipments.flatMap((e) => array(e.gemInfos))),
+        equipSets: data.equipSets ?? own.equipSets,
+        allEquipTemplates: own.allEquipTemplates,
+        artifactSkills: [...artifactSkills.values()],
+        maps: own.maps, monsterTemplates: own.monsterTemplates,
+        aoeTargets: own.aoeTargets, survival: own.survival,
+      };
+      const selected = scoreTargets(state, { gear: { targets: 'pool' } }, []);
+      state.monsters = selected.list;
+      state.scoreTargets = { source: selected.source, mapIds: selected.mapIds };
+      return state;
+    }
+    function isViewedProfile(props) {
+      // The own profile also receives live combat stats without a role override.
+      return !!(props?.readonly || props?.statsOverride != null && props?.roleOverride);
+    }
+    function profileState(props, own, entries) {
+      if (!isViewedProfile(props)) return own;
+      const entry = collectionValues(entries).find((v) => num(v.role.id) === num(props.roleOverride?.id));
+      return viewedState({ ...entry, ...props }, own);
+    }
+    function profileScoreText(info) {
+      return '实战评分 ' + (info === null ? '未读到对方技能' : info.pending ? '待战斗数据' : info.score.toLocaleString());
+    }
+    function tooltipContext(item, profiles, own, entries) {
+      const profile = array(profiles).find((p) => p.modelValue && isViewedProfile(p) && item?.id != null &&
+        array(p.equipmentsOverride).some((e) => String(e.id) === String(item.id)));
+      return profile ? { state: profileState(profile, own, entries), compare: false,
+        title: '按 ' + (profile.roleOverride?.nickname || '对方') + ' 的门派与属性计算' } :
+        { state: own, compare: true, title: null };
+    }
     const SUSTAIN_LINE = 0.5, LOW_HP_SHARE = 0.05, HP_LINE = 0.35;
     function survivalWeight(totals, healPerSecond) {
       if (!totals || totals.battle < 1800000 || !Number.isFinite(healPerSecond) || healPerSecond <= 0) return null;
@@ -1595,12 +1693,12 @@
       };
       const role = s.role,
         equipped = array(s.equipments).filter((e) => !!e.isEquipped);
-      const pool = poolMaps(s);
-      if (p.gear.scoring === 'combat' && p.gear.targets === 'pool' && pool.length &&
+      const fields = array(s.maps).filter(fieldMap);
+      if (p.gear.scoring === 'combat' && fields.length &&
           // A monster the server does not return must not cause a request on every tick.
-          (now - num(s.monsterTemplatesAt) > 86400000 || (now - num(s.monsterTemplatesAt) > 1800000 && pool.some((m) =>
-            m.monsters.some((v) => !s.monsterTemplates?.has('MONSTER:' + v.monsterId)))))) {
-        const ids = [...new Set(pool.flatMap((m) => m.monsters.map((v) => v.monsterId)))];
+          (now - num(s.monsterTemplatesAt) > 86400000 || (now - num(s.monsterTemplatesAt) > 1800000 && fields.some((m) =>
+            monsters(m).some((v) => !s.monsterTemplates?.has('MONSTER:' + v.monsterId)))))) {
+        const ids = [...new Set(fields.flatMap((m) => monsters(m).map((v) => v.monsterId)))];
         add(action('GET_MONSTER_TMPL', { refs: ids.map((id) => ({ id, category: 'MONSTER' })) },
           '读取怪物属性', 'read', { readOnly: true }));
       }
@@ -2620,11 +2718,13 @@
       lookup,
       template,
       poolMaps, scoreTargets, survivalWeight, healPerSecond, scoringStatus, scoringText, SUSTAIN_LINE, LOW_HP_SHARE, HP_LINE,
+      viewedState, isViewedProfile, profileState, profileScoreText, tooltipContext,
       CRIT_BASE, CRIT_RATE, CRIT_FLOOR, CRIT_DEF_OFFSET, CRIT_DEF_RATE, CRIT_DEF_DIVISOR, critMultiplier,
       MAIN_SOFTCAP, ELEMENT_RATE, hitDamage, setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
       equipmentStats,
       scoreStats,
-      equipmentScore, characterScore, SCORE_UNIT, MONSTER_CRIT_SCALE, scoringDetail, SCORE_ATTRIBUTES,
+      equipmentScore, equipmentValues, characterScore, SCORE_UNIT, CRIT_CHANCE_OFFSET, scoringDetail, SCORE_ATTRIBUTES,
+      artifactUptime, artifactEffects,
       projectedGain,
       countItem,
       bagItem,
@@ -3067,7 +3167,7 @@
         this.authFailed = false;
         this.manualUntil = 0;
         this.packetTypes = [];
-        this.cache = { potions: [], activityStatus: {}, forgePreviews: {}, consignment: new Map() };
+        this.cache = { potions: [], activityStatus: {}, forgePreviews: {}, consignment: new Map(), viewedPlayers: new Map() };
         const potions = readStorage(PREFIX + ':potions', null);
         if (Number.isFinite(potions?.at) && Array.isArray(potions.list) && potions.list.every((p) => p && typeof p === 'object' && !Array.isArray(p)))
           this.cache.potions = potions.list;
@@ -3230,6 +3330,16 @@
             this.cache.arena = null;
             this.cache.arenaMatch = null;
             this.cache.trial = null;
+            this.cache.viewedPlayers = new Map();
+          }
+          if (type === 'GET_PLAYER_INFO_RESPONSE' && packet.success && packet.data?.role?.id) {
+            const data = packet.data, role = data.role,
+              entries = this.cache.viewedPlayers || (this.cache.viewedPlayers = new Map()), id = P.num(role.id);
+            entries.delete(id);
+            entries.set(id, { role: { id, level: role.level, sect: role.sect, nickname: role.nickname },
+              skills: copy(data.skills), equipments: copy(data.equipments), gemInfo: copy(data.gemInfo),
+              equipSets: copy(data.equipSets), at: Date.now() });
+            while (entries.size > 5) entries.delete(entries.keys().next().value);
           }
           if (
             type === 'CONSIGNMENT_LIST_RESPONSE' &&
@@ -3508,6 +3618,7 @@
           equipments: copy(c.equipments) || [],
           bagItems: copy(c.bagItems) || [],
           skills: copy(c.skills) || [],
+          artifactSkills: copy(Array.from(c.artifactSkillConfigs?.values() || [])),
           maps: copy(c.maps) || [],
           equipSets: copy(c.equipSets) || [],
           levelTmpls: c.levelTmpls,
@@ -3863,11 +3974,11 @@
             '%）\n含基础/附加属性、强化、鉴定、宝石与套装；按游戏战力权重',
         };
       }
-      tipInfo(item, state, prefs) {
+      tipInfo(item, state, prefs, context) {
         if (!item?.equipTmpl) return null;
         const combatPrefs = MarketScore.scorePrefs(prefs, 'combat'),
           pending = P.combatWeights(state, combatPrefs) === null,
-          compare = !item.isEquipped,
+          compare = context?.compare !== false && !item.isEquipped,
           gain = compare && !pending ? P.projectedGain(item, state, combatPrefs) : null,
           signed = (v) => (v >= 0 ? '+' : '') + v.toFixed(1);
         return {
@@ -3877,9 +3988,9 @@
           compare,
           powerUp: compare && P.projectedGain(item, state, MarketScore.scorePrefs(prefs, 'power')).gain > 0,
           combatUp: !!gain && gain.gain > 0,
-          title: pending ? '实战评分等待战斗数据' : gain ?
+          title: context?.title ?? (pending ? '实战评分等待战斗数据' : gain ?
             '换上后实战评分 ' + signed(gain.percent) + '%（输出 ' +
-            signed(gain.outputPercent) + '%，生存 ' + signed(gain.survivalPercent) + '%）' : '',
+            signed(gain.outputPercent) + '%，生存 ' + signed(gain.survivalPercent) + '%）' : ''),
         };
       }
       drawTip(el, info, item) {
@@ -3965,6 +4076,8 @@
               role: c.role,
               ...(this.controller.bridge.noBatchSell ? { batchSell: false } : {}),
               skills: copy(c.skills),
+              artifactSkills: copy(Array.from(c.artifactSkillConfigs?.values() || [])),
+              maps: c.maps,
               finalAttributes: copy(c.finalAttributes),
               ...scoringState(c, this.controller.bridge, this.controller.prefs),
               equipments: c.equipments,
@@ -4023,25 +4136,28 @@
         if (!cards.length && !grids.length && !tips.length && !profiles.length) return;
         const prefs = this.controller.prefs,
           state = this.state();
+        const instances = state && prefs.market.tipScore !== false ? Array.from(this.controller.bridge.components()) : [],
+          profileInstances = instances.filter((vm) => vm.type?.__name === 'CharacterProfile' && vm.props?.modelValue),
+          entries = this.controller.bridge.cache?.viewedPlayers;
         if (tips.length && state && prefs.market.tipScore !== false) {
           const items = new Map();
-          for (const vm of this.controller.bridge.components())
+          for (const vm of instances)
             if (vm.type?.__name === 'ItemTooltip') items.set(vm.subTree?.el, vm.props.item);
           for (const tip of tips) {
             const item = items.get(tip);
-            this.drawTip(tip, this.tipInfo(item, state, prefs), item);
+            const context = P.tooltipContext(item, profileInstances.map((vm) => vm.props), state, entries);
+            this.drawTip(tip, this.tipInfo(item, context.state, prefs, context), item);
           }
         }
         if (profiles.length && state && prefs.market.tipScore !== false) {
-          const instances = Array.from(this.controller.bridge.components()).filter((vm) =>
-            vm.type?.__name === 'CharacterProfile' && vm.props?.modelValue);
           for (const el of profiles) {
-            const vm = instances.find((v) => v.subTree?.el === el || v.subTree?.el?.contains(el));
-            if (!vm && instances.some((v) => v.props.statsOverride != null)) continue;
+            const vm = profileInstances.find((v) => v.subTree?.el === el || v.subTree?.el?.contains(el));
+            if (!vm && profileInstances.some((v) => v.props.statsOverride != null || v.props.readonly)) continue;
             const header = el.firstElementChild;
             if (!header) continue;
-            const info = this.profileScore(vm?.props.statsOverride ?? state.finalAttributes, state, prefs),
-              text = '实战评分 ' + (info.pending ? '待战斗数据' : info.score.toLocaleString());
+            const selected = P.profileState(vm?.props, state, entries),
+              info = selected ? this.profileScore(vm?.props.statsOverride ?? selected.finalAttributes, selected, prefs) : null,
+              text = P.profileScoreText(info);
             let line = el.querySelector('.tl-profile-score');
             if (!line) {
               line = document.createElement('div');
@@ -5857,7 +5973,15 @@
           html += '<div class="hint">评分数据自 ' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ' 起统计</div>';
         }
         if (detail) {
-          html += '<div class="hint">人物实战评分 ' + Math.round(detail.character) + ' · 每次行动输出 ' + detail.parts.out.toFixed(0) + ' · 每次受击 ' + detail.parts.taken.toFixed(1) + ' · 气血 ' + detail.parts.hp.toFixed(0) + '</div><h3>当前每点属性的分数</h3>';
+          html += '<div class="hint">人物实战评分 ' + Math.round(detail.character) + ' · 每次行动输出 ' + detail.parts.out.toFixed(0) + ' · 每次受击 ' + detail.parts.taken.toFixed(1) + ' · 气血 ' + detail.parts.hp.toFixed(0) + '</div>';
+          const names = Object.fromEntries(TLPolicy.SCORE_ATTRIBUTES);
+          if (Object.keys(detail.buffMult || {}).length)
+            html += '<div class="hint">技能倍数增益：' + Object.entries(detail.buffMult).map(([key, value]) =>
+              esc(names[key] || key) + ' × ' + value.toFixed(3)).join('、') + '</div>';
+          if (detail.parts.artifact)
+            html += '<div class="hint">神器技能：' + esc(detail.parts.artifact.skillName) + ' · 覆盖率 ' +
+              (detail.parts.artifact.uptime * 100).toFixed(1) + '%</div>';
+          html += '<h3>当前每点属性的分数</h3>';
           html += this.scoreTableHTML(['属性', '当前值', '+1 点', '+100 点'], detail.rows.map((r) => [r.name, Math.round(r.current), r.one.toFixed(2), r.hundred.toFixed(1)]));
           html += '<div class="hint">分数按当前属性和参照怪物实时计算，每 100 分约等于整体实战能力的 1%。点数指装备上的点数，已计入被动技能的加成。抗性只在低于怪物对应元素攻击时有用，超出的部分不加分，所以抗性的“+100 点”远小于“+1 点”的 100 倍。</div>';
         } else if (this.pending.gear.scoring === 'combat') html += '<div class="hint">实战评分等待怪物数据</div>';
@@ -5874,10 +5998,12 @@
           '每次伤害 = 命中率 ×［主伤害 ×（1 +（会心倍率 − 1）× 会心率）+ 元素伤害］',
           `主伤害 =［外攻² ÷（${p.MAIN_SOFTCAP} × 外攻 + 对方外防）+ 内攻² ÷（${p.MAIN_SOFTCAP} × 内攻 + 对方内防）］×（1 + 0.005 × 等级差）`,
           '元素伤害 = Σ max(0, 元素攻击 − 对方抗性) × ' + TLPolicy.ELEMENT_RATE + ' ×（1 + 被动加成）',
-          `命中率 = 命中 ÷（命中 + 对方闪避）；会心率 = 会心 ÷（会心 + 对方会防），怪物打你时再 × ${p.MONSTER_CRIT_SCALE}`,
+          `命中率 = 命中 ÷（命中 + 对方闪避）；会心率 = 会心 ÷（会心 + 对方会防 + ${p.CRIT_CHANCE_OFFSET}）`,
           `会心一击只放大主伤害：倍率 = ${p.CRIT_BASE} + ${p.CRIT_RATE} × max(0, 会心 − max(${p.CRIT_FLOOR}, (${p.CRIT_DEF_OFFSET} + ${p.CRIT_DEF_RATE} × 对方会防) ÷ ${p.CRIT_DEF_DIVISOR}))`,
           '对方防御被技能削弱、被眩晕的时间按“持续时间 ÷ 冷却”折算',
-          `输出按技能轮转加权（冷却越短出手越多）；多段技能按段数 × 每段比例计，群攻技能按当前平均在场怪物数（${status?.scoring?.aoeTargets === undefined ? '1' : status.scoring.aoeTargets.toFixed(1)}）计；对参照怪物取平均；受击伤害用同一组公式反过来算`,
+          '自身倍数增益在固定值增益后计算：属性 ×［1 +（技能倍数 − 1）× min(1, 持续时间 ÷ 冷却)］；对怪减益作用于双方伤害公式中的对应属性',
+          `输出按技能轮转加权（冷却越短出手越多）；治疗技能不计入；多段技能按段数 × 每段比例计，群攻技能按当前平均在场怪物数（${status?.scoring?.aoeTargets === undefined ? '1' : status.scoring.aoeTargets.toFixed(1)}）计；对参照怪物取平均；受击伤害用同一组公式反过来算`,
+          '神器技能：每次命中按触发率触发，额外伤害 = 触发率 × 额外比例；增益与减益按“持续时间内至少触发一次”的概率折算',
           '自动生存权重 = 生命药费 ÷（击杀金币 + 出售收入）+ 危险度',
           `危险度 = max（（掉血占回血能力 − ${percent(p.SUSTAIN_LINE)}）÷ ${percent(1 - p.SUSTAIN_LINE)}，低血量时间占比 ÷ ${percent(p.LOW_HP_SHARE)}，有阵亡时 0.5）`,
           `低血量 = 气血低于 ${percent(p.HP_LINE)}；回血能力 = 最强可用生命药回复量 ÷ 3 秒`
