@@ -3410,10 +3410,24 @@
     function requestAllowed(action) {
       return ALLOWED.has(action?.type) || (action?.type === 'USE_ITEM' && (action.petHatch === true || action.doubleExp === true));
     }
+    const responseHasId = (action) => ['ARENA_COMMAND', 'PET_COMMAND', 'ONLINE_LOTTERY_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(action.type) || action.petHatch;
+    const responseType = (action) => action.responseType || action.type + '_RESPONSE';
+    const responseKey = (action) => JSON.stringify([responseType(action),
+      responseHasId(action) ? action.requestId ?? action.payload?.requestId ?? null : null]);
+    const parallelQuery = (action) => action.readOnly && !action.requiresTown;
+    function ensureRequestId(action) {
+      if ((responseHasId(action) || action.type === 'TRIAL_COMMAND') && action.payload?.requestId == null)
+        action.payload = { ...action.payload, requestId:
+          globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
+            .replace(/[xy]/g, (c) => {
+              const r = Math.floor(Math.random() * 16);
+              return (c === 'x' ? r : (r & 3) | 8).toString(16);
+            }) };
+    }
     function matchesResponse(waiter, packet) {
       if (waiter.doubleExp && (packet.success ?? packet.code === 200) &&
           !packet.data?.effects?.some((effect) => effect.type === 'DOUBLE_EXP_BUFF')) return false;
-      return packet.type === waiter.responseType && (!(['ARENA_COMMAND', 'PET_COMMAND', 'ONLINE_LOTTERY_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(waiter.type) || waiter.petHatch) ||
+      return packet.type === waiter.responseType && (!responseHasId(waiter) ||
         packet.data?.requestId === waiter.requestId);
     }
     const statsFields = 'wall battle exp expBase gold sell potion hpPotions mpPotions kills deaths hpLost mpUsed low'.split(' ');
@@ -3621,6 +3635,7 @@
         this.socket = null;
         this.sessionReady = false;
         this.waiter = null;
+        this.queryWaiters = new Map();
         this.sending = false;
         this.lastMessage = 0;
         this.lastClose = 0;
@@ -3662,13 +3677,28 @@
           receivedType,
           elapsedMs: Math.max(0, Date.now() - waiter.started),
           packetTypes: this.packetTypes.filter((p) => p.time >= waiter.started).map((p) => p.type),
+          waiter,
         });
         return error;
       }
-      rejectWaiter(waiter, error) {
-        if (this.waiter !== waiter) return;
-        this.waiter = null;
+      pendingWaiters() {
+        return [...(this.waiter ? [this.waiter] : []), ...(this.queryWaiters?.values() || [])];
+      }
+      responsePending(action) {
+        return this.pendingWaiters().some((waiter) => responseType(waiter) === responseType(action) &&
+          (!responseHasId(waiter) || !responseHasId(action) || responseKey(waiter) === responseKey(action)));
+      }
+      hasWaiter(waiter) {
+        return this.waiter === waiter || this.queryWaiters?.get(waiter.key) === waiter;
+      }
+      removeWaiter(waiter) {
+        if (this.waiter === waiter) this.waiter = null;
+        else this.queryWaiters?.delete(waiter.key);
         clearTimeout(waiter.timer);
+      }
+      rejectWaiter(waiter, error) {
+        if (!this.hasWaiter(waiter)) return;
+        this.removeWaiter(waiter);
         if (error.code === 'RESPONSE_TIMEOUT') {
           this.lateWaiters ||= new Set();
           waiter.lateUntil = Date.now() + 120000;
@@ -3740,12 +3770,8 @@
           if (this.socket !== socket) return;
           this.sessionReady = false;
           this.lastClose = Date.now();
-          if (this.waiter) {
-            const waiter = this.waiter;
-            this.waiter = null;
-            clearTimeout(waiter.timer);
-            waiter.reject(new Error('连接中断，已发动作等待新角色快照核对'));
-          }
+          for (const waiter of this.pendingWaiters())
+            this.rejectWaiter(waiter, new Error('连接中断，已发动作等待新角色快照核对'));
           this.onDisconnect();
         });
         socket.addEventListener('message', (ev) => {
@@ -3886,8 +3912,8 @@
             this.cache.trial = { trial: copy(data.trial), at: Date.now() };
           this.packetTypes.push({ type, time: this.lastMessage });
           this.packetTypes = this.packetTypes.slice(-40);
-          const waiter = this.waiter;
-          const answered = waiter && matchesResponse(waiter, packet);
+          const pending = this.pendingWaiters(), waiter = pending.find((w) => matchesResponse(w, packet));
+          const answered = !!waiter;
           if (answered) waiter.answered = true;
           for (const late of this.lateWaiters || []) {
             if (Date.now() >= late.lateUntil) {
@@ -3896,23 +3922,20 @@
             } else if (!answered && late.socket === socket && matchesResponse(late, packet)) {
               this.lateWaiters.delete(late);
               clearTimeout(late.lateTimer);
+              late.answered = true;
               this.onLateResponse?.(late, packet, Math.max(0, Date.now() - late.started));
               break;
             }
           }
-          if (type === 'ERROR' && waiter)
-            this.rejectWaiter(
-              waiter,
-              this.requestError(
-                waiter,
-                'SERVER_ERROR',
-                waiter.label +
-                  '：等待响应时服务器提示“' +
-                  safeMessage(packet.message || '操作错误') +
-                  '”',
-                type,
-              ),
-            );
+          if (type === 'ERROR')
+            for (const current of pending) {
+              const unattributed = pending.length > 1 && current !== this.waiter,
+                message = safeMessage(packet.message || '操作错误');
+              this.rejectWaiter(current, this.requestError(current,
+                unattributed ? 'SERVER_ERROR_UNATTRIBUTED' : 'SERVER_ERROR',
+                unattributed ? '服务器返回错误“' + message + '”，无法确定对应哪个查询' :
+                  current.label + '：等待响应时服务器提示“' + message + '”', type));
+            }
           this.recordStats?.(packet);
           this.filler?.response(packet);
           setTimeout(() => {
@@ -3920,7 +3943,7 @@
               this.syncState(packet);
               this.onMessage(type, packet);
             } catch (error) {
-              if (waiter && this.waiter === waiter && matchesResponse(waiter, packet))
+              if (waiter && this.hasWaiter(waiter) && matchesResponse(waiter, packet))
                 this.rejectWaiter(
                   waiter,
                   this.requestError(
@@ -3936,7 +3959,7 @@
               else this.log('页面状态更新异常：' + safeMessage(error.message), 'warning');
               return;
             }
-            if (waiter && this.waiter === waiter && matchesResponse(waiter, packet)) {
+            if (waiter && this.hasWaiter(waiter) && matchesResponse(waiter, packet)) {
               if (waiter.interference)
                 this.rejectWaiter(
                   waiter,
@@ -3948,8 +3971,7 @@
                   ),
                 );
               else {
-                this.waiter = null;
-                clearTimeout(waiter.timer);
+                this.removeWaiter(waiter);
                 waiter.resolve(packet);
               }
             }
@@ -4213,7 +4235,10 @@
         if (!requestAllowed(action)) return Promise.reject(new Error('动作不在托管接口列表：' + action.type));
         if (!this.connected || !this.sessionReady)
           return Promise.reject(new Error('角色连接尚未恢复'));
-        if (this.waiter) return Promise.reject(new Error('上一个动作尚未完成'));
+        const query = parallelQuery(action);
+        ensureRequestId(action);
+        if ((!query && this.waiter) || this.responsePending(action))
+          return Promise.reject(new Error('上一个动作尚未完成'));
         if (action.type === 'UPDATE_SETTINGS') {
           const c = this.character();
           if (c && action.setting) c.autoPotionSettings = copy(action.setting);
@@ -4237,19 +4262,13 @@
             this.sending = false;
           }
         }
-        if (['ARENA_COMMAND', 'PET_COMMAND', 'TRIAL_COMMAND', 'ONLINE_LOTTERY_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(action.type) || action.petHatch)
-          action.payload = { ...action.payload, requestId:
-            globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
-              .replace(/[xy]/g, (c) => {
-                const r = Math.floor(Math.random() * 16);
-                return (c === 'x' ? r : (r & 3) | 8).toString(16);
-              }) };
         return new Promise((resolve, reject) => {
           const waiter = {
             type: action.type,
             label: action.label || action.type,
-            responseType: action.responseType || action.type + '_RESPONSE',
-            requestId: action.payload.requestId,
+            responseType: responseType(action),
+            requestId: action.payload?.requestId,
+            key: responseKey(action),
             petHatch: action.petHatch,
             doubleExp: action.doubleExp,
             resolve,
@@ -4260,7 +4279,7 @@
             started: Date.now(),
           };
           const onTimeout = () => {
-            if (this.waiter !== waiter || waiter.answered) return;
+            if (!this.hasWaiter(waiter) || waiter.answered) return;
             if (!waiter.graceUsed && Date.now() - waiter.started > timeout + 5000) {
               waiter.graceUsed = true;
               waiter.timer = setTimeout(onTimeout, 3000);
@@ -4276,7 +4295,8 @@
             );
           };
           waiter.timer = setTimeout(onTimeout, timeout);
-          this.waiter = waiter;
+          if (query) (this.queryWaiters ||= new Map()).set(waiter.key, waiter);
+          else this.waiter = waiter;
           this.sending = true;
           try {
             this.socket.send(JSON.stringify({ type: action.type, payload: action.payload }));
@@ -4898,8 +4918,7 @@
         this.bridge = new Bridge((text, level) => this.log(text, level));
         this.bridge.scoringNow = now;
         this.bridge.onMessage = (type, packet) => this.received(type, packet);
-        this.bridge.onLateResponse = (waiter, packet, elapsedMs) =>
-          this.log(waiter.label + '：服务器迟到的回应已收到（' + Math.round(elapsedMs / 1000) + ' 秒）', 'info');
+        this.bridge.onLateResponse = (waiter, packet, elapsedMs) => this.lateResponse(waiter, packet, elapsedMs);
         this.bridge.recordStats = (packet) => {
           const own = this.bridge.character()?.role,
             sent = packet.data?.roleInfo?.role || packet.data?.role,
@@ -5214,7 +5233,8 @@
           this.log('当前动作尚未完成，等待响应后再开始', 'warning');
           return;
         }
-        const wasUncertain = !!this.uncertain;
+        const wasUncertain = !!this.uncertain,
+          fromLateResponse = this.timeoutResume && this.timeoutResume === this.lastPause;
         if (wasUncertain && this.bridge.connected && this.bridge.sessionReady) {
           const s = this.bridge.state();
           if (!s) return;
@@ -5222,11 +5242,14 @@
           this.cleanPetLedger(s.pets);
         }
         this.enabled = true;
+        this.timeoutPause = null;
+        this.timeoutResume = null;
         this.lastPause = null;
         writeStorage(PREFIX + ':lastPause', null);
         writeStorage(RUNNING, true);
         this.reason = '正在检查角色与策略';
-        if (!wasUncertain) this.suppressed.clear();
+        // Automatic recovery retains cooldowns so retries do not consume unkeyed late replies.
+        if (!wasUncertain && !fromLateResponse) this.suppressed.clear();
         this.log('完整托管已开始');
         if (wasUncertain && this.bridge.connected && this.bridge.sessionReady) {
           await this.reconcileRole();
@@ -5250,6 +5273,8 @@
         });
       }
       pause(reason = '已暂停托管', byUser = false) {
+        this.timeoutPause = null;
+        this.timeoutResume = null;
         this.lastPause = { at: Date.now(), reason, byUser };
         writeStorage(PREFIX + ':lastPause', this.lastPause);
         this.enabled = false;
@@ -5257,6 +5282,42 @@
         this.reason = reason;
         this.releaseLease();
         this.log(reason, 'warning');
+      }
+      pauseForTimeout(reason) {
+        if (!this.enabled) return;
+        this.pause(reason);
+        this.timeoutPause = this.lastPause;
+      }
+      responseTimeout(now = Date.now()) {
+        if (this.adaptiveUntil && now >= this.adaptiveUntil) {
+          const changed = this.adaptiveTimeoutMs > this.prefs.requestTimeoutMs;
+          this.adaptiveTimeoutMs = 0;
+          this.adaptiveUntil = 0;
+          if (changed) this.log('服务器回应恢复正常，等待时间恢复为 ' + this.prefs.requestTimeoutMs / 1000 + ' 秒');
+        }
+        return Math.max(this.prefs.requestTimeoutMs, this.adaptiveTimeoutMs || 0);
+      }
+      lateResponse(waiter, packet, elapsedMs) {
+        const now = Date.now(), previous = this.responseTimeout(now);
+        this.responseTimeouts = (this.responseTimeouts || []).filter((entry) =>
+          entry.waiter !== waiter && now - entry.at < 600000);
+        this.lateAnswers = [...(this.lateAnswers || []).filter((at) => now - at < 600000), now];
+        this.adaptiveTimeoutMs = Math.max(this.prefs.requestTimeoutMs, Math.min(60000, 2 * elapsedMs));
+        this.adaptiveUntil = now + 600000;
+        if (this.adaptiveTimeoutMs !== previous)
+          this.log('服务器回应变慢，等待时间暂时放宽到 ' + this.adaptiveTimeoutMs / 1000 + ' 秒', 'info');
+        this.log(waiter.label + '：服务器迟到的回应已收到（' + Math.round(elapsedMs / 1000) + ' 秒）', 'info');
+        if (this.timeoutPause && this.lastPause === this.timeoutPause && !this.enabled &&
+            !this.lastPause.byUser && now - this.lastPause.at <= 15000 && this.responseTimeouts.length < 3) {
+          this.timeoutResume = this.timeoutPause;
+          this.resumeAfterLateResponse();
+        }
+      }
+      resumeAfterLateResponse() {
+        if (!this.timeoutResume || this.timeoutResume !== this.lastPause || this.enabled || this.busy ||
+            this.lastPause.byUser || this.responseTimeouts.length >= 3) return;
+        this.log('迟到的回应已收到，继续托管');
+        this.start().catch((e) => this.pause(e.message));
       }
       stopBattle() {
         const stopped = this.bridge.setBattle(false);
@@ -5359,6 +5420,9 @@
             });
         }
         return {
+          network: { timeoutMs: this.responseTimeout(),
+            lateAnswers: (this.lateAnswers || []).filter((at) => Date.now() - at < 600000).length,
+            pendingQueries: this.bridge.queryWaiters?.size ?? this.pendingQueries?.size ?? 0 },
           perf: this.perfStatus(),
           gear: this.gearStatus(s),
           stats: this.stats ? { summary: this.stats.summary(), rates: this.stats.rates() } : null,
@@ -5512,7 +5576,38 @@
         }
         this.saveLedger();
       }
-      async execute(a) {
+      queryPending(a) {
+        return this.pendingQueries?.has(responseKey(a)) ||
+          [...(this.pendingQueries?.values() || [])].some((pending) => a.key && pending.key === a.key) ||
+          this.bridge.responsePending?.(a);
+      }
+      async executeQueries(list) {
+        const keys = new Set(), actionKeys = new Set(), queries = list.filter((a) => {
+          if (!parallelQuery(a) || keys.size >= 6 || (a.key && actionKeys.has(a.key)) || this.queryPending(a) ||
+              (this.suppressed.get(a.key) || 0) >= Date.now()) return false;
+          ensureRequestId(a);
+          const key = responseKey(a);
+          if (keys.has(key)) return false;
+          keys.add(key);
+          if (a.key) actionKeys.add(a.key);
+          return true;
+        });
+        if (!queries.length) return;
+        const batch = { multiple: queries.length > 1, completed: new Set(), unattributed: 0 };
+        if (batch.multiple) this.log('查询：' + queries.map((a) => a.label).join('、'));
+        await Promise.all(queries.map(async (a) => {
+          const key = responseKey(a);
+          (this.pendingQueries ||= new Map()).set(key, a);
+          try { await this.execute(a, batch); }
+          finally { this.pendingQueries.delete(key); }
+        }));
+        if (batch.unattributed)
+          this.log('服务器返回错误，' + batch.unattributed + ' 个查询稍后重试', 'warning');
+        const completed = queries.filter((a) => batch.completed.has(a));
+        if (batch.multiple && completed.length)
+          this.log('查询完成：' + completed.map((a) => a.label).join('、'), 'success');
+      }
+      async execute(a, queryBatch = null) {
         if (!this.acquireLease()) {
           this.reason = '此角色已在另一标签页托管';
           return;
@@ -5535,27 +5630,29 @@
           this.reason = a.label + '：' + (check.ok ? '当前资源或预算不足' : check.reason);
           this.log(this.reason, 'warning');
           this.suppress(a, 60000);
-          this.lastLocal = Date.now();
+          if (!queryBatch) this.lastLocal = Date.now();
           this.paint();
           return;
         }
-        this.busy = true;
-        this.action = a;
-        this.reason = a.label;
+        if (!queryBatch) {
+          this.busy = true;
+          this.action = a;
+          this.reason = a.label;
+        }
         if (!welfareBet) this.charge(a);
         // Stamped before sending: an unanswered request must not lead to a second pill.
         if (a.doubleExp) {
           this.ledger.tianlingUsedAt = Date.now();
           this.saveLedger();
         }
-        this.log(a.label);
+        if (!queryBatch?.multiple) this.log(a.label);
         this.paint();
         try {
-          const result = await this.bridge.request(a, this.prefs.requestTimeoutMs);
+          const result = await this.bridge.request(a, this.responseTimeout());
           if (welfareBet) { this.welfareResult(a, before, result); return; }
           if (a.petHatch && (result.success ?? result.code === 200)) {
             await this.bridge.request({ type: 'PET_COMMAND', payload: { action: 'list', petId: '' },
-              responseType: 'PET_RESPONSE', readOnly: true }, this.prefs.requestTimeoutMs);
+              responseType: 'PET_RESPONSE', readOnly: true }, this.responseTimeout());
             const oldIds = new Set((before.pets?.pets || []).map((entry) => entry.pet.id));
             const added = (this.bridge.state()?.pets?.pets || []).filter((entry) => !oldIds.has(entry.pet.id));
             // Only an unambiguous result is screened: exactly one new pet. Anything else stays untouched.
@@ -5640,7 +5737,8 @@
             // A full bag must not cause a town trip every five minutes.
             this.suppress(a, lotteryDraw || a.type === 'GET_MONSTER_TMPL' ? 1800000 : 300000);
           } else {
-            this.log(a.label + '：完成', 'success');
+            if (queryBatch?.multiple) queryBatch.completed.add(a);
+            else this.log(a.label + '：完成', 'success');
             const reward = lotteryDraw && result.data?.receipt?.reward;
             if (reward) this.log('抽奖获得：' + (['GOLD', 'GIFT'].includes(reward.kind)
               ? P.num(reward.amount).toLocaleString() + ' ' + reward.name
@@ -5654,15 +5752,22 @@
             }
           }
           if (
-            P.num(after.role.money) < this.prefs.budget.moneyReserve &&
+            !a.readOnly && P.num(after.role.money) < this.prefs.budget.moneyReserve &&
             P.num(before.role.money) >= this.prefs.budget.moneyReserve
           )
             this.pause('金币已低于保留额度，请核对当前资源');
           this.saveLedger();
         } catch (e) {
+          if (a.readOnly && e.code === 'SERVER_ERROR_UNATTRIBUTED') {
+            this.suppress(a, 60000);
+            if (queryBatch) queryBatch.unattributed++;
+            else this.log('服务器返回错误，1 个查询稍后重试', 'warning');
+            return;
+          }
           const timedOut = e.code === 'RESPONSE_TIMEOUT', now = Date.now();
           if (timedOut)
-            this.responseTimeouts = [...(this.responseTimeouts || []).filter((at) => now - at < 600000), now];
+            this.responseTimeouts = [...(this.responseTimeouts || []).filter((entry) => now - entry.at < 600000),
+              ...(!e.waiter?.answered ? [{ at: now, waiter: e.waiter || e }] : [])];
           const timeoutPause = timedOut && this.responseTimeouts.length >= 3
             ? '服务器 10 分钟内 3 次没有回应（最近一次：' + a.label + '）；请检查网络或游戏服务器后重新开始'
             : null;
@@ -5670,7 +5775,7 @@
             this.log(a.label + '：服务器没有及时回应，稍后重试', 'warning');
             this.suppress(a, 300000);
             this.saveLedger();
-            if (timeoutPause) this.pause(timeoutPause);
+            if (timeoutPause) this.pauseForTimeout(timeoutPause);
             return;
           }
           if (trialClaim && e.code === 'SERVER_ERROR') {
@@ -5729,16 +5834,19 @@
           }
           this.suppress(a, 3600000);
           this.saveLedger();
-          if (timeoutPause) this.pause(timeoutPause);
+          if (timeoutPause) this.pauseForTimeout(timeoutPause);
           else if (timedOut && this.prefs.reconnect.enabled)
             this.log(a.label + '：响应超时，结果未确认；先重新读取角色核对结果，再继续托管', 'warning');
           else if (!this.bridge.connected && this.prefs.reconnect.enabled)
             this.log(safeMessage(e.message), 'warning');
           else this.pause(safeMessage(e.message) + '；请核对角色后重新开始');
         } finally {
-          this.action = null;
-          this.busy = false;
-          this.lastLocal = Date.now();
+          if (!queryBatch) {
+            this.action = null;
+            this.busy = false;
+            this.lastLocal = Date.now();
+          }
+          this.resumeAfterLateResponse();
           this.paint();
         }
       }
@@ -5794,6 +5902,7 @@
         return false;
       }
       async tick() {
+        if (this.adaptiveUntil) this.responseTimeout();
         this.syncKeepAwake();
         const statsRole = this.bridge?.character?.()?.role;
         this.ensureStats(statsRole?.id);
@@ -5841,16 +5950,20 @@
           this.paint();
           return;
         }
-        if (this.busy || now - this.lastLocal < 1200) return;
+        const actionBlocked = this.busy || now - this.lastLocal < 1200;
         if (this.uncertain) {
+          if (actionBlocked) return;
           this.reason = '等待重新读取角色，核对上个动作结果';
           await this.reconcileRole(now);
           this.paint();
           return;
         }
-        this.updateGearCheck(s, now);
-        if (this.maybeApplyUpdate(now)) return;
+        if (!actionBlocked) {
+          this.updateGearCheck(s, now);
+          if (this.maybeApplyUpdate(now)) return;
+        }
         if (P.num(s.role.mapId) === 20070 || s.trial?.run) {
+          if (actionBlocked) return;
           if ((this.planNow || monotonicNow)() < (this.nextPlanAt ?? -Infinity)) {
             this.paint();
             return;
@@ -5878,6 +5991,7 @@
           runtime.player?.isDead ||
           (runtime.player && P.num(runtime.player.currentHp) <= 0 && runtime.stage !== 'idle')
         ) {
+          if (actionBlocked) return;
           const key =
             this.roleId +
             ':' +
@@ -5936,11 +6050,14 @@
         );
         if (special)
           plans = plans.filter((a) => ['GET_POTION_LIST', 'UPDATE_SETTINGS'].includes(a.type));
-        const candidate = plans.find((a) => !a.requiresTown || !!P.townFor(s, a.npc));
+        const queries = plans.filter(parallelQuery);
+        if (queries.length) this.executeQueries(queries).catch((e) => this.pause(e.message));
+        if (actionBlocked) return;
+        const candidate = plans.find((a) => !parallelQuery(a) && !this.bridge.responsePending?.(a) &&
+          (!a.requiresTown || !!P.townFor(s, a.npc)));
         if (candidate) {
           if (
             candidate.type === 'UPDATE_SETTINGS' ||
-            (candidate.readOnly && !candidate.requiresTown) ||
             (candidate.inBattle && !candidate.requiresTown)
           ) {
             await this.execute(candidate);
@@ -6678,6 +6795,10 @@
         }
         this.root.querySelector('.log-usage').textContent = this.logUsageText();
       }
+      networkText(status) {
+        return '服务器回应：等待上限 ' + (status.network?.timeoutMs ?? this.controller.prefs.requestTimeoutMs) / 1000 +
+          ' 秒 · 10 分钟内迟到 ' + (status.network?.lateAnswers ?? 0) + ' 次';
+      }
       renderBody(status = this.controller.status(), s = this.controller.bridge.state()) {
         const f = (l, p, o) => this.field(l, p, o);
         this.bodyDirty = false;
@@ -6694,7 +6815,7 @@
         }
         if (this.section === 'status') {
           this.statusBudgetsKey = this.statusBudgetsHTML(status);
-          html = `<div class="notice">先在原游戏完成登录，然后开始托管。人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。</div><h3>已保存的资源策略</h3><div class="status-budgets">${this.statusBudgetsKey}</div><div class="hint">默认保留强化、镶宝、星级、鉴定装备和套装部件；自动回收品质1的普通装备。宝石默认目标3级，强化默认目标+3。</div><div class="actions"><button class="btn" type="button" data-action="preview">预览下一步计划</button><button class="btn" type="button" data-action="diagnostics">导出当前诊断</button></div><div class="section"><h3>计划预览</h3>${this.previewPlans.length ? this.previewPlans.map((a) => `<div class="plan">${esc(a.label)}<small>预计金币 ${a.coinCost} · 经验 ${a.expCost}${a.requiresTown ? ' · 在对应城镇处理' : ''}</small></div>`).join('') : '<div class="hint">点击预览可查看当前角色满足条件的动作。</div>'}</div>`;
+          html = `<div class="notice">先在原游戏完成登录，然后开始托管。人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。</div><div class="hint network-status">${esc(this.networkText(status))}</div><h3>已保存的资源策略</h3><div class="status-budgets">${this.statusBudgetsKey}</div><div class="hint">默认保留强化、镶宝、星级、鉴定装备和套装部件；自动回收品质1的普通装备。宝石默认目标3级，强化默认目标+3。</div><div class="actions"><button class="btn" type="button" data-action="preview">预览下一步计划</button><button class="btn" type="button" data-action="diagnostics">导出当前诊断</button></div><div class="section"><h3>计划预览</h3>${this.previewPlans.length ? this.previewPlans.map((a) => `<div class="plan">${esc(a.label)}<small>预计金币 ${a.coinCost} · 经验 ${a.expCost}${a.requiresTown ? ' · 在对应城镇处理' : ''}</small></div>`).join('') : '<div class="hint">点击预览可查看当前角色满足条件的动作。</div>'}</div>`;
         }
         if (this.section === 'battle') {
           html =
@@ -7169,6 +7290,8 @@
           if (preview) preview.innerHTML = this.sellPreview(this.controller.bridge.state());
         }
         if (this.section === 'status') {
+          const network = this.root.querySelector('.network-status'), text = this.networkText(s);
+          if (network && network.textContent !== text) network.textContent = text;
           const budgets = this.root.querySelector('.status-budgets'), html = this.statusBudgetsHTML(s);
           if (budgets && html !== this.statusBudgetsKey) {
             budgets.innerHTML = html;
