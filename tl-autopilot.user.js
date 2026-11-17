@@ -781,12 +781,17 @@
       if (combatContexts.size > 8) combatContexts.delete(combatContexts.keys().next().value);
       return ctx;
     }
-    const CRIT_CHANCE_OFFSET = 11;
+    const CRIT_CHANCE_OFFSET = 10, CRIT_CHANCE_CAP = 0.70, CRIT_MULT_CAP = 2.0;
     const CRIT_BASE = 1.5, CRIT_RATE = 0.005, CRIT_FLOOR = 60;
     const CRIT_DEF_OFFSET = 70, CRIT_DEF_RATE = 7, CRIT_DEF_DIVISOR = 3;
+    function critChance(critRate, critDef) {
+      if (!Number.isFinite(critRate) || !Number.isFinite(critDef) || critRate < 0 || critDef < 0) return 0;
+      const denominator = critRate + critDef + CRIT_CHANCE_OFFSET;
+      return denominator > 0 ? Math.min(CRIT_CHANCE_CAP, critRate / denominator) : 0;
+    }
     function critMultiplier(critRate, critDef) {
-      return CRIT_BASE + CRIT_RATE * Math.max(0, critRate - Math.max(CRIT_FLOOR,
-        (CRIT_DEF_OFFSET + CRIT_DEF_RATE * critDef) / CRIT_DEF_DIVISOR));
+      return Math.min(CRIT_MULT_CAP, CRIT_BASE + CRIT_RATE * Math.max(0, critRate - Math.max(CRIT_FLOOR,
+        (CRIT_DEF_OFFSET + CRIT_DEF_RATE * critDef) / CRIT_DEF_DIVISOR)));
     }
     function artifactUptime(triggerChance, ratePerSecond, duration) {
       if (!(ratePerSecond > 0) || !(duration > 0)) return 0;
@@ -820,7 +825,7 @@
         precision = num(a.precision), avoidance = num(d.avoidance),
         ratio = precision + avoidance === 0 ? 0 : precision / (precision + avoidance);
       return ratio * (main * (1 + (critMultiplier(num(a.critRate), num(d.critDef)) - 1) *
-        num(a.critRate) / (num(a.critRate) + num(d.critDef) + CRIT_CHANCE_OFFSET)) + elem);
+        critChance(num(a.critRate), num(d.critDef))) + elem);
     }
     function combatParts(values, ctx) {
       const me = combatPlus(values, ctx.buffs, {}), castValues = {}, enemy = {}, activeMe = {}, parts = {};
@@ -1400,10 +1405,12 @@
         null
       );
     }
+    const RINGS_MAP_IDS = [20100, 20101, 20102];
+    const FARM_MAP_EXCLUDED_IDS = [20050, 20051, 20052, 20060, 20061, 20070, ...RINGS_MAP_IDS];
     function farmMap(map) {
       return !!map && num(map.mapType) !== 1 && map.show !== false &&
         costs(map).length === 0 && monsters(map).length > 0 &&
-        ![20050, 20051, 20052, 20060, 20061, 20070].includes(num(map.id));
+        !FARM_MAP_EXCLUDED_IDS.includes(num(map.id));
     }
     function fieldMap(map) {
       return farmMap(map) && num(map.id) >= 10000 && num(map.id) < 20000;
@@ -2923,7 +2930,7 @@
             m.mapType !== 1 &&
             array(m.costs).length === 0 &&
             array(m.monsters).length &&
-            ![20050, 20051, 20052, 20070].includes(m.id),
+            !FARM_MAP_EXCLUDED_IDS.includes(num(m.id)),
           )
           .map((m) => [m.id, `${m.region || '未知区域'} · ${m.name}（Lv.${m.reqLevel}）`]),
       ];
@@ -3001,6 +3008,14 @@
       const gems = array(s.bagItems).filter((b) => gemUsable(s, b)).sort(bound);
       const eqs = array(s.equipments).slice().sort((a, b) => worn(a, b) || num(template(a).slotType) - num(template(b).slotType));
       const eq = current.selectedEquip;
+      if (mode === 'SMITHY_REPAIR') {
+        if (kind === 'section') return bags.filter((b) => id(b) >= 5032 && id(b) <= 5037).sort((a, b) => id(b) - id(a));
+        if (kind === 'charm') {
+          const preferred = id(current.selectedSection) + 6;
+          return array(s.bagItems).filter((b) => charmUsable(s, b) && id(b) >= 5038 && id(b) <= 5043)
+            .sort((a, b) => Number(id(b) === preferred) - Number(id(a) === preferred) || id(b) - id(a) || bound(a, b));
+        }
+      }
       if (kind === 'equip') {
         if (mode === 'GEM_DRILL') return eqs.filter((e) => slots(e).filter((n) => n >= 0).length < 3);
         if (mode === 'GEM_INLAY') return eqs.filter((e) => slots(e).includes(0));
@@ -3055,6 +3070,7 @@
       poolMaps, scoreTargets, survivalWeight, healPerSecond, scoringStatus, scoringText, SUSTAIN_LINE, LOW_HP_SHARE, HP_LINE,
       viewedState, isViewedProfile, profileState, profileScoreText, tooltipContext,
       CRIT_BASE, CRIT_RATE, CRIT_FLOOR, CRIT_DEF_OFFSET, CRIT_DEF_RATE, CRIT_DEF_DIVISOR, critMultiplier,
+      CRIT_CHANCE_CAP, CRIT_MULT_CAP, critChance,
       MAIN_SOFTCAP, ELEMENT_RATE, hitDamage, setEffects, combatContext, combatParts, combatValue, combatWeights, gearWeights, statScore,
       hiddenClaimElement,
       equipmentStats,
@@ -3074,6 +3090,7 @@
       gemCharm,
       roleMap,
       townFor,
+      RINGS_MAP_IDS,
       farmMap,
       fieldMap,
       gearCheckStart, gearCheckAfter, gearCheckVerdict, gearCheckRestored, gearCheckRollback, gearRejected, gearCheckText,
@@ -5958,11 +5975,12 @@
           this.paint();
           return;
         }
+        const rings = P.RINGS_MAP_IDS.includes(P.num(s.role.mapId));
         if (!actionBlocked) {
           this.updateGearCheck(s, now);
-          if (this.maybeApplyUpdate(now)) return;
+          if (!rings && this.maybeApplyUpdate(now)) return;
         }
-        if (P.num(s.role.mapId) === 20070 || s.trial?.run) {
+        if (rings || P.num(s.role.mapId) === 20070 || s.trial?.run) {
           if (actionBlocked) return;
           if ((this.planNow || monotonicNow)() < (this.nextPlanAt ?? -Infinity)) {
             this.paint();
@@ -5977,7 +5995,7 @@
             (this.suppressed.get(a.key) || 0) < now &&
             (a.type !== 'UPDATE_SETTINGS' || now - this.lastSettings > 15000));
           if (a) await this.execute(a);
-          this.reason = '无相浮屠试炼中，托管不干预';
+          this.reason = rings ? '新三环挑战中，托管不干预' : '无相浮屠试炼中，托管不干预';
           this.paint();
           return;
         }
@@ -6245,27 +6263,50 @@
         const root = slot?.closest('div.gem-shop-window, div.smithy-shop-window, div.tailor-shop-window');
         if (!root || slot.matches('.remove-slot, .highlight-slot')) return;
         if (root.matches('div.tailor-shop-window') && !slot.matches('.cursor-pointer')) return;
-        if (!root.matches('div.gem-shop-window')) return setTimeout(() => this.openPicker(slot, root, 'any'), 0);
+        if (!root.matches('div.gem-shop-window')) return setTimeout(() => {
+          const repair = root.matches('div.smithy-shop-window') && this.controller.bridge.stores().get('interaction')?.mode === 'SMITHY_REPAIR';
+          this.openPicker(slot, root, repair ? this.repairSlotKind(slot, root) : 'any');
+        }, 0);
         const mode = this.controller.bridge.stores().get('interaction')?.mode;
         const kind = slot.matches('.border-purple') ? 'equip' : slot.matches('.border-green') ? 'charm' : slot.matches('.small-slot') ? 'gem' : slot.matches('.border-blue') ? mode === 'GEM_DRILL' ? 'material' : 'gem' : null;
         if (kind) this.openPicker(slot, root, kind);
       }
+      repairSlotKind(slot, root) {
+        const caption = slot.nextElementSibling;
+        if (caption?.matches('.text-caption')) return caption.textContent.includes('神符') ? 'charm' : 'section';
+        return slot === root.querySelector('.item-slot') ? 'section' : 'charm';
+      }
+      repairSection(root, state) {
+        const first = root.querySelector('.item-slot');
+        const slot = first && (this.repairSlotKind(first, root) === 'section' ? first : root.querySelectorAll('.item-slot')[1]);
+        const sections = P.array(state.bagItems).filter((b) => P.num(b.itemId ?? b.itemTmpl?.id) >= 5032 && P.num(b.itemId ?? b.itemTmpl?.id) <= 5037);
+        const named = sections.find((b) => b.itemTmpl?.name && slot?.textContent.includes(b.itemTmpl.name));
+        const src = slot?.querySelector('img')?.getAttribute('src');
+        if (named || !src) return named;
+        // The smithy's component-local selection renders its item icon inside the slot.
+        const base = this.doc.baseURI || location.href, icon = new URL(src, base).href;
+        const matches = sections.filter((b) => b.itemTmpl?.icon && new URL(b.itemTmpl.icon, base).href === icon);
+        return matches.every((b) => (b.itemId ?? b.itemTmpl.id) === (matches[0].itemId ?? matches[0].itemTmpl.id)) ? matches[0] : undefined;
+      }
       openPicker(slot, root, kind) {
         const c = this.controller, stores = c.bridge.stores(), mode = stores.get('interaction')?.mode;
-        if (!c.prefs.fill.enabled || !root.isConnected || !(kind === 'any' ? mode?.startsWith('SMITHY_') || mode === 'TAILOR_ADD_MATERIAL' : mode?.startsWith('GEM_'))) return;
+        const repair = mode === 'SMITHY_REPAIR' && ['section', 'charm'].includes(kind);
+        if (!c.prefs.fill.enabled || !root.isConnected || !(repair || (kind === 'any' ? mode?.startsWith('SMITHY_') || mode === 'TAILOR_ADD_MATERIAL' : mode?.startsWith('GEM_')))) return;
         this.closePicker();
         const picker = this.doc.createElement('div'), rect = slot.getBoundingClientRect();
         picker.style.cssText = 'position:absolute;z-index:2147482000;max-height:320px;overflow:auto;width:240px;background:rgba(20,20,24,0.96);border:1px solid #a88a4a;border-radius:4px;font-size:12px;color:#eee';
         const view = this.doc.defaultView || globalThis;
         picker.style.left = Math.max(0, Math.min(rect.left, view.innerWidth - 242)) + (view.scrollX || 0) + 'px';
         picker.style.top = Math.max(0, Math.min(rect.bottom, view.innerHeight - 322)) + (view.scrollY || 0) + 'px';
-        const choices = P.slotChoices(mode, kind, c.bridge.state(), c.prefs, stores.get('gemInlay') || {});
-        for (const item of choices) picker.appendChild(this.choiceRow(item, mode));
-        if (!choices.length) picker.textContent = '背包里没有可放入的物品';
+        const state = c.bridge.state(), current = repair ? { selectedSection: this.repairSection(root, state) } : stores.get('gemInlay') || {};
+        const choices = P.slotChoices(mode, kind, state, c.prefs, current);
+        const preferred = repair && kind === 'charm' && current.selectedSection ? P.num(current.selectedSection.itemId ?? current.selectedSection.itemTmpl?.id) + 6 : 0;
+        for (const item of choices) picker.appendChild(this.choiceRow(item, mode, !!preferred && P.num(item.itemId ?? item.itemTmpl?.id) !== preferred));
+        if (!choices.length) picker.textContent = repair ? kind === 'charm' ? '背包里没有新莽神符' : '背包里没有残缺的神节' : '背包里没有可放入的物品';
         this.doc.body.appendChild(picker);
         this.picker = picker; this.pickerRoot = root; this.pickerMode = mode;
       }
-      choiceRow(item, mode) {
+      choiceRow(item, mode, mismatch = false) {
         const row = this.doc.createElement('div'), t = item.itemTmpl || item.equipTmpl;
         row.style.cssText = 'padding:6px;cursor:pointer;display:flex;align-items:center;gap:6px';
         if (t.icon) {
@@ -6274,6 +6315,7 @@
         }
         const label = this.doc.createElement('span');
         label.textContent = t.name + (item.itemTmpl ? ' ×' + item.count + (item.isBound ? ' 绑定' : '') : (item.isEquipped ? ' 已穿戴' : '') + ' 孔 ' + P.slots(item).filter((n) => n >= 0).length + '/3 +' + P.num(item.enhanceLevel));
+        if (mismatch) label.textContent += ' · 等级不匹配';
         row.appendChild(label);
         row.addEventListener('click', () => { this.choose(item, mode); this.closePicker(); });
         return row;
@@ -7495,8 +7537,10 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           '每次伤害 = 命中率 ×［主伤害 ×（1 +（会心倍率 − 1）× 会心率）+ 元素伤害］',
           `主伤害 =［外攻² ÷（${p.MAIN_SOFTCAP} × 外攻 + 对方外防）+ 内攻² ÷（${p.MAIN_SOFTCAP} × 内攻 + 对方内防）］×（1 + 0.005 × 等级差）`,
           '元素伤害 = Σ max(0, 元素攻击 − 对方抗性) × ' + TLPolicy.ELEMENT_RATE + ' ×（1 + 被动加成）',
-          `命中率 = 命中 ÷（命中 + 对方闪避）；会心率 = 会心 ÷（会心 + 对方会防 + ${p.CRIT_CHANCE_OFFSET}）`,
-          `会心一击只放大主伤害：倍率 = ${p.CRIT_BASE} + ${p.CRIT_RATE} × max(0, 会心 − max(${p.CRIT_FLOOR}, (${p.CRIT_DEF_OFFSET} + ${p.CRIT_DEF_RATE} × 对方会防) ÷ ${p.CRIT_DEF_DIVISOR}))`,
+          `命中率 = 命中 ÷（命中 + 对方闪避）；会心率 = 会心 ÷（会心 + 对方会防 + ${p.CRIT_CHANCE_OFFSET}），最高 ${percent(p.CRIT_CHANCE_CAP)}`,
+          `会心伤害倍率 = ${p.CRIT_BASE} + ${p.CRIT_RATE} ×（会心 − 起点），最高 ${p.CRIT_MULT_CAP.toFixed(1)}；起点 = ${p.CRIT_FLOOR} 和“让会心率达到 ${p.CRIT_CHANCE_CAP * 100}% 所需的会心”（(${p.CRIT_DEF_OFFSET} + ${p.CRIT_DEF_RATE} × 对方会防) ÷ ${p.CRIT_DEF_DIVISOR}）两者中较大的一个`,
+          '会心低于起点时，倍率按 1.5 计算；会心一击只放大主伤害',
+          '会心率到 70% 以后，多出来的会心转成会心伤害；倍率到 2.0 后再堆会心没有收益',
           '对方防御被技能削弱、被眩晕的时间按“持续时间 ÷ 冷却”折算',
           '自身倍数增益在固定值增益后计算：属性 ×［1 +（技能倍数 − 1）× min(1, 持续时间 ÷ 冷却)］；对怪减益作用于双方伤害公式中的对应属性',
           `输出按技能轮转加权（冷却越短出手越多）；治疗技能不计入；多段技能按段数 × 每段比例计，群攻技能按当前平均在场怪物数（${status?.scoring?.aoeTargets === undefined ? '1' : status.scoring.aoeTargets.toFixed(1)}）计；对参照怪物取平均；受击伤害用同一组公式反过来算`,
