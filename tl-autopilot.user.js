@@ -4036,6 +4036,15 @@
           )
             vm.emit('update:modelValue', false);
       }
+      closeArenaResult(doc = document) {
+        for (const arena of doc.querySelectorAll('.arena-battle'))
+          for (const button of arena.querySelectorAll('button'))
+            if (button.textContent.trim() === '返回排行榜') {
+              button.click();
+              return true;
+            }
+        return false;
+      }
       state() {
         const c = this.character();
         if (!c?.role?.id) return null;
@@ -4845,6 +4854,7 @@
         if (!Number.isFinite(this.lastPause?.at) || typeof this.lastPause.reason !== 'string' || typeof this.lastPause.byUser !== 'boolean') this.lastPause = null;
         this.busy = false;
         this.action = null;
+        this.arenaCloseUntil = 0;
         this.suppressed = new Map();
         this.id = crypto.randomUUID?.() || Math.random().toString(36).slice(2);
         this.ledger = null;
@@ -5704,6 +5714,17 @@
           else if (state === 'unsupported') this.log('浏览器不支持 Web Lock，无法防止标签页睡眠', 'warning');
         }
       }
+      tryCloseArenaResult(now = Date.now()) {
+        if (!this.enabled || !this.arenaCloseUntil) return;
+        if (now >= this.arenaCloseUntil) {
+          this.arenaCloseUntil = 0;
+          return;
+        }
+        if (this.bridge.closeArenaResult()) {
+          this.arenaCloseUntil = 0;
+          this.log('已关闭比武结果窗口', 'info');
+        }
+      }
       handleArenaMatch(now = Date.now()) {
         const pending = this.arenaPending, match = this.bridge.cache.arenaMatch;
         if (!pending) {
@@ -5728,6 +5749,8 @@
         this.arenaPending = null;
         this.bridge.cache.arenaMatch = null;
         if (this.bridge.cache.arena) this.bridge.cache.arena.board = null;
+        this.arenaCloseUntil = now + 15000;
+        this.tryCloseArenaResult(now);
         return false;
       }
       async tick() {
@@ -5750,6 +5773,7 @@
           return;
         }
         const now = Date.now();
+        this.tryCloseArenaResult(now);
         if (!this.bridge.connected || !this.bridge.sessionReady || this.bridge.reconnectVisible()) {
           this.reason = this.bridge.authFailed
             ? '游戏认证失效，请在原页面重新登录'
