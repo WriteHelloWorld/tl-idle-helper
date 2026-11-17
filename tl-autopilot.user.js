@@ -21,6 +21,16 @@
 (() => {
   'use strict';
   const TLPolicy = (() => {
+    function conflictNotice(win) {
+      if (!win.__TL_AUTOPILOT_INSTALLED__) return '';
+      let detected = '可能是原版或衍生版';
+      try {
+        const version = win.TLAutopilot?.status?.()?.version;
+        if (typeof version === 'string') detected = '版本 ' + version;
+      } catch (_) {}
+      return 'TL挂机助手未启动：页面上已有另一个托管脚本在运行（' + detected +
+        '）。两个托管脚本同时运行会重复操作，请在油猴管理器中只保留一个，然后刷新页面。';
+    }
     const WEIGHTS = {
       hp: 0.3,
       mp: 0.2,
@@ -328,6 +338,44 @@
           (p.warehouse.perfect && e.isAppraisal &&
             num(quality.extScore) > 1500 && num(quality.intScore) > 1500))
       );
+    }
+    function sellPlan(s, prefs, ledger, now = Date.now()) {
+      const p = config(prefs), sell = [], keep = [],
+        provisional = p.gear.scoring === 'combat' && combatWeights(s, p) === null,
+        setIds = setTemplateIds(s), backups = new Set(),
+        protectedGear = new Set([...gearRejected(s.gearRejected, now).map((e) => e.id), s.gearCheck?.oldItemId]);
+      if (p.sell.keepBestBackup)
+        for (let slot = 1; slot <= 11; slot++) {
+          const best = array(s.equipments)
+            .filter((e) => !e.isEquipped && num(template(e).slotType) === slot)
+            .sort((a, b) => equipmentScore(b, s, p) - equipmentScore(a, s, p))[0];
+          if (best) backups.add(num(best.id));
+        }
+      for (const eq of array(s.equipments)) {
+        if (eq.isEquipped) continue;
+        const t = eq.equipTmpl, id = num(eq.id), tid = num(eq.tmplId || t?.id);
+        // The first matching protection explains why this bag item cannot be sold.
+        const reason = provisional ? '实战评分还没有数据，暂不出售'
+          : protectedGear.has(id) ? '换装核对中或在换回名单'
+          : eq.hiddenWeapon || num(t?.slotType) === 12 ? '暗器'
+          : p.warehouse.enabled && warehouseEligible(eq, p, setIds) ? '符合存仓条件'
+          : num(eq.quality, 1) > p.sell.maxQuality ? '品质高于上限'
+          : num(eq.enhanceLevel) !== 0 ? '已强化'
+          : num(eq.starLevel) !== 0 ? '有星级'
+          : eq.isAppraisal ? '已鉴定'
+          : slots(eq).some((id) => id > 0) ? '镶了宝石'
+          : !t || num(t.price) <= 0 ? '商店不收'
+          : p.sell.keepFuture && num(t.reqLevel) > num(s.role?.level) ? '还没到穿戴等级'
+          : p.sell.keepSets && setIds.has(tid) ? '套装'
+          : p.sell.keepTemplateIds.map(num).includes(tid) ? '在永不出售名单'
+          : backups.has(id) ? '该部位最佳备用'
+          : p.sell.keepCrafted && array(ledger?.keptEquipIds).includes(id) ? '托管新打造'
+          : '';
+        if (reason) keep.push({ eq, reason });
+        else sell.push(eq);
+      }
+      sell.sort((a, b) => equipmentScore(a, s, p) - equipmentScore(b, s, p));
+      return { sell, keep, provisional };
     }
     function slots(eq) {
       const s = parse(eq?.gemSlots, [-1, -1, -1]);
@@ -2127,40 +2175,7 @@
           );
       }
       if (p.sell.enabled) {
-        const setIds = p.sell.keepSets ? setTemplateIds(s) : new Set();
-        const backups = new Set();
-        if (p.sell.keepBestBackup)
-          for (let slot = 1; slot <= 11; slot++) {
-            const best = array(s.equipments)
-              .filter((e) => !e.isEquipped && num(template(e).slotType) === slot)
-              .sort((a, b) => equipmentScore(b, s, p) - equipmentScore(a, s, p))[0];
-            if (best) backups.add(num(best.id));
-          }
-        // A sale cannot be undone, so no equipment is sold while the combat score has no data
-        // and the ranking of backups would rest on the fallback weights.
-        const provisional = p.gear.scoring === 'combat' && combatWeights(s, p) === null;
-        const sellable = array(s.equipments)
-          .filter(
-            (e) =>
-              !provisional &&
-              !e.isEquipped &&
-              !protectedGear.has(num(e.id)) &&
-              e.equipTmpl &&
-              !e.hiddenWeapon && num(e.equipTmpl.slotType) !== 12 &&
-              (!p.warehouse.enabled || !warehouseEligible(e, p, warehouseSetIds)) &&
-              num(e.quality, 1) <= p.sell.maxQuality &&
-              num(e.enhanceLevel) === 0 &&
-              num(e.starLevel) === 0 &&
-              !e.isAppraisal &&
-              !slots(e).some((id) => id > 0) &&
-              num(e.equipTmpl.price) > 0 &&
-              (!p.sell.keepFuture || num(e.equipTmpl.reqLevel) <= num(role.level)) &&
-              !setIds.has(num(e.tmplId || e.equipTmpl.id)) &&
-              !p.sell.keepTemplateIds.map(num).includes(num(e.tmplId || e.equipTmpl.id)) &&
-              !backups.has(num(e.id)) &&
-              (!p.sell.keepCrafted || !array(ledger.keptEquipIds).includes(num(e.id))),
-          )
-          .sort((a, b) => equipmentScore(a, s, p) - equipmentScore(b, s, p));
+        const sellable = sellPlan(s, p, ledger, now).sell;
         const batch = s.batchSell !== false, items = sellable.slice(0, 20);
         if (sellable.length >= (batch ? p.sell.batchMin : 1))
           add(
@@ -2815,7 +2830,7 @@
       stats,
       slots,
       lookup,
-      template,
+      template, equipQuality, setTemplateIds, sellPlan,
       poolMaps, scoreTargets, survivalWeight, healPerSecond, scoringStatus, scoringText, SUSTAIN_LINE, LOW_HP_SHARE, HP_LINE,
       viewedState, isViewedProfile, profileState, profileScoreText, tooltipContext,
       CRIT_BASE, CRIT_RATE, CRIT_FLOOR, CRIT_DEF_OFFSET, CRIT_DEF_RATE, CRIT_DEF_DIVISOR, critMultiplier,
@@ -2862,6 +2877,7 @@
       arenaRush,
       welfareNumbers, randomNumbers, welfareStatus,
       signature,
+      conflictNotice,
     };
   })();
   if (typeof module !== 'undefined' && module.exports) module.exports = TLPolicy;
@@ -2872,6 +2888,28 @@
       PREFIX = 'tl-autopilot-v1',
       CONFIG = PREFIX + ':config',
       RUNNING = PREFIX + ':running';
+    const conflictDocuments = new WeakSet();
+    function showConflictNotice(win, doc) {
+      const id = 'tl-idle-helper-conflict';
+      if (conflictDocuments.has(doc) || doc.getElementById(id)) return;
+      const text = P.conflictNotice(win);
+      if (!text) return;
+      conflictDocuments.add(doc);
+      win.console.warn(text);
+      const show = () => {
+        if (doc.getElementById(id)) return;
+        const banner = doc.createElement('div');
+        banner.id = id;
+        banner.setAttribute('role', 'alert');
+        banner.textContent = text;
+        banner.style.cssText = 'position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:2147483647;background:#7f1d1d;color:#fff;padding:8px 14px;border-radius:6px;font:13px/1.5 sans-serif;max-width:calc(100vw - 32px);box-sizing:border-box;overflow-wrap:anywhere;cursor:pointer;';
+        banner.title = '点击关闭';
+        banner.onclick = () => banner.remove();
+        doc.body.appendChild(banner);
+      };
+      if (doc.body) show();
+      else doc.addEventListener('DOMContentLoaded', show, { once: true });
+    }
     const ALLOWED = new Set([
       'ARENA_COMMAND', 'PET_COMMAND', 'TRIAL_COMMAND',
       'ENTER_GAME',
@@ -5557,7 +5595,7 @@
     }
     const arraySafe = (v) => (Array.isArray(v) ? v : []);
     return {
-      Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake,
+      Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake, showConflictNotice,
     };
   })();
   if (typeof module !== 'undefined' && module.exports) module.exports.TLRuntime = TLRuntime;
@@ -6040,9 +6078,10 @@
             f('保留各部位最佳备用装', 'sell.keepBestBackup') +
             f('保留托管新打造装备', 'sell.keepCrafted') +
             f('攒够几件再出售（1 = 有就卖）', 'sell.batchMin', { min: 1, max: 20 }) +
-            f('额外保留模板ID', 'sell.keepTemplateIds') +
+            f('永不出售的模板ID（可填预览里的模板ID，逗号分隔）', 'sell.keepTemplateIds') +
             f('明确允许出售的材料ID', 'sell.materialIds') +
             f('每日出售操作上限', 'sell.maxPerDay') +
+            '<div class="sell-preview">' + this.sellPreview(s) + '</div>' +
             '<div class="hint">穿戴、强化、镶宝、星级和鉴定装备始终保留。材料仅按填写的模板ID处理。</div><div class="section"><h3>自动存入仓库</h3>' +
             f('自动将装备存入仓库', 'warehouse.enabled') +
             f('存仓最低品质（≥此品质）', 'warehouse.minQuality', {
@@ -6124,6 +6163,25 @@
               )
               .join('')
           : '<div class="hint">暂无动作记录。</div>';
+      }
+      sellPreview(s) {
+        if (!s?.role || !TLPolicy.num(s.role.id)) return '<div class="hint">登录角色后显示预览</div>';
+        const P = TLPolicy, p = P.config(this.pending),
+          plan = P.sellPlan(this.controller.gearState?.(s) || s, p, this.controller.ledger),
+          setIds = P.setTemplateIds(s), colors = ['', '白', '蓝', '紫', '橙', '红'],
+          reasons = new Map(), count = plan.sell.length;
+        for (const { reason } of plan.keep) reasons.set(reason, (reasons.get(reason) || 0) + 1);
+        return '<div class="hint">预览：会卖 ' + count + ' 件，留 ' + plan.keep.length + ' 件。' +
+          (s.batchSell !== false && count > 0 && count < p.sell.batchMin
+            ? '<br>还差 ' + (p.sell.batchMin - count) + ' 件才会出售（攒够 ' + p.sell.batchMin + ' 件一次卖）' : '') +
+          (reasons.size ? '<br>留下的原因：' + [...reasons].map(([reason, n]) => esc(reason) + ' ' + n + ' 件').join('、') : '') +
+          '</div>' + (count ? '<ul>' + plan.sell.slice(0, 15).map((eq) => {
+            const t = eq.equipTmpl, tid = P.num(eq.tmplId || t.id);
+            return '<li>' + esc(t.name || '装备') + '（' + esc(colors[P.equipQuality(eq)] || '未知品质') +
+              ' · Lv.' + P.num(t.reqLevel) + (setIds.has(tid) ? ' · 套装' : '') +
+              ' · ' + (p.gear.scoring === 'combat' ? '实战评分 ' : '战斗力 ') + Math.round(P.equipmentScore(eq, s, p)) +
+              ' · 模板ID ' + tid + '）</li>';
+          }).join('') + '</ul>' + (count > 15 ? '<div class="hint">…还有 ' + (count - 15) + ' 件</div>' : '') : '');
       }
       gearCheckHTML(gear) {
         const check = gear?.check, fmt = (n) => n == null ? '—' : n.toFixed(1);
@@ -6305,6 +6363,10 @@
           const gear = this.root.querySelector('.gear-check-status');
           if (gear) gear.innerHTML = this.gearCheckHTML(s.gear);
         }
+        if (this.section === 'economy') {
+          const preview = this.root.querySelector('.sell-preview');
+          if (preview) preview.innerHTML = this.sellPreview(this.controller.bridge.state());
+        }
         const card = (kind, label, value) =>
           `<div data-budget="${kind}"><span class="budget-title">${label}</span><span>${value}</span></div>`;
         this.root.querySelector('.summary').innerHTML =
@@ -6357,9 +6419,12 @@
     ((location.hostname === 'tl.jayczee.top' && location.port === '1212') ||
       (location.hostname === 'tl2.jayczee.top' && location.port === '11212') ||
       (location.hostname === 'tl3.jayczee.top' && location.port === '11212')) &&
-    window.top === window &&
-    !window.__TL_AUTOPILOT_INSTALLED__
+    window.top === window
   ) {
+    if (window.__TL_AUTOPILOT_INSTALLED__) {
+      TLRuntime.showConflictNotice(window, document);
+      return;
+    }
     window.__TL_AUTOPILOT_INSTALLED__ = true;
     const controller = new TLRuntime.Controller();
     controller.updates = new TLUpdates.Checker(controller);
