@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name TL战斗数据记录器
 // @namespace https://github.com/YatsukiRenka/tl-idle-helper
-// @version 0.1.5
+// @version 0.1.6
 // @description 本地记录自身战斗数据用于评分校准，不上传任何数据。
 // @match https://tl.jayczee.top/*
 // @match https://tl2.jayczee.top/*
@@ -28,6 +28,7 @@
   const slots = s => (s?.monsterSlots || []).filter(Boolean);
   const solo = s => !s.pet || s.pet.isDead || !(s.pet.currentHp > 0);
   const soloDefaults = () => ({ os: [0, 0, 0, 0, 0], solo: 0 });
+  const logDefaults = () => ({ ol: [0, 0, 0, 0], olk: {}, art: {}, artUp: 0 });
   function hash(value) {
     let h = 2166136261;
     for (const c of JSON.stringify(value)) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
@@ -53,7 +54,7 @@
       this.rivalSessions = new Map();
       try { const d = this.read(this.storageKey()); this.data = valid(d) ? clone(d) : empty(); } catch { this.data = empty(); }
       this.data.rivals ||= {};
-      for (const [k, b] of Object.entries(this.data.hours)) this.data.hours[k] = { ...dangerDefaults, ...eventDefaults(), ...soloDefaults(), ...b };
+      for (const [k, b] of Object.entries(this.data.hours)) this.data.hours[k] = { ...dangerDefaults, ...eventDefaults(), ...soloDefaults(), ...logDefaults(), ...b };
       for (const cfg of Object.values(this.data.configs)) cfg.dots ||= [];
     }
     storageKey() { return 'tl-combat-recorder-v1:' + this.roleId; }
@@ -63,6 +64,7 @@
       this.sig = hash([c.level, attrs, skills, pet]);
       this.data.configs[this.sig] ||= { first: s.serverTime, last: s.serverTime, level: c.level, sect: c.sect, attrs, skills, pet, out: [], in: [] };
       this.data.configs[this.sig].last = s.serverTime;
+      if (c.weapon != null) this.data.configs[this.sig].weapon = c.weapon;
       const dots = this.data.configs[this.sig].dots ||= [];
       for (const m of slots(s).filter(m => !m.isDead && m.currentHp > 0)) this.poison(m, dots);
       this.recordSkills(s.player);
@@ -94,7 +96,7 @@
     }
     bucket(t, c) {
       const k = [Math.floor(t / 3600000), c.mapId, this.sig].join('|');
-      const b = this.data.hours[k] ||= { ...dangerDefaults, ...eventDefaults(), ...soloDefaults(), ...Object.fromEntries(fields.map(f => [f, 0])), o: [0, 0, 0, 0, 0], i: [0, 0, 0, 0, 0], k: {} };
+      const b = this.data.hours[k] ||= { ...dangerDefaults, ...eventDefaults(), ...soloDefaults(), ...logDefaults(), ...Object.fromEntries(fields.map(f => [f, 0])), o: [0, 0, 0, 0, 0], i: [0, 0, 0, 0, 0], k: {} };
       b.pt = c.potionThreshold || 0;
       return b;
     }
@@ -127,7 +129,7 @@
       if (wasDead) this.previous = undefined;
       this.danger(s, wasDead ? null : prev, b);
       if (!wasDead && prev?.sessionId === s.sessionId) this.delta(prev, s, c, b);
-      this.floating(s, prev?.sessionId === s.sessionId ? prev : null, b);
+      this.floating(s, prev?.sessionId === s.sessionId ? prev : null, b, this.logs(s, b));
       this.previous = clone(s);
     }
     danger(s, prev, b) {
@@ -146,6 +148,7 @@
       const dt = Math.min(5000, s.serverTime - prev.serverTime);
       if (dt > 0) {
         b.battle += dt; b.buff += s.player.buffs?.length ? dt : 0; b.dbl += c.doubleExp ? dt : 0;
+        if (s.player.buffIcons?.some(x => /^artifact-.+-self$/.test(x?.id))) b.artUp += dt;
         if (solo(s)) b.solo += dt;
         b.taken += Math.max(0, prev.player.currentHp - s.player.currentHp);
       }
@@ -162,13 +165,45 @@
       const k = [side, e.color || '', shape].join('|');
       if (k in this.data.floats || Object.keys(this.data.floats).length < 80) this.data.floats[k] = (this.data.floats[k] || 0) + 1;
     }
-    floating(s, prev, b) {
+    logs(s, b) {
+      const hits = new Map(), artifacts = new Map();
+      for (const e of Array.isArray(s.logs) ? s.logs : []) {
+        if (e?.type !== 'combat' || typeof e.text !== 'string') continue;
+        const artifact = /^神器技能触发：([^，]+)，(.*)$/.exec(e.text);
+        if (artifact) {
+          artifacts.set(artifact[1], (artifacts.get(artifact[1]) || 0) + Number(artifact[2].startsWith('自身')));
+          continue;
+        }
+        const hit = /^(【暴击】)?你施展【([^】]+)】，对【[^】]+】造成了 ([\d,]+) 点(?:暴击)?伤害[。！]$/.exec(e.text);
+        const miss = !hit && /^你施展【([^】]+)】，被【[^】]+】闪避了！$/.exec(e.text);
+        if (!hit && !miss) continue;
+        const name = hit ? hit[2] : miss[1], crit = Number(!!hit?.[1]);
+        if (hit) {
+          const damage = Number(hit[3].replace(/,/g, ''));
+          b.ol[0]++; b.ol[2] += crit; b.ol[3] += damage;
+          if (!hits.has(damage)) hits.set(damage, name);
+        } else b.ol[1]++;
+        if (!Object.hasOwn(b.olk, name) && Object.keys(b.olk).length < 20)
+          Object.defineProperty(b.olk, name, { value: [0, 0, 0], enumerable: true, writable: true, configurable: true });
+        if (Object.hasOwn(b.olk, name)) { b.olk[name][hit ? 0 : 1]++; b.olk[name][2] += crit; }
+      }
+      // Self lines count triggers; without one, the first line for that name in this packet counts once.
+      for (const [name, count] of artifacts) Object.defineProperty(b.art, name, {
+        value: (Object.hasOwn(b.art, name) ? b.art[name] : 0) + (count || 1), enumerable: true, writable: true, configurable: true
+      });
+      return hits;
+    }
+    floating(s, prev, b, hits = new Map()) {
+      this.skill = '';
       const before = b.o.slice();
-      const last = new Map(), monsters = [...slots(s), ...slots(prev)];
-      for (const e of Array.isArray(s.floating) ? s.floating : []) this.event(e, s, monsters, b, last);
+      const last = new Map(), pending = [], monsters = [...slots(s), ...slots(prev)];
+      for (const e of Array.isArray(s.floating) ? s.floating : []) this.event(e, s, monsters, b, last, pending);
+      // A hit log carries the floating total (main and elemental); labels prefer it, then this packet's announcement.
+      for (const [incoming, mk, n, elemental, crit] of pending)
+        this.sample(s, incoming, mk, n, crit, (!incoming && hits.get(n)) || this.skill, elemental);
       if (solo(s)) b.os = b.os.map((n, i) => n + b.o[i] - before[i]);
     }
-    event(e, s, monsters, b, last) {
+    event(e, s, monsters, b, last, pending) {
       if (!e || typeof e.text !== 'string' || typeof e.ownerId !== 'string') return;
       const incoming = e.ownerId === 'player', m = monsters.find(x => x.id === e.ownerId);
       const pet = e.ownerId === s.pet?.id || e.ownerId.startsWith('pet-player-');
@@ -187,7 +222,8 @@
       if (pet) return;
       // The number does not say which monster hit; the analysis matches it against every living type.
       const mk = incoming ? [...new Set(slots(s).filter(x => !x.isDead).map(keyOf))].sort().join(',') : keyOf(m);
-      last.set(e.ownerId, this.sample(s, incoming, mk, n, crit));
+      const row = [incoming, mk, n, 0, crit];
+      last.set(e.ownerId, row); pending.push(row);
     }
     specialEvent(e, incoming, pet, monster, b) {
       const poison = monster && /^毒 [−-](\d+)$/.exec(e.text);
@@ -199,10 +235,10 @@
       if (incoming && /^\+\d+$/.test(e.text)) { b.heal += Number(e.text); b.healN++; return true; }
       return false;
     }
-    sample(s, incoming, mk, n, crit) {
+    sample(s, incoming, mk, n, crit, skill = this.skill || '', elemental = 0) {
       const cfg = this.data.configs[this.sig], base = nums(s.player.base);
       const diff = Object.fromEntries(ATTRS.filter((k, i) => base[i] !== cfg.attrs[i]).map(k => [k, base[ATTRS.indexOf(k)]]));
-      const row = [this.skill || '', mk, n, 0, crit, diff], list = incoming ? cfg.in : cfg.out;
+      const row = [skill, mk, n, elemental, crit, diff], list = incoming ? cfg.in : cfg.out;
       const same = x => x[0] === row[0] && x[1] === mk && x[4] === crit && JSON.stringify(x[5]) === JSON.stringify(diff);
       if (list.length < 120 && list.filter(same).length < 2 &&
           (list.length < 40 || !list.some(x => x[1] === mk && x[4] === crit))) list.push(row);
@@ -250,7 +286,7 @@
       const hours = Object.keys(this.data.hours), configs = Object.values(this.data.configs);
       return { battleHours: Object.values(this.data.hours).reduce((n, b) => n + b.battle, 0) / 3600000, configs: configs.length, hours: hours.length, samples: configs.reduce((n, c) => n + c.out.length + c.in.length, 0), bytes: JSON.stringify(this.data).length, since: hours.length ? Math.min(...hours.map(k => Number(k.split('|')[0]))) * 3600000 : null };
     }
-    exportData(meta) { return { format: 'tl-combat-data', version: 1, recorder: '0.1.5', exportedAt: this.now(), ...meta, data: clone(this.data) }; }
+    exportData(meta) { return { format: 'tl-combat-data', version: 1, recorder: '0.1.6', exportedAt: this.now(), ...meta, data: clone(this.data) }; }
   }
   if (typeof module !== 'undefined') { module.exports = { Recorder, ATTRS, hash }; return; }
   if (window.__TL_COMBAT_RECORDER__) return;
@@ -263,7 +299,8 @@
     const s = document.querySelector('#app')?.__vue_app__?.config.globalProperties.$pinia?._s?.get('character');
     if (s?.role?.id == null) return null;
     let settings = {}; try { settings = JSON.parse(s.role.settings || '{}'); } catch {}
-    return { roleId: s.role.id, level: s.role.level, sect: s.role.sect, mapId: s.role.mapId, potionThreshold: settings.hp?.enabled ? settings.hp.threshold : 0, doubleExp: settings.doubleExp?.buffExpireTime > Date.now(), attrs: nums(s.finalAttributes), maps: s.maps || [] };
+    const weapon = s.equipments?.find(e => e.isEquipped && e.equipTmpl?.slotType === 1)?.tmplId;
+    return { roleId: s.role.id, level: s.role.level, sect: s.role.sect, mapId: s.role.mapId, weapon, potionThreshold: settings.hp?.enabled ? settings.hp.threshold : 0, doubleExp: settings.doubleExp?.buffExpireTime > Date.now(), attrs: nums(s.finalAttributes), maps: s.maps || [] };
   }
   const attached = new WeakSet(), Native = window.WebSocket;
   function attach(socket) {

@@ -5541,6 +5541,13 @@
       ['updates', '更新'],
       ['logs', '日志高级'],
     ];
+    const qualityChoices = [
+      [1, '白色（1）'],
+      [2, '蓝色（2）'],
+      [3, '紫色（3）'],
+      [4, '橙色（4）'],
+      [5, '红色（5）'],
+    ];
     const pathGet = (o, path) => path.split('.').reduce((v, k) => v?.[k], o);
     const pathSet = (o, path, value) => {
       const ks = path.split('.');
@@ -5819,7 +5826,11 @@
           html =
             '<h3>装备回收</h3>' +
             f('自动出售普通装备', 'sell.enabled') +
-            f('允许出售的最高品质数值', 'sell.maxQuality', { max: 5 }) +
+            f('允许出售的最高品质（≤此品质）', 'sell.maxQuality', {
+              choices: this.pending.sell.maxQuality === 0
+                ? [[0, '不按品质出售（0）'], ...qualityChoices]
+                : qualityChoices,
+            }) +
             f('出售时排除套装装备', 'sell.keepSets') +
             f('保留尚未达到等级的装备', 'sell.keepFuture') +
             f('保留各部位最佳备用装', 'sell.keepBestBackup') +
@@ -5831,13 +5842,7 @@
             '<div class="hint">穿戴、强化、镶宝、星级和鉴定装备始终保留。材料仅按填写的模板ID处理。</div><div class="section"><h3>自动存入仓库</h3>' +
             f('自动将装备存入仓库', 'warehouse.enabled') +
             f('存仓最低品质（≥此品质）', 'warehouse.minQuality', {
-              choices: [
-                [1, '白色（1）'],
-                [2, '绿色（2）'],
-                [3, '蓝色（3）'],
-                [4, '紫色（4）'],
-                [5, '5 及以上'],
-              ],
+              choices: qualityChoices,
             }) +
             f('套装装备一律存仓（无视品质）', 'warehouse.sets') +
             f('自动存入双完美资质装备', 'warehouse.perfect') +
