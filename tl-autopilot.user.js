@@ -5526,8 +5526,14 @@
           bar.setAttribute('role', 'toolbar');
           bar.setAttribute('aria-label', '装备筛选');
         }
-        const side = frame.getBoundingClientRect().left < 40 ? ' tl-bag-right' : '';
+        // The game stage clips what leaves it. With little room at the left the strip moves over the window border
+        // (the grid starts 18 px inside); with none it goes to the right side.
+        const room = frame.getBoundingClientRect().left - (frame.closest?.('.web-game-stage')?.getBoundingClientRect?.().left ?? 0);
+        const side = room < 14 ? ' tl-bag-right' : '', shift = side || room >= 32 ? 0 : Math.ceil(32 - room);
         if (bar.className !== 'tl-bag-bar' + side) bar.className = 'tl-bag-bar' + side;
+        const margin = shift ? 4 - shift + 'px' : '';
+        if (bar.style.marginRight !== margin) bar.style.marginRight = margin;
+        bar._listInside = !side && room < 290 ? shift : null;
         const slots = P.SLOT_NAMES.length;
         if (bar.children.length !== slots + 2 + Number(scoring) || bar._scoring !== scoring) {
           bar.textContent = '';
@@ -5549,7 +5555,16 @@
           const pressed = String(i < slots ? filter.slot === i : i === slots + 1 ? !!filter.setId : filter.upgrade);
           if (button.getAttribute('aria-pressed') !== pressed) button.setAttribute('aria-pressed', pressed);
         });
-        if (this.openBagFrame === frame) this.drawSetList(frame, data, side);
+        if (this.openBagFrame === frame) {
+          const dialog = this.drawSetList(frame, data, side) || frame.querySelector('.tl-bag-sets');
+          // Without room for the list outside, it opens over the window, right of the strip.
+          const inside = bar._listInside;
+          if (dialog?.style) {
+            const left = inside == null ? '' : inside + 'px', right = inside == null ? '' : 'auto';
+            if (dialog.style.left !== left) dialog.style.left = left;
+            if (dialog.style.right !== right) dialog.style.right = right;
+          }
+        }
       }
       clearClosedBags(grids) {
         for (const [grid, frame] of this.bagFrames) {
@@ -5631,12 +5646,14 @@
         const view = state && scoring ? MarketScore.prepare(this, state, prefs) : null;
         for (const grid of grids) {
           const frame = grid.closest?.('.game-window-shell__frame');
+          // The frame clips its children (overflow: hidden); the strip and the list hang outside it, on the shell.
+          const host = frame?.closest?.('.game-window-shell') || frame;
           const list = this.bagList(grid, state, frame),
             slots = list?.slots || Array.from(grid.querySelectorAll('.grid-slot'));
           const equipmentTab = list || (bagFilter && frame?.querySelector('.game-tab-button.is-active')?.textContent.trim() === '装备');
           const data = state && equipmentTab && (bagFilter || setTag) ? getCollection() : null;
           if (frame && (bagFilter || setTag)) {
-            (this.bagFrames ||= new Map()).set(grid, frame);
+            (this.bagFrames ||= new Map()).set(grid, host);
             if (!grid._tlBagObserver && typeof MutationObserver !== 'undefined') {
               grid._tlBagObserver = new MutationObserver(() => this.schedule());
               grid._tlBagObserver.observe(frame.closest('.inventory-window, .warehouse-window') || frame,
@@ -5646,8 +5663,8 @@
             grid._tlBagObserver?.disconnect();
             grid._tlBagObserver = null;
           }
-          if (bagFilter && frame && data) this.drawBagBar(frame, data, scoring);
-          else this.clearBagFrame(frame);
+          if (bagFilter && host && data) this.drawBagBar(host, data, scoring);
+          else this.clearBagFrame(host);
           slots.forEach((slot, i) => {
             const old = slot.querySelector(':scope > .tl-bag-score'),
               eq = list && !slot.classList.contains('empty-slot') ? list.items[i] : null,
