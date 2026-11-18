@@ -161,7 +161,7 @@
         minGainPercent: 1, allowBinding: true, fromWarehouse: true, weights: WEIGHTS,
         fieldCheck: true, fieldMinutes: 20, fieldDropPercent: 5,
       },
-      market: { sort: 'off', showScore: true, bagScore: true, tipScore: true, scoreType: 'combat', bagScoreType: 'combat' },
+      market: { sort: 'off', showScore: true, bagScore: true, tipScore: true, tipBound: true, scoreType: 'combat', bagScoreType: 'combat' },
       sell: {
         enabled: true,
         maxQuality: 1,
@@ -4608,14 +4608,39 @@
             signed(gain.outputPercent) + '%，生存 ' + signed(gain.survivalPercent) + '%）' : ''),
         };
       }
+      drawBound(el, item) {
+        let line = el.querySelector('.tl-tip-bound');
+        const on = (value) => [1, '1', true, 'true'].includes(value);
+        const bound = on(item?.isBound);
+        const anchor = el.querySelector('.tooltip-row') || el.querySelector('.tooltip-name, .item-name') || el.firstElementChild;
+        if (!anchor || anchor === line || (!bound && ![0, '0', false, 'false'].includes(item?.isBound)) ||
+            [...el.querySelectorAll('.binding-line')].some((node) => node !== line)) {
+          line?.remove();
+          return;
+        }
+        if (!line) {
+          line = document.createElement('div');
+          line.className = 'binding-line tl-tip-bound';
+          for (const attr of anchor.attributes)
+            if (attr.name.startsWith('data-v-')) line.setAttribute(attr.name, attr.value);
+        }
+        const label = bound ? '已绑定' : on(item.equipTmpl?.bindOnEquip) || on(item.bindOnEquip)
+          ? '未绑定 · 装备后绑定' : '未绑定（可交易）';
+        if (line.textContent !== label) {
+          line.textContent = label;
+          line.style.color = bound ? '' : '#b9f6ca';
+        }
+        if (anchor.nextElementSibling !== line) anchor.parentNode.insertBefore(line, anchor.nextSibling);
+      }
       drawTip(el, info, item) {
         const row = el.querySelector('.tooltip-row');
         if (!info || !row) return;
         const gamePower = [...el.querySelectorAll('.tooltip-power')]
           .find((node) => !node.className.split(/\s+/).includes('tl-tip-score'));
         if (gamePower) return this.drawGameTip(el, gamePower, info, item);
-        const sibling = row.nextElementSibling,
-          anchor = sibling?.textContent.trim().startsWith('收益') ? sibling : row,
+        const first = el.querySelector('.tl-tip-bound') || row,
+          sibling = first.nextElementSibling,
+          anchor = sibling?.textContent.trim().startsWith('收益') ? sibling : first,
           key = JSON.stringify([item, info]),
           oldPower = el.querySelector('.tl-tip-power'),
           oldLines = el.querySelectorAll('.tl-tip-score');
@@ -4651,10 +4676,12 @@
       }
       drawGameTip(el, power, info, item) {
         const key = JSON.stringify([item, info]),
+          bound = el.querySelector('.tl-tip-bound'),
+          anchor = bound && el.querySelector('.tooltip-power, .tl-tip-bound') === power ? bound : power,
           lines = el.querySelectorAll('.tl-tip-score'),
           line = lines[0],
           powerArrows = power.querySelectorAll('.tl-tip-arrow');
-        if (lines.length === 1 && line._tipKey === key && power.nextElementSibling === line &&
+        if (lines.length === 1 && line._tipKey === key && anchor.nextElementSibling === line &&
             powerArrows.length === (info.compare ? 1 : 0) &&
             line.querySelectorAll('.tl-tip-arrow').length === (info.compare && !info.pending ? 1 : 0)) return;
         for (const node of el.querySelectorAll('.tl-tip-score, .tl-tip-arrow')) node.remove();
@@ -4665,7 +4692,7 @@
         score.textContent = '实战评分: ' + (info.pending ? '待战斗数据' : info.score.toLocaleString());
         score.title = info.title;
         score._tipKey = key;
-        power.parentNode.insertBefore(score, power.nextSibling);
+        anchor.parentNode.insertBefore(score, anchor.nextSibling);
         if (!info.compare) return;
         this.tipArrow(power, info.powerUp);
         if (!info.pending) this.tipArrow(score, info.combatUp);
@@ -4747,25 +4774,32 @@
           grids = document.querySelectorAll('.inventory-grid, .warehouse-grid'),
           profiles = document.querySelectorAll('.stats-area'),
           tips = document.querySelectorAll('.tlbb-tooltip');
-        if (this.controller.prefs.market.tipScore === false)
+        const prefs = this.controller.prefs, tipScore = prefs.market.tipScore !== false, tipBound = prefs.market.tipBound !== false;
+        if (!tipScore)
           for (const node of document.querySelectorAll('.tl-tip-score, .tl-tip-arrow, .tl-profile-score')) node.remove();
+        if (!tipBound)
+          for (const node of document.querySelectorAll('.tl-tip-bound')) node.remove();
         if (!cards.length && !grids.length && !tips.length && !profiles.length) return;
-        const prefs = this.controller.prefs,
-          state = this.state();
-        const instances = (tips.length || profiles.length) && state && prefs.market.tipScore !== false ? Array.from(this.controller.bridge.components()) : [],
+        const state = cards.length || grids.length || tipScore ? this.state() : null;
+        const scanTips = tips.length && (tipScore || tipBound),
+          scoreProfiles = profiles.length && state && tipScore,
+          instances = scanTips || scoreProfiles ? Array.from(this.controller.bridge.components()) : [],
           profileInstances = instances.filter((vm) => vm.type?.__name === 'CharacterProfile' && vm.props?.modelValue),
           entries = this.controller.bridge.cache?.viewedPlayers;
-        if (tips.length && state && prefs.market.tipScore !== false) {
+        if (scanTips) {
           const items = new Map();
           for (const vm of instances)
             if (vm.type?.__name === 'ItemTooltip') items.set(vm.subTree?.el, vm.props.item);
           for (const tip of tips) {
+            if (!items.has(tip)) continue;
             const item = items.get(tip);
+            if (tipBound) this.drawBound(tip, item);
+            if (!tipScore || !state) continue;
             const context = P.tooltipContext(item, profileInstances.map((vm) => vm.props), state, entries);
             this.drawTip(tip, this.tipInfo(item, context.state, prefs, context), item);
           }
         }
-        if (profiles.length && state && prefs.market.tipScore !== false) {
+        if (scoreProfiles) {
           for (const el of profiles) {
             const vm = profileInstances.find((v) => v.subTree?.el === el || v.subTree?.el?.contains(el));
             if (!vm && profileInstances.some((v) => v.props.statsOverride != null || v.props.readonly)) continue;
@@ -7901,6 +7935,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           f('逛摊评分类型', 'market.scoreType', { dependsOn: 'market.showScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
           f('背包仓库评分类型', 'market.bagScoreType', { dependsOn: 'market.bagScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
           f('详情和人物面板显示实战评分', 'market.tipScore', { help: '装备详情及人物面板' }) +
+          f('物品详情显示绑定状态', 'market.tipBound', { help: '已绑定、未绑定、装备后绑定' }) +
           f('逛摊按脚本排序', 'market.sort', { immediate: true, choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }), true);
       }
       scoreTableHTML(headers, rows, mapTable = false) {
