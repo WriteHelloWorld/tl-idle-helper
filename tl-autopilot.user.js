@@ -5392,6 +5392,19 @@
           }))
           .slice(0, 12);
       }
+      hudStatus() {
+        const role = this.bridge.character()?.role, now = Date.now();
+        if (!this.hudIncome || this.hudIncome.roleId !== role?.id || now - this.hudIncome.at >= 5000) {
+          const recent = role?.id && this.statsRoleId === role.id ? this.stats?.summary().recent : null;
+          this.hudIncome = { roleId: role?.id, at: now, value: recent?.wall >= 60000 ? recent.exp * 3600000 / recent.wall : null };
+        }
+        const pausedBySelf = !this.enabled && this.lastPause?.byUser === false && !!this.lastPause.reason;
+        const release = this.updates?.status();
+        return { enabled: this.enabled, connected: this.bridge.connected, ready: this.bridge.sessionReady,
+          reason: pausedBySelf ? '托管已自行暂停（' + new Date(this.lastPause.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) + '）：' + this.lastPause.reason : this.reason,
+          pausedBySelf, role: role?.id ? { nickname: role.nickname, level: role.level } : null,
+          expPerHour: this.hudIncome.value, update: release ? { newer: release.newer, latestVersion: release.latestVersion, dismissed: release.dismissed } : null };
+      }
       status() {
         const s = this.bridge.state(),
           battle = this.bridge.battle(),
@@ -6665,48 +6678,50 @@ button,input,select,textarea,summary,input[role=switch]::before{transition:color
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 button:hover,summary:hover{background-color:var(--hover)}button:active,summary:active{background-color:var(--pressed)}
 button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.4;cursor:default}
-.shell{display:flex;flex-direction:column;width:560px;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);background:var(--bg);border:1px solid var(--stroke);border-radius:8px;box-shadow:var(--shadow);pointer-events:auto;overflow:hidden}
-.head,.controls,.summary,.group-tabs,.footer{flex-shrink:0}.head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--divider)}.head strong{font-size:14px;font-weight:600}
+.shell{display:flex;flex-direction:column;position:fixed;left:max(12px,calc((100vw - 760px)/2));top:max(12px,calc((100vh - 600px)/2));width:760px;height:min(600px,calc(100vh - 24px));max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);background:var(--bg);border:1px solid var(--stroke);border-radius:8px;box-shadow:var(--shadow);pointer-events:auto;overflow:hidden}
+.head,.footer{flex-shrink:0}.head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--divider)}.head strong{font-size:14px;font-weight:600}
 .head-title{display:flex;align-items:center;flex-wrap:wrap;gap:8px;flex:1;min-width:0}.head .version{height:28px;padding:0 8px;border:1px solid transparent;border-radius:4px;background:transparent;font-size:12px;color:var(--text-2);white-space:nowrap}.head .version:disabled{cursor:default;background:transparent}.head .version.has-update{color:var(--accent-text);background:var(--accent-soft)}.head .version.has-update:hover{background:var(--hover)}.head .version.has-update:active{background:var(--pressed)}
 .btn{height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--stroke);background:var(--control)}.btn:hover{background:var(--hover)}.btn:active{background:var(--pressed)}
-.btn.primary,.launcher{background:var(--accent);color:var(--on-accent);border-color:transparent;font-weight:600}.btn.primary:hover,.launcher:hover{background:var(--accent-hover)}.btn.primary:active,.launcher:active{background:var(--accent);transform:translateY(1px)}.btn.warn{color:var(--warn);border-color:var(--warn)}
+.btn.primary{background:var(--accent);color:var(--on-accent);border-color:transparent;font-weight:600}.btn.primary:hover{background:var(--accent-hover)}.btn.primary:active{background:var(--accent);transform:translateY(1px)}.btn.warn{color:var(--warn);border-color:var(--warn)}
 .btn.subtle,.text-button,.icon-button{background:transparent;color:var(--accent-text);border:1px solid transparent;border-radius:4px}.btn.subtle:hover,.text-button:hover,.icon-button:hover{background:var(--hover)}.btn.subtle:active,.text-button:active,.icon-button:active{background:var(--pressed)}
 .icon-button{width:28px;height:28px;padding:0;flex:none}.text-button{height:28px;padding:0 4px;margin-left:auto;white-space:nowrap}
-.controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:12px 16px 8px}.controls .btn{padding:0 4px}
-.summary{margin:0 16px 12px;padding:12px;background:var(--surface);border:1px solid var(--stroke);border-radius:6px}.status-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.status-label{display:flex;align-items:center;gap:8px}.role-name{color:var(--text-2);min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dot{width:8px;height:8px;background:var(--text-3);border-radius:50%;flex-shrink:0}.dot.on{background:var(--ok)}.reason{padding-top:4px;font-size:15px;font-weight:600;overflow-wrap:anywhere}
+.hud{position:fixed;right:12px;top:12px;display:flex;align-items:center;gap:6px;height:40px;max-width:calc(100vw - 24px);padding:0 6px 0 12px;border:1px solid var(--stroke);border-radius:999px;background:var(--surface);box-shadow:var(--shadow);pointer-events:auto;z-index:1}
+.hud,.head{touch-action:none;user-select:none;cursor:move}.hud-reason{max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}.hud-income,.hud-update{white-space:nowrap}.sep{height:16px;border-left:1px solid var(--divider)}.dot.warn{background:var(--warn)}.dot.err{background:var(--err)}
+.summary{margin:0;padding:12px;background:var(--surface);border:1px solid var(--stroke);border-radius:6px}.status-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.status-label{display:flex;align-items:center;gap:8px}.role-name{color:var(--text-2);min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dot{width:8px;height:8px;background:var(--text-3);border-radius:50%;flex-shrink:0}.dot.on{background:var(--ok)}.reason{padding-top:4px;font-size:15px;font-weight:600;overflow-wrap:anywhere}
 .figures{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--divider)}.figure span{display:block;font-size:11px;color:var(--text-2)}.figure strong{font-weight:600;overflow-wrap:anywhere}
 .facts{display:grid;row-gap:4px;margin:8px 0 0;padding-top:8px;border-top:1px solid var(--divider)}.facts>div{display:grid;grid-template-columns:2em minmax(0,1fr);column-gap:12px}.facts dt{color:var(--text-2);white-space:nowrap}.facts dd{margin:0;min-width:0;text-align:left;overflow-wrap:anywhere}.summary-login{margin-top:4px;font-size:12px;color:var(--text-2)}
 .tabs{display:flex;gap:4px}.tabs button{position:relative;flex:none;height:34px;border:0;background:transparent;color:var(--text-2);padding:0 12px;border-radius:4px;white-space:nowrap}.tabs button:hover{background:var(--hover)}.tabs button:active{background:var(--pressed)}.tabs button.active{color:var(--text);font-weight:600}
-.group-tabs{margin:0 16px 4px}.group-tabs button.active::before{content:'';position:absolute;left:12px;right:12px;bottom:0;height:3px;border-radius:4px;background:var(--accent)}.tabs button.has-update::after{content:'';display:inline-block;width:6px;height:6px;margin-left:4px;vertical-align:middle;border-radius:50%;background:var(--accent)}
-.main{display:grid;grid-template-columns:112px minmax(0,1fr);min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--divider)}.page-tabs{flex-direction:column;min-height:0;padding:8px;background:var(--surface-alt);border-right:1px solid var(--stroke);overflow:auto}.page-tabs button{text-align:left;padding:0 8px;overflow:hidden;text-overflow:ellipsis}.page-tabs button.active{background:var(--surface)}.page-tabs button.active:hover{background:var(--hover)}.page-tabs button.active:active{background:var(--pressed)}.page-tabs button.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:4px;background:var(--accent)}
-.body{padding:12px;max-height:min(62vh,600px);overflow:auto;min-height:0;min-width:0}.group{background:var(--surface);border:1px solid var(--stroke);border-radius:6px;margin-top:8px}.group:first-child{margin-top:0}.group>summary{display:flex;align-items:center;gap:8px;min-height:40px;padding:8px 12px;list-style:none;border-radius:4px;font-weight:600}.group>summary::-webkit-details-marker{display:none}.group>summary::after{content:'›';flex:none;color:var(--text-2);transform:rotate(0deg);transition:transform 120ms ease}.group[open]>summary::after{transform:rotate(90deg)}.section-title{min-width:0;flex:1}.section-state{font-size:12px;font-weight:400;color:var(--text-2);white-space:nowrap}.master{display:flex;align-items:center;flex:none}.section-content{padding:0 12px 8px;border-top:1px solid var(--divider)}
+.tabs .has-update::after{content:'';display:inline-block;width:6px;height:6px;margin-left:4px;vertical-align:middle;border-radius:50%;background:var(--accent)}
+.main{display:grid;grid-template-columns:190px minmax(0,1fr);min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--divider)}.page-tabs{flex-direction:column;min-height:0;padding:8px;background:var(--surface-alt);border-right:1px solid var(--stroke);overflow:auto}.page-tabs button{text-align:left;padding:0 8px;overflow:hidden;text-overflow:ellipsis}.page-tabs button.active{background:var(--surface)}.page-tabs button.active:hover{background:var(--hover)}.page-tabs button.active:active{background:var(--pressed)}.page-tabs button.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:4px;background:var(--accent)}
+.body{padding:12px;flex:1;overflow:auto;min-height:0;min-width:0}.group{background:var(--surface);border:1px solid var(--stroke);border-radius:6px;margin-top:8px}.group:first-child{margin-top:0}.group>summary{display:flex;align-items:center;gap:8px;min-height:40px;padding:8px 12px;list-style:none;border-radius:4px;font-weight:600}.group>summary::-webkit-details-marker{display:none}.group>summary::after{content:'›';flex:none;color:var(--text-2);transform:rotate(0deg);transition:transform 120ms ease}.group[open]>summary::after{transform:rotate(90deg)}.section-title{min-width:0;flex:1}.section-state{font-size:12px;font-weight:400;color:var(--text-2);white-space:nowrap}.master{display:flex;align-items:center;flex:none}.section-content{padding:0 12px 8px;border-top:1px solid var(--divider)}
 .field{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 8px;min-height:40px;padding:4px 0;border-bottom:1px solid var(--divider)}.field:last-child{border-bottom:0}.field-label{display:flex;align-items:center;gap:4px;min-width:0;white-space:nowrap}.field-label>span{overflow:hidden;text-overflow:ellipsis}.field-control{display:flex;align-items:center;gap:4px}.field.dependent{padding-left:12px}.field.disabled{opacity:.45}.instant,.field-error{grid-column:1/-1}.unit{font-size:11px;color:var(--text-2);white-space:nowrap}.instant{font-size:12px;color:var(--accent-text);margin-left:4px;white-space:nowrap}
-.control-input,.control-select{height:28px;border:1px solid var(--stroke);border-bottom-color:var(--stroke-strong);background:var(--control);border-radius:4px;padding:0 8px}.control-input{width:96px}.control-select{width:176px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
+.control-input,.control-select{height:28px;border:1px solid var(--stroke);border-bottom-color:var(--stroke-strong);background:var(--control);border-radius:4px;padding:0 8px}.control-input{width:96px}.control-select{width:auto;max-width:100%;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
 .control-input:hover,.control-select:hover,textarea:hover{background:var(--hover)}.control-input:active,.control-select:active,textarea:active{background:var(--pressed)}.control-input:focus,.control-select:focus,textarea:focus{border-bottom:2px solid var(--accent)}input::placeholder,textarea::placeholder{color:var(--text-3)}
 input[role=switch]{appearance:none;position:relative;width:40px;height:20px;margin:0;border:1px solid var(--stroke-strong);border-radius:12px;background:transparent;cursor:pointer;flex:none}input[role=switch]::before{content:'';position:absolute;top:50%;left:3px;width:12px;height:12px;border-radius:50%;background:var(--stroke-strong);transform:translateY(-50%)}input[role=switch]:checked{background:var(--accent);border-color:var(--accent)}input[role=switch]:checked::before{background:var(--on-accent);transform:translate(20px,-50%)}input[role=switch]:hover{background:var(--hover)}input[role=switch]:checked:hover{background:var(--accent-hover);border-color:var(--accent-hover)}input[role=switch]:hover::before{left:2px;width:14px;height:14px}input[role=switch]:active{background:var(--pressed)}input[role=switch]:checked:active{background:var(--accent)}
 .footer{display:flex;align-items:center;gap:8px;padding:8px 16px;border-top:1px solid var(--divider);background:var(--surface-alt)}.dirty{font-size:12px;color:var(--text-2);flex:1}.dirty.unsaved{color:var(--warn)}.footer .btn{height:28px;white-space:nowrap}
 .plan{padding:12px;border:1px solid var(--stroke);background:var(--surface);border-radius:6px;margin:8px 0}.plan small{display:block;color:var(--text-2);font-size:12px;margin-top:4px}.log{border-bottom:1px solid var(--divider);padding:8px 0;overflow-wrap:anywhere}.log time{font-size:11px;color:var(--text-3);margin-right:8px}.log.success{color:var(--ok)}.log.warning{color:var(--warn)}.log.error{color:var(--err)}
 textarea{width:100%;background:var(--control);border:1px solid var(--stroke);border-bottom-color:var(--stroke-strong);border-radius:4px;padding:8px;min-height:232px;resize:vertical}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-.launcher{display:none;height:32px;border:1px solid transparent;border-radius:16px;padding:0 16px;pointer-events:auto}.collapsed .shell{display:none}.collapsed .launcher{display:block}.error{color:var(--err);font-size:12px;min-height:20px}.field-error{color:var(--err);font-size:12px}[aria-invalid=true],[aria-invalid=true]:focus{border-color:var(--err)}
-.income-table{width:100%;border-collapse:collapse;font-size:12px}.income-table th,.income-table td{padding:4px;text-align:right;border-bottom:1px solid var(--divider)}.income-table th:first-child,.income-table td:first-child{text-align:left}.table-scroll{overflow-x:auto}.update-summary ul{padding-left:16px;margin:8px 0}.update-summary li{margin:4px 0}
+.error{color:var(--err);font-size:12px;min-height:20px}.field-error{color:var(--err);font-size:12px}[aria-invalid=true],[aria-invalid=true]:focus{border-color:var(--err)}
+.income-table{color:var(--text);width:100%;border-collapse:collapse;font-size:12px}.income-table th{color:var(--text-2)}.income-table th,.income-table td{white-space:nowrap;padding:4px;text-align:right;border-bottom:1px solid var(--divider)}.income-table th:first-child,.income-table td:first-child{text-align:left}.income-table td[title]:first-child{max-width:12em;overflow:hidden;text-overflow:ellipsis}.table-scroll{max-width:100%;overflow-x:auto}.update-summary ul{padding-left:16px;margin:8px 0}.update-summary li{margin:4px 0}
 .help{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;padding:0;margin-left:4px;flex:none;border:1px solid var(--stroke-strong);border-radius:50%;background:transparent;color:var(--text-3);font-size:11px;line-height:1;vertical-align:middle}
 .tooltip{position:fixed;z-index:1;max-width:280px;overflow:auto;padding:8px 12px;border:1px solid var(--stroke);border-radius:6px;background:var(--surface);box-shadow:var(--shadow);color:var(--text);font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none}
 .stat-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--divider);font-size:12px}.stat-row:last-child{border-bottom:0}.stat-label{color:var(--text-2);flex:none}.stat-value{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:4px;text-align:right;min-width:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .stat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0}.stat-tile{min-width:0;padding:8px;border:1px solid var(--stroke);border-radius:6px;background:var(--surface)}.stat-tile>span,.stat-tile>small{display:block;font-size:11px;color:var(--text-2)}.stat-tile>strong{display:block;font-size:18px;font-weight:600;overflow-wrap:anywhere}
 .chip{display:inline-flex;align-items:center;gap:4px;padding:1px 6px;border:1px solid var(--stroke);border-radius:4px;background:var(--surface-alt);font-size:11px;white-space:nowrap}.chips{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin:8px 0}.tone-neutral{color:var(--text-2)}.tone-ok{color:var(--ok)}.tone-warn{color:var(--warn)}.tone-err{color:var(--err)}.tone-accent{color:var(--accent-text)}
 .info-bar{display:flex;align-items:center;gap:8px;padding:8px;margin:8px 0;border:1px solid var(--stroke);border-radius:6px;background:var(--surface-alt);font-size:12px}.info-bar>span:first-child{font-weight:600;flex:none}.empty-state{padding:8px 0;color:var(--text-2);font-size:12px}.block-title{display:flex;align-items:center;gap:4px;margin:12px 0 4px;font-size:12px;font-weight:600}
-.info-bar:has(>.error:empty){display:none}
+.reason .info-bar>span:only-child{flex:1;min-width:0;font-weight:inherit}.info-bar:has(>.error:empty){display:none}
 .progress{padding:8px 0;font-size:12px}.progress [role=progressbar]{height:4px;margin-top:4px;border-radius:4px;background:var(--divider);overflow:hidden}.progress [role=progressbar]>span{display:block;height:100%;background:var(--accent)}
 .segmented{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}.segmented button{flex:1;padding:4px;border:1px solid var(--stroke);border-radius:4px;background:var(--control);font-size:12px;white-space:nowrap}.segmented button[aria-pressed=true]{background:var(--accent-soft);color:var(--accent-text);border-color:var(--accent)}.segmented button:hover{background:var(--hover)}
 .trend{display:block;width:100%;height:140px;overflow:visible}.chart-line{fill:none;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}.chart-area{fill:var(--accent-soft)}.chart-dot{fill:var(--surface);stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}.chart-grid{stroke:var(--divider);vector-effect:non-scaling-stroke}.chart-label{fill:var(--text-3);font-size:11px}.chart-range{fill:var(--hover)}.chart-hit{fill:transparent}.chart-guide{stroke:var(--stroke-strong);visibility:hidden;vector-effect:non-scaling-stroke}.chart-hour.tip-active .chart-guide{visibility:visible}.chart-hour:focus-visible{outline:none}.chart-hour:focus-visible .chart-dot{stroke-width:3}
 .formula-table td:last-child{font-family:Consolas,monospace;text-align:left;overflow-wrap:anywhere}.formula-table th:last-child{text-align:left}.quality-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text-3);margin-right:4px}.quality-1{background:var(--text-2)}.quality-2{background:oklch(from var(--accent) l c 250)}.quality-3{background:oklch(from var(--accent) l c 305)}.quality-4{background:var(--warn)}.quality-5{background:var(--err)}
-@media(max-height:600px){.facts .fact-detail{display:none}.reason{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary{padding:8px;margin-bottom:8px}.head{padding:8px 16px}.controls{padding-top:8px}}
-@media(max-width:639px){.shell{width:calc(100vw - 24px)}.main{display:flex;flex-direction:column}.page-tabs{flex-direction:row;flex-shrink:0;border-right:0;border-bottom:1px solid var(--stroke);overflow-x:auto}.page-tabs button{max-width:none}.body{flex:1}.status-label{font-size:12px}.role-name{font-size:12px}.field{grid-template-columns:minmax(0,1fr)}.field-control{justify-self:end}.group-tabs{margin-left:8px;margin-right:8px}.group-tabs button{padding:0 8px}.group-tabs button.active::before{left:8px;right:8px}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;scroll-behavior:auto!important}}`;
+.side,.content{display:flex;flex-direction:column;min-height:0;min-width:0}.side{background:var(--surface-alt)}.search-box{display:flex;padding:8px;gap:4px}.search-box input{min-width:0;width:100%}.page-tabs{flex:1}.group-heading{font-size:11px;color:var(--text-2);padding:6px 8px}.page-header{display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid var(--divider)}.dirty{text-align:right}.footer{justify-content:flex-end}.searching .active{opacity:.5}.field:has(select){display:flex;flex-wrap:wrap}.field:has(select) .field-label{flex:1}.field:has(select) .field-control{max-width:60%}.field:has(select) .field-error{width:100%}.search-field{position:relative;padding-bottom:20px}.search-field .breadcrumb{position:absolute;left:0;bottom:0;height:20px;font-size:11px}.current-status{padding:12px}.current-status .summary{padding:0;border:0}.current-status>.block-title{margin-top:0}.flash{animation:field-flash 600ms ease-out}@keyframes field-flash{from{background:var(--accent-soft)}}.hud-update,mark{background:var(--accent-soft);color:var(--accent-text)}
+@media(max-width:819px){.main{display:flex;flex-direction:column}.side{flex:none}.content{flex:1}.page-tabs{flex-direction:row;overflow-x:auto}.group-heading{white-space:nowrap;align-self:center}.page-tabs button{max-width:none}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}`;
     class Panel {
       constructor(controller) {
         this.controller = controller;
-        this.collapsed = false;
+        this.windowOpen = false;
+        this.query = '';
         this.bodyDirty = true;
         this.loadPanelState();
         this.section = this.panelState.page;
@@ -6735,7 +6750,17 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         document.documentElement.appendChild(this.host);
         this.root = this.host.attachShadow({ mode: 'open' });
         const light = this.uiState().theme === 'light';
-        this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div class="head-title"><strong>TL挂机助手</strong><button type="button" class="version" data-action="showUpdates" disabled>v0.3.2</button></div><button type="button" class="icon-button" data-action="theme" aria-label="切换浅色 / 深色主题" title="${light ? '切换深色主题' : '切换浅色主题'}">${light ? '☀' : '☾'}</button><button type="button" class="icon-button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary run-toggle" data-action="start">开始托管</button><button type="button" class="btn" data-action="stopBattle">停止战斗</button><button type="button" class="btn" data-action="preview">预览计划</button></div><div class="summary"></div>${this.navigationHTML()}<footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn subtle" data-action="revert" hidden>撤销</button><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        const icon = (action, glyph, label) => `<button type="button" class="icon-button" data-action="${action}" aria-label="${label}" title="${label}">${glyph}</button>`;
+        this.root.innerHTML = `<style>${CSS}</style><div class="hud"><span class="dot"></span><span class="hud-reason" role="button" tabindex="0"></span><button type="button" class="chip hud-update" data-action="showUpdates" hidden></button><span class="sep income-sep" hidden></span><span class="hud-income" hidden></span><span class="sep"></span>${icon('toggleRun','▶','开始托管')}${icon('stopBattle','■','停止战斗')}${icon('settingsWindow','⚙','打开设置')}</div>
+          <section class="shell" role="dialog" aria-label="TL挂机助手设置" hidden><header class="head"><div class="head-title"><strong>TL挂机助手</strong><button type="button" class="version" data-action="showUpdates" disabled>v0.3.2</button></div><button type="button" class="icon-button" data-action="theme" aria-label="切换浅色 / 深色主题" title="${light ? '切换深色主题' : '切换浅色主题'}">${light ? '☀' : '☾'}</button>${icon('close','✕','关闭设置')}</header>
+          <div class="main"><aside class="side"><div class="search-box"><input class="search control-input" aria-label="搜索设置" placeholder="搜索设置…">${icon('clearSearch','✕','清除搜索')}</div>${this.navigationHTML()}</aside><div class="content"><header class="page-header"><strong class="page-title"></strong><span class="dirty"></span></header><div class="body"></div><footer class="footer"><button type="button" class="btn subtle" data-action="revert" hidden>撤销</button><button type="button" class="btn" data-action="save">保存策略</button></footer></div></div></section>`;
+        this.hud = this.root.querySelector('.hud');
+        this.shell = this.root.querySelector('.shell');
+        this.search = this.root.querySelector('.search');
+        this.clearSearch = this.root.querySelector('[data-action="clearSearch"]');
+        this.clearSearch.hidden = true;
+        this.bindDrag('hud', this.hud, this.hud);
+        this.bindDrag('window', this.shell, this.root.querySelector('.head'));
         this.tooltip = document.createElement('div');
         this.tooltip.id = 'tl-panel-tooltip';
         this.tooltip.className = 'tooltip';
@@ -6743,7 +6768,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         this.tooltip.hidden = true;
         this.root.querySelector('.shell').appendChild(this.tooltip);
         this.versionChip = this.root.querySelector('.version');
-        const narrow = typeof window !== 'undefined' && window.matchMedia?.('(max-width: 639px)'),
+        const narrow = typeof window !== 'undefined' && window.matchMedia?.('(max-width: 819px)'),
           orientRail = () => {
             const rail = this.root.querySelector('.page-tabs'), orientation = narrow?.matches ? 'horizontal' : 'vertical';
             if (rail && rail.getAttribute('aria-orientation') !== orientation) rail.setAttribute('aria-orientation', orientation);
@@ -6756,6 +6781,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             e.stopPropagation();
             return;
           }
+          if (e.target.classList?.contains('hud-reason')) { this.openPage('status'); return; }
           const b = e.target.closest('button');
           if (!b) return;
           const action = b.dataset.action;
@@ -6768,21 +6794,16 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             this.savePanelState();
             return;
           }
-          if (action === 'showUpdates') {
-            if (b.disabled) return;
-            if (this.collapsed) {
-              this.collapsed = false;
-              this.root.querySelector('.wrap').classList.remove('collapsed');
-            }
-            this.selectPage('updates');
-            this.controller.paint(true);
+          if (action === 'showUpdates') { if (!b.disabled) this.openPage('updates'); return; }
+          if (action === 'settingsWindow' || action === 'close') { this.setWindow(!this.windowOpen); return; }
+          if (action === 'clearSearch') { this.setQuery(''); this.search.focus(); return; }
+          if (action === 'toggleRun') {
+            if (this.controller.enabled ?? this.hudRunning) this.controller.pause(undefined, true);
+            else this.controller.start();
+            this.controller.paint();
             return;
           }
-          if (b.classList.contains('launcher') || action === 'collapse') {
-            this.collapsed = this.root.querySelector('.wrap').classList.toggle('collapsed');
-            if (!this.collapsed) this.controller.paint(true);
-            return;
-          }
+          if (b.dataset.result != null) { this.openResult(Number(b.dataset.result)); return; }
           if (b.dataset.range || b.dataset.metric) {
             const state = this.uiState(), key = b.dataset.range ? 'range' : 'metric', value = b.dataset[key];
             if (state[key] !== value) {
@@ -6796,16 +6817,9 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             this.selectPage('score');
             return;
           }
-          if (b.dataset.group || b.dataset.tab) {
-            const group = groups.find(([id]) => id === b.dataset.group);
-            this.selectPage(group ? this.uiState().last[group[0]] || group[2][0][0] : b.dataset.tab);
+          if (b.dataset.tab) {
+            this.openPage(b.dataset.tab);
             if (this.section === 'settings') await this.queryDatabaseUsage();
-            return;
-          }
-          if (action === 'summary') {
-            this.uiState().expanded = !this.uiState().expanded;
-            this.savePanelState();
-            this.controller.paint();
             return;
           }
           if (['clearLogs', 'clearDatabase', 'clearStats', 'clearGearRejected', 'resetScoring'].includes(action) && !this.confirmAction(b)) return;
@@ -6867,6 +6881,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           this.controller.paint();
         });
         this.root.addEventListener('input', (e) => {
+          if (e.target === this.search) { this.setQuery(this.search.value); return; }
           const path = e.target.dataset.path;
           if (!path) return;
           const base = pathGet(TLPolicy.DEFAULTS, path);
@@ -6901,6 +6916,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           this.paintDirty();
         });
         this.root.addEventListener('keydown', (e) => {
+          if (e.target.matches('.hud-reason') && ['Enter', ' '].includes(e.key)) { e.preventDefault(); this.openPage('status'); return; }
           if (e.target === this.versionChip && ['Enter', ' '].includes(e.key)) {
             e.preventDefault();
             if (!e.repeat) this.versionChip.click();
@@ -6961,6 +6977,99 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         });
         this.controller.paint(true);
       }
+      setWindow(open) {
+        this.windowOpen = open;
+        this.shell.hidden = !open;
+        if (open) {
+          this.place('window', this.shell);
+          this.controller.paint(true);
+          this.search.focus();
+        } else {
+          this.hideTooltip();
+          if (this.query) this.bodyDirty = true;
+          this.setQuery('');
+          this.root.querySelector('[data-action="settingsWindow"]').focus();
+        }
+      }
+      openPage(page) {
+        this.setQuery('');
+        this.selectPage(page);
+        if (!this.windowOpen) this.setWindow(true);
+      }
+      place(key, element, requested) {
+        const position = requested || this.uiState()[key];
+        if (!position || element.hidden || typeof window === 'undefined') return;
+        const rect = element.getBoundingClientRect();
+        const x = Math.max(0, Math.min(position.x, window.innerWidth - rect.width));
+        const y = Math.max(0, Math.min(position.y, window.innerHeight - rect.height));
+        Object.assign(element.style, { left: x + 'px', top: y + 'px', right: 'auto' });
+        this.uiState()[key] = { x, y };
+        if (!requested && (x !== position.x || y !== position.y)) this.savePanelState();
+      }
+      bindDrag(key, element, handle) {
+        let drag, suppressClick = false;
+        this.place(key, element);
+        globalThis.window?.addEventListener('resize', () => this.place(key, element));
+        handle.addEventListener('pointerdown', (event) => {
+          suppressClick = false;
+          if (event.button !== 0 || event.target.closest('button')) return;
+          const rect = element.getBoundingClientRect();
+          event.target.setPointerCapture?.(event.pointerId);
+          drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
+        });
+        handle.addEventListener('pointermove', (event) => {
+          if (!drag || event.pointerId !== drag.id) return;
+          const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+          if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+          drag.moved = true;
+          this.place(key, element, { x: drag.left + dx, y: drag.top + dy });
+        });
+        const end = (event) => {
+          if (!drag || event.pointerId !== drag.id) return;
+          if (drag.moved) {
+            suppressClick = event.type !== 'pointercancel';
+            this.savePanelState();
+          }
+          drag = null;
+        };
+        handle.addEventListener('click', (event) => {
+          if (!suppressClick || event.detail === 0) return;
+          suppressClick = false;
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        handle.addEventListener('pointerup', end);
+        handle.addEventListener('pointercancel', end);
+        handle.addEventListener('dblclick', (event) => {
+          if (event.target.closest('button')) return;
+          delete this.uiState()[key];
+          Object.assign(element.style, { left: '', top: '', right: '' });
+          this.savePanelState();
+        });
+      }
+      statusTone(s) {
+        return s.pausedBySelf ? 'err' : s.enabled && s.connected && s.ready && s.role && s.reason !== '检测到手动操作，稍后继续' ? 'on' : 'warn';
+      }
+      paintHud() {
+        const now = Date.now();
+        if (!this.hud || now - (this.hudAt ?? -Infinity) < 1000) return;
+        this.hudAt = now;
+        const s = this.controller.hudStatus();
+        this.hudRunning = s.enabled;
+        const reason = this.hud.querySelector('.hud-reason'), rate = this.hud.querySelector('.hud-income');
+        if (reason.textContent !== s.reason) { reason.textContent = s.reason; reason.title = s.reason; }
+        this.hud.querySelector('.dot').className = 'dot ' + this.statusTone(s);
+        rate.hidden = this.hud.querySelector('.income-sep').hidden = s.expPerHour == null;
+        if (!rate.hidden) rate.textContent = '经验 ' + TLRuntime.statsNumber(s.expPerHour) + '/时';
+        const run = this.hud.querySelector('[data-action="toggleRun"]');
+        run.title = s.enabled ? '暂停托管' : '开始托管';
+        run.setAttribute('aria-label', run.title);
+        run.textContent = s.enabled ? '⏸' : '▶';
+        const chip = this.hud.querySelector('.hud-update');
+        chip.hidden = !(this.controller.prefs.updates.remind && s.update?.newer && !s.update.dismissed);
+        if (!chip.hidden) chip.textContent = '可更新 v' + s.update.latestVersion;
+        this.place('hud', this.hud);
+      }
       requestBody() {
         this.bodyDirty = true;
         this.controller.paint();
@@ -6969,7 +7078,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         let saved;
         try { saved = JSON.parse(localStorage.getItem(PANEL_KEY)); } catch {}
         const pages = groups.flatMap(([, , items]) => items.map(([id]) => id));
-        this.panelState = { page: pages.includes(saved?.page) ? saved.page : 'status', last: {}, sections: {}, expanded: saved?.expanded === true,
+        this.panelState = { page: pages.includes(saved?.page) ? saved.page : 'status', last: {}, sections: {},
           theme: saved?.theme === 'dark' ? 'dark' : 'light',
           range: ['recent', 'previous', 'today', 'day24'].includes(saved?.range) ? saved.range : 'recent',
           metric: ['exp', 'net', 'kills'].includes(saved?.metric) ? saved.metric : 'exp' };
@@ -6977,6 +7086,10 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           this.panelState.last[id] = items.some(([page]) => page === saved?.last?.[id]) ? saved.last[id] : items[0][0];
         for (const [key, value] of Object.entries(saved?.sections && typeof saved.sections === 'object' ? saved.sections : {}))
           if (pages.includes(key.split(':')[0]) && typeof value === 'boolean') this.panelState.sections[key] = value;
+        for (const key of ['hud', 'window']) {
+          const pos = saved?.[key];
+          if (Number.isFinite(pos?.x) && Number.isFinite(pos?.y)) this.panelState[key] = { x: pos.x, y: pos.y };
+        }
         this.panelStateJSON = JSON.stringify(this.panelState);
       }
       uiState() {
@@ -7004,27 +7117,19 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         this.requestBody();
       }
       navigationHTML() {
-        return '<nav class="tabs group-tabs" role="tablist" aria-label="功能分组">' + groups.map(([id, name]) =>
-          `<button type="button" role="tab" data-group="${id}" aria-selected="false" tabindex="-1">${name}</button>`).join('') +
-          '</nav><div class="main"><nav class="tabs page-tabs" role="tablist" aria-label="分组页面" aria-orientation="vertical">' + groups.flatMap(([, , items]) => items.map(([id, name]) =>
-            `<button type="button" role="tab" data-tab="${id}" aria-selected="false" tabindex="-1">${name}</button>`)).join('') +
-          '</nav><div class="body"></div></div>';
+        return '<nav class="tabs page-tabs" role="tablist" aria-label="设置页面" aria-orientation="vertical">' + groups.map(([group, name, items]) =>
+          `<strong class="group-heading" data-group="${group}">${name}</strong>` + items.map(([id, title]) =>
+            `<button type="button" role="tab" data-tab="${id}" aria-selected="false" tabindex="-1">${title}</button>`).join('')).join('') + '</nav>';
       }
       paintNavigation() {
-        const group = groups.find(([, , items]) => items.some(([id]) => id === this.section)) || groups[0];
-        const select = (button, active) => {
+        this.root.querySelectorAll('[data-tab]').forEach((button) => {
+          const active = button.dataset.tab === this.section;
           if (button.classList.contains('active') !== active) button.classList.toggle('active', active);
           if (button.getAttribute('aria-selected') !== String(active)) button.setAttribute('aria-selected', String(active));
           if (button.tabIndex !== (active ? 0 : -1)) button.tabIndex = active ? 0 : -1;
-        };
-        this.root.querySelectorAll('[data-group]').forEach((button) => select(button, button.dataset.group === group[0]));
-        this.root.querySelectorAll('[data-tab]').forEach((button) => {
-          if (!button.dataset.group) {
-            const hidden = !group[2].some(([id]) => id === button.dataset.tab);
-            if (button.hidden !== hidden) button.hidden = hidden;
-          }
-          select(button, button.dataset.tab === this.section);
         });
+        const header = this.root.querySelector('.page-title');
+        if (header) header.textContent = this.query ? '搜索结果' : groups.flatMap(([, , items]) => items).find(([id]) => id === this.section)?.[1] || '';
       }
       confirmAction(button) {
         this.confirmations ||= new Map();
@@ -7059,7 +7164,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
       paintDirty() {
         const count = this.changedPaths(this.pending, this.controller?.prefs || this.pending), dirty = count > 0;
         const line = this.root.querySelector('.dirty'), button = this.root.querySelector('[data-action="save"]'),
-          revert = this.root.querySelector('[data-action="revert"]'), text = dirty ? '有 ' + count + ' 项未保存的改动' : '配置已保存';
+          revert = this.root.querySelector('[data-action="revert"]'), text = dirty ? '有 ' + count + ' 项未保存的改动' : '';
         if (line && line.textContent !== text) line.textContent = text;
         if (line?.classList && line.classList.contains('unsaved') !== dirty) line.classList.toggle('unsaved', dirty);
         if (revert && revert.hidden !== !dirty) revert.hidden = !dirty;
@@ -7113,9 +7218,15 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           if (this.tipAnchor === icon && this.tipPinned) this.hideTooltip();
           else { this.showTooltip(icon); this.tipPinned = true; }
         });
-        this.root.addEventListener('keydown', (event) => {
-          if (event.key === 'Escape') this.hideTooltip();
-        });
+        const escape = (event) => {
+          if (event.key !== 'Escape' || !this.windowOpen) return;
+          event.stopPropagation();
+          if (this.tipAnchor) this.hideTooltip();
+          else if (this.query) { this.setQuery(''); this.search.focus(); }
+          else this.setWindow(false);
+        };
+        this.root.addEventListener('keydown', escape);
+        document.addEventListener('keydown', escape);
         this.root.addEventListener('scroll', (event) => {
           if (event.target.closest?.('.body')) this.hideTooltip();
         }, true);
@@ -7164,6 +7275,94 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           control = `<input type="${options.type === 'text' || Array.isArray(value) ? 'text' : 'number'}" class="control-input" ${attrs} value="${esc(Array.isArray(value) ? value.join(',') : value)}" min="${options.min ?? 0}" ${options.max != null ? 'max="' + options.max + '"' : ''} ${options.step != null ? 'step="' + options.step + '"' : ''} aria-label="${esc(label)}" aria-describedby="${described}" aria-invalid="${!!message}">`;
         return `<label class="field${dependency ? ' dependent' : ''}${disabled ? ' disabled' : ''}" for="${id}"><span class="field-label"><span>${esc(label)}</span>${this.help(options.help)}</span><span class="field-control">${control}${options.unit ? `<span class="unit">${esc(options.unit)}</span>` : ''}</span>${options.immediate ? '<span class="instant">即时生效</span>' : ''}<span class="field-error" id="${id}-error" aria-live="polite"${message ? '' : ' hidden'}>${esc(message)}</span></label>`;
       }
+      buildIndex(status, state) {
+        const entries = [], builder = Object.create(this);
+        builder.indexing = true;
+        for (const name of ['sellPreview', 'logUsageHTML', 'databaseHTML']) builder[name] = () => '';
+        for (const [, group, pages] of groups) for (const [page, pageName] of pages) {
+          builder.section = page;
+          const add = (kind, section, key, field = {}, extra = []) => {
+            const terms = [group, pageName, section, ...extra].flat().filter(Boolean).join(' ').toLowerCase();
+            entries.push({ kind, group, page, pageName, section, key, ...field, terms });
+          };
+          add('page', '', '');
+          if (page === 'status') add('section', '当前状态', '');
+          let fields = [];
+          builder.field = (label, path, options = {}) => {
+            fields.push({ label, path, options });
+            return '';
+          };
+          builder.sectionHTML = (title, content, first, options = {}) => {
+            const key = page + ':' + (options.id || title);
+            const master = fields[0];
+            const masterPath = master && (master.path.endsWith('.enabled') || master.label.includes('总开关')) ? master.path : null;
+            add('section', title, key, {}, [options.help || '', masterPath ? master.options.help : '']);
+            for (const field of fields) add('field', title, key, { ...field, masterPath }, [
+              field.label, field.options.help, field.options.unit, ...(field.options.choices || []).map(([, label]) => label),
+            ]);
+            fields = [];
+            return '';
+          };
+          builder.buildPage(status, state);
+        }
+        this.indexPending = this.pending;
+        this.indexRole = status.role?.id;
+        this.index = entries;
+      }
+      setQuery(query) {
+        if (this.query === query) return;
+        this.query = query;
+        this.search.value = query;
+        this.clearSearch.hidden = !query;
+        this.shell.classList.toggle('searching', !!query);
+        if (this.windowOpen) {
+          if (query && this.index && this.indexPending === this.pending) this.replaceBody(this.searchHTML());
+          else this.renderBody();
+        }
+      }
+      searchHTML() {
+        const terms = this.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        const matches = this.index.filter((entry) => terms.every((term) => entry.terms.includes(term)));
+        let html = '<div class="block-title">共 ' + matches.length + ' 项</div>', previous, fields = 0;
+        for (const entry of matches) {
+          if (entry.kind === 'field' && ++fields > 60) continue;
+          if (entry.page !== previous) {
+            html += '<h3 class="block-title">' + esc(entry.group + ' › ' + entry.pageName) + '</h3>';
+            previous = entry.page;
+          }
+          const action = ' type="button" class="breadcrumb text-button" data-result="' + this.index.indexOf(entry) + '"';
+          if (entry.kind !== 'field') {
+            html += this.statRow(entry.section || entry.pageName, '', { html: '<button' + action + '>打开</button>' });
+            continue;
+          }
+          const label = entry.label, folded = label.toLowerCase(), hit = Array(label.length).fill(false);
+          for (const term of terms) for (let i = folded.indexOf(term); i >= 0; i = folded.indexOf(term, i + 1)) hit.fill(true, i, i + term.length);
+          const marked = label.split('').map((c, i) => (hit[i] && !hit[i-1] ? '<mark>' : '') + esc(c) + (hit[i] && !hit[i+1] ? '</mark>' : '')).join('');
+          html += '<div class="search-field" data-parent="' + esc(entry.masterPath === entry.path ? '' : entry.masterPath || '') + '">' +
+            this.field(label, entry.path, entry.options).replace('<span>' + esc(label) + '</span>', () => '<span>' + marked + '</span>') +
+            '<button' + action + '>' + esc(entry.section) + '</button></div>';
+        }
+        return html + (!matches.length ? '<div class="empty-state">没有匹配的设置</div>' : fields > 60 ?
+          '<div class="empty-state">还有 ' + (fields - 60) + ' 项，请输入更多关键字</div>' : '');
+      }
+      openResult(index) {
+        const entry = this.index[index];
+        const key = entry.key || (entry.kind === 'page' && this.index.find((item) => item.page === entry.page && item.kind === 'section')?.key);
+        if (key) this.uiState().sections[key] = true;
+        this.section = entry.page;
+        this.rememberPage();
+        this.setQuery('');
+        if (entry.page === 'settings') this.queryDatabaseUsage();
+        const section = [...this.root.querySelectorAll('[data-section]')].find((node) => node.dataset.section === key);
+        const control = entry.path && this.root.querySelector('[data-path="' + entry.path + '"]');
+        const target = control ? control.closest('.field') || control.closest('summary') :
+          section || this.root.querySelector('.body').children[0];
+        if (target) {
+          target.scrollIntoView({ block: 'nearest' });
+          target.classList.toggle('flash', true);
+          setTimeout(() => target.classList.remove('flash'), 600);
+        }
+      }
       validationMessage(path, value, options = {}) {
         if (path === 'welfare.numbers') return TLPolicy.welfareNumbers(value) ? '' : '需要 3 个 1～25 的不同数字';
         if (typeof pathGet(TLPolicy.DEFAULTS, path) !== 'number' || options.choices) return '';
@@ -7183,15 +7382,15 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         if (error.hidden !== !message) error.hidden = !message;
       }
       syncFields() {
-        this.root.querySelectorAll('.group').forEach((section) => {
-          const master = section.querySelector('.master input'), state = section.querySelector('.section-state');
+        this.root.querySelectorAll('.group,.search-field').forEach((section) => {
+          const parent = section.dataset?.parent, master = section.querySelector('.master input'), state = section.querySelector('.section-state');
           if (state) {
             const text = master.checked ? '已开启' : '已关闭';
             if (state.textContent !== text) state.textContent = text;
           }
           section.querySelectorAll('[data-path]').forEach((control) => {
             const dependency = control.dataset.dependsOn,
-              disabled = !!((master && control !== master && !master.checked) ||
+              disabled = !!((parent && !pathGet(this.pending, parent)) || (master && control !== master && !master.checked) ||
                 (dependency && pathGet(this.pending, dependency) !== JSON.parse(control.dataset.dependsValue)));
             if (control.disabled !== disabled) control.disabled = disabled;
             const field = control.closest('.field');
@@ -7209,11 +7408,13 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         const key = this.section + ':' + (options.id || title), open = this.uiState().sections[key] ?? first,
           firstField = content.match(/^<label class="field[^>]*>[\s\S]*?<\/label>/)?.[0],
           master = firstField?.match(/<input\b[^>]*data-master="true"[^>]*>/)?.[0];
-        let summary = '<span class="section-title">' + esc(title) + this.help(options.help) + '</span>' + (options.extra || '');
+        const masterHelp = master && firstField.match(/data-tip="([^"]*)"/)?.[1];
+        const tips = [options.help && esc([options.help].flat().join('\n\n')), masterHelp].filter(Boolean);
+        const help = tips.length ? '<button type="button" class="help" aria-label="说明" data-tip="' + tips.join('\n\n') + '">?</button>' : '';
+        let summary = '<span class="section-title">' + esc(title) + help + '</span>' + (options.extra || '');
         if (master) {
-          const enabled = /\schecked(?:\s|>)/.test(master),
-            help = firstField.match(/<button\b[^>]*class="help"[^>]*>[\s\S]*?<\/button>/)?.[0] || '';
-          summary += help + '<span class="section-state">' + (enabled ? '已开启' : '已关闭') +
+          const enabled = /\schecked(?:\s|>)/.test(master);
+          summary += '<span class="section-state">' + (enabled ? '已开启' : '已关闭') +
             '</span><label class="master">' + master.replace(/ aria-describedby="[^"]*"/, '') + '</label>';
           content = content.slice(firstField.length);
           if (!enabled) content = content.replace(/<label class="field([^"]*)"([\s\S]*?)<\/label>/g, (_, classes, rest) =>
@@ -7291,10 +7492,9 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             '</span><span>· 平均 ' + Math.round(perf.avgMs) + '</span><span>· 最长 ' + Math.round(perf.maxMs) +
             ' 毫秒</span>', chip: perf.lastMs > 200 ? this.chip('偏慢', 'warn') : '' });
       }
-      renderBody(status = this.controller.status(), s = this.controller.bridge.state()) {
+      buildPage(status, s) {
         const f = (l, p, o) => this.field(l, p, o);
         const g = (title, content, first = false, options = {}) => this.sectionHTML(title, content, first, options);
-        this.bodyDirty = false;
         let html = '';
         if (this.section === 'stats') {
           html = this.statsHTML(status.stats, s?.maps, status);
@@ -7302,13 +7502,13 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           this.statsPaintAt = Date.now();
         }
         if (['score', 'scoreStatus', 'scoreStats', 'scoreFormula'].includes(this.section)) {
-          html = this.scoreHTML(status, TLPolicy.scoringDetail(s, this.pending));
+          html = this.scoreHTML(status, this.indexing ? null : TLPolicy.scoringDetail(s, this.pending));
           this.scoreKey = this.liveContentKey(html);
           this.scorePaintAt = Date.now();
         }
         if (this.section === 'status') {
           this.statusBudgetsKey = this.statusBudgetsHTML(status);
-          html = '<div class="login-status">' + (!s?.role?.id ? this.infoBar('请先在游戏里登录角色') : '') + '</div>' +
+          html = '<section class="group current-status"><div class="block-title">当前状态</div><div class="summary"></div><div class="actions"><button type="button" class="btn primary run-toggle" data-action="' + (status.enabled ? 'pause' : 'start') + '">' + (status.enabled ? '暂停托管' : '开始托管') + '</button><button type="button" class="btn" data-action="stopBattle">停止战斗</button><button type="button" class="btn" data-action="preview">预览计划</button></div></section><div class="login-status">' + (!s?.role?.id ? this.infoBar('请先在游戏里登录角色') : '') + '</div>' +
             g('今日预算', '<div class="status-budgets">' + this.statusBudgetsKey + '</div>', true, { help: [HELP.intro, HELP.budgetStatus] }) +
             g('运行状况', '<div class="runtime-status">' + this.runtimeHTML(status) + '</div>') +
             g('计划预览', '<div class="actions"><button class="btn" type="button" data-action="preview">预览下一步计划</button><button class="btn" type="button" data-action="diagnostics">导出当前诊断</button></div><div class="plan-list">' +
@@ -7539,6 +7739,17 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             f('新版本自动刷新启用', 'updates.autoApply'), true) +
             this.updateHTML(u);
         }
+        return html;
+      }
+      renderBody(status = this.controller.status(), s = this.controller.bridge.state()) {
+        this.bodyDirty = false;
+        if (this.windowOpen && (this.indexPending !== this.pending || this.indexRole !== status.role?.id)) this.buildIndex(status, s);
+        const html = this.query ? this.searchHTML() : this.buildPage(status, s);
+        this.replaceBody(html);
+        if (!this.query && this.section === 'status') this.paintSummary(status);
+      }
+      replaceBody(html) {
+        this.summaryHTML = null;
         for (const button of this.confirmations?.keys() || []) this.resetConfirmation(button);
         this.hideTooltip();
         this.root.querySelector('.body').innerHTML = html;
@@ -7692,9 +7903,9 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           f('详情和人物面板显示实战评分', 'market.tipScore', { help: '装备详情及人物面板' }) +
           f('逛摊按脚本排序', 'market.sort', { immediate: true, choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }), true);
       }
-      scoreTableHTML(headers, rows) {
+      scoreTableHTML(headers, rows, mapTable = false) {
         return '<div class="table-scroll"><table class="income-table"><thead><tr>' + headers.map((v) => '<th>' + esc(v) + '</th>').join('') +
-          '</tr></thead><tbody>' + rows.map((row) => '<tr>' + row.map((v) => '<td>' + (v && typeof v === 'object' && 'html' in v ? v.html : esc(v)) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+          '</tr></thead><tbody>' + rows.map((row) => '<tr>' + row.map((v, i) => (mapTable && i === 0 ? '<td title="' + esc(v) + '">' : '<td>') + (v && typeof v === 'object' && 'html' in v ? v.html : esc(v)) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
       }
       scoreDangerHTML(v) {
         const percent = (n) => (Number(n || 0) * 100).toFixed(1) + '%',
@@ -7869,12 +8080,12 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         ]);
         return this.sectionHTML('收益统计', this.rangeSwitch() + '<div class="stat-grid">' +
           tiles.map(([label, value, sub]) => this.statTile(label, value, sub)).join('') + '</div>' + this.trendHTML(stats), true, help) +
-          this.sectionHTML('按地图', this.scoreTableHTML(['地图', '战斗时长', '经验/时', '单倍经验/时', '金币/时', '药费/时', '净金币/时', '阵亡'], rows),
+          this.sectionHTML('按地图', this.scoreTableHTML(['地图', '战斗时长', '经验/时', '单倍经验/时', '金币/时', '药费/时', '净金币/时', '阵亡'], rows, true),
             false, { extra: this.chip('近 72 小时') }) +
           this.sectionHTML('当前消耗', this.consumptionHTML(stats, status) +
             '<button class="btn" type="button" data-action="clearStats">清空统计</button>');
       }
-      paintUpdates(u, status) {
+      paintUpdates(u) {
         const chip = this.versionChip, newer = !!u?.newer;
         if (chip) {
           const text = newer ? '可更新 v' + u.latestVersion : 'v' + (u?.currentVersion || '0.3.2'),
@@ -7893,44 +8104,22 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           if (tab.classList.contains('has-update') !== !!u?.newer) tab.classList.toggle('has-update', !!u?.newer);
           if (tab.textContent !== text) tab.textContent = text;
         }
-        if (
-          u?.newer &&
-          !u.dismissed &&
-          this.controller.prefs.updates.remind &&
-          !this.dirty &&
-          this.notifiedVersion !== u.latestVersion
-        ) {
-          this.notifiedVersion = u.latestVersion;
-          this.section = 'updates';
-          this.rememberPage();
-          this.collapsed = false;
-          this.root.querySelector('.wrap').classList.remove('collapsed');
-          this.renderBody(status || { updates: u }, null);
-        }
       }
       paint() {
-        if (!this.root) return;
-        if ((typeof document !== 'undefined' && document.hidden) || this.collapsed) {
-          const now = Date.now();
-          if (this.updatePaintAt == null || now - this.updatePaintAt >= 5000) {
-            this.updatePaintAt = now;
-            this.paintUpdates(this.controller.updates?.status());
-          }
-          return;
-        }
-        const s = this.controller.status(),
-          fmt = (n) =>
-            Math.abs(Number(n || 0)) >= 1e12
-              ? Number(n).toExponential(2)
-              : Number(n || 0).toLocaleString('zh-CN');
+        if (!this.root || (typeof document !== 'undefined' && document.hidden)) return;
+        this.paintHud();
+        if (this.windowOpen === false) return;
+        const s = this.controller.status();
         const u = s.updates;
-        this.updatePaintAt = Date.now();
-        this.paintUpdates(u, s);
+        const key = s.role?.id || '';
+        if (this.roleKey != null && key !== this.roleKey) { this.roleKey = key; this.bodyDirty = true; }
+        this.paintUpdates(u);
         if (this.bodyDirty) this.renderBody(s);
         if (!this.dirty && JSON.stringify(this.pending) !== JSON.stringify(this.controller.prefs)) {
           this.pending = TLPolicy.clone(this.controller.prefs);
           this.renderBody(s);
         }
+        if (this.query) { this.paintDirty(); return; }
         if (this.section === 'updates' && !this.dirty && this.updateKey !== JSON.stringify(u))
           this.renderBody(s);
         if (this.section === 'stats' && !this.dirty && Date.now() - this.statsPaintAt >= 5000 &&
@@ -7965,38 +8154,40 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           if (run.dataset.action !== action) run.setAttribute('data-action', action);
           if (run.textContent !== runText) run.textContent = runText;
         }
-        const expanded = this.uiState().expanded;
-        const fact = (label, value, detail = false, progress = null) => value == null || value === '' || !expanded ? '' :
-          `<div${detail ? ' class="fact-detail"' : ''}><dt>${label}</dt><dd${progress ? ' class="level-reason" data-code="' + esc(progress.code) + '"' : ''}>${progress ? this.infoBar(value) : String(value).split(' · ').map((part) => '<span>' + esc(part) + '</span>').join('<span aria-hidden="true"> · </span>')}</dd></div>`;
-        let summary = `<div class="status-line"><span class="status-label"><span class="dot ${s.enabled && s.ready ? 'on' : ''}"></span><span>${s.enabled ? '托管运行中' : '已暂停'} · ${s.ready ? '角色在线' : s.connected ? '等待角色' : '等待连接'}</span></span>${s.role ? `<span class="role-name" title="${esc(s.role.nickname)} · Lv.${esc(s.role.level)}">${esc(s.role.nickname)} · Lv.${esc(s.role.level)}</span>` : ''}<button type="button" class="text-button" data-action="summary" aria-expanded="${expanded}">${expanded ? '收起' : '展开'}</button></div><div class="reason">${this.infoBar(s.reason)}</div>`;
+        if (this.section === 'status') this.paintSummary(s);
+        if (this.section === 'budget') this.paintFragment('.legacy-experience', s.ledger?.unclassifiedExp ?
+          this.statRow('旧版未分类投入', this.formatAmount(s.ledger.unclassifiedExp), {
+            help: '旧版未分类投入 ' + this.formatAmount(s.ledger.unclassifiedExp) + '，已占用技能和冶炼预算；人物升级继续按等级目标执行。',
+          }) : '');
+        this.paintDirty();
+        this.paintLogs();
+        this.paintDatabase();
+      }
+      formatAmount(value) {
+        const number = Number(value || 0);
+        return Math.abs(number) >= 1e12 ? number.toExponential(2) : number.toLocaleString('zh-CN');
+      }
+      paintSummary(s) {
+        const tone = this.statusTone({ ...s, pausedBySelf: s.pausedBySelf ?? (!s.enabled && this.controller.lastPause?.byUser === false && !!this.controller.lastPause.reason) });
+        const fact = (label, value, detail = false, progress = null) => value == null || value === '' ? '' :
+          `<div class="stat-row${detail ? ' fact-detail' : ''}"><dt class="stat-label">${label}</dt><dd class="stat-value${progress ? ' level-reason' : ''}"${progress ? ' data-code="' + esc(progress.code) + '"' : ''}>${progress ? this.infoBar(value) : String(value).split(' · ').map((part) => '<span>' + esc(part) + '</span>').join('<span aria-hidden="true"> · </span>')}</dd></div>`;
+        let summary = `<div class="status-line"><span class="status-label"><span class="dot ${tone}"></span><span>${s.enabled ? '托管运行中' : '已暂停'} · ${s.ready ? '角色在线' : s.connected ? '等待角色' : '等待连接'}</span></span>${s.role ? `<span class="role-name" title="${esc(s.role.nickname)} · Lv.${esc(s.role.level)}">${esc(s.role.nickname)} · Lv.${esc(s.role.level)}</span>` : ''}</div><div class="reason">${tone === 'on' ? '<div class="info-bar tone-neutral"><span>' + esc(s.reason) + '</span></div>' : this.infoBar(s.reason, tone)}</div>`;
         if (s.role) {
           const income = s.stats?.summary?.recent;
           if (income?.wall >= 60000) summary += '<div class="figures">' +
             [['经验 / 时', income.exp], ['金币 / 时', income.gold + income.sell], ['药费 / 时', income.potion]]
-              .map(([label, value]) => `<div class="figure"><span>${label}</span><strong>${esc(TLRuntime.statsNumber(value * 3600000 / income.wall))}</strong></div>`).join('') + '</div>';
-          if (expanded) summary += '<dl class="facts">' +
-            fact('地图', s.map) + fact('金币', s.role.money == null ? null : fmt(s.role.money)) +
+              .map(([label, value]) => `<div class="figure stat-tile"><span>${label}</span><strong>${esc(TLRuntime.statsNumber(value * 3600000 / income.wall))}</strong></div>`).join('') + '</div>';
+          summary += '<dl class="facts">' +
+            fact('地图', s.map) + fact('金币', s.role.money == null ? null : this.formatAmount(s.role.money)) +
             fact('升级', s.levelUp?.reason, true, s.levelUp) + fact('技能', s.skillUp?.reason, true, s.skillUp) +
             fact('比武', s.arena ? `第 ${s.arena.rank} 名 · 挑战 ${s.arena.attempts}/${this.controller.prefs.arena.maxPerDay || '不限'} · 点赞 ${s.arena.liked ? '已' : '未'}` : null, true) +
             fact('珍兽', s.pets && [s.pets.count, s.pets.capacity, s.pets.active, s.pets.eggs].some((v) => v != null) ? `${s.pets.count ?? '?'} / ${s.pets.capacity ?? '?'} · ${s.pets.active ? '出战 ' + s.pets.active.pet.name + ' Lv.' + s.pets.active.pet.level : '未出战'} · 蛋 ${s.pets.eggs ?? '?'}` : null, true) +
             fact('暗器', s.hidden ? `Lv.${s.hidden.level} · 品质 ${s.hidden.quality}% · 砂 ${s.hidden.sand} · 玉 ${s.hidden.jade} · 印 ${s.hidden.seals}` : null, true) + '</dl>';
         } else summary += '<div class="summary-login">登录后读取当前角色</div>';
-        if (summary !== this.summaryHTML) {
+        if (this.root.querySelector('.summary') && summary !== this.summaryHTML) {
           if (this.tipAnchor?.closest('.summary')) this.hideTooltip();
           this.root.querySelector('.summary').innerHTML = summary;
           this.summaryHTML = summary;
-        }
-        if (this.section === 'budget') this.paintFragment('.legacy-experience', s.ledger?.unclassifiedExp ?
-          this.statRow('旧版未分类投入', fmt(s.ledger.unclassifiedExp), {
-            help: '旧版未分类投入 ' + fmt(s.ledger.unclassifiedExp) + '，已占用技能和冶炼预算；人物升级继续按等级目标执行。',
-          }) : '');
-        this.paintDirty();
-        this.paintLogs();
-        this.paintDatabase();
-        const key = s.role?.id || '';
-        if (key && key !== this.roleKey && !this.dirty) {
-          this.roleKey = key;
-          this.renderBody(s);
         }
       }
       download(name, value, type = 'application/json') {
