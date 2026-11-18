@@ -159,6 +159,7 @@
         skillBeforeLevel: false,
       },
       gear: {
+        profile: 'auto', assault: { enabled: true, autoDefense: true, defenseWeight: 1 },
         scoring: 'combat', targets: 'pool', autoDefense: true, defenseWeight: 0.5, enabled: true,
         minGainPercent: 1, allowBinding: true, fromWarehouse: true, weights: WEIGHTS,
         fieldCheck: true, fieldMinutes: 20, fieldDropPercent: 5,
@@ -292,6 +293,8 @@
       for (const key of ['scoreType', 'bagScoreType'])
         if (!['combat', 'power'].includes(p.market[key])) p.market[key] = 'combat';
       const defense = Number(p.gear.defenseWeight);
+      if (p.gear.profile !== 'auto' && !PROFILE_IDS.includes(p.gear.profile)) p.gear.profile = 'auto';
+      p.gear.assault.defenseWeight = Math.max(0, Math.min(1, p.gear.assault.defenseWeight));
       p.gear.targets = p.gear.targets === 'map' ? 'map' : 'pool';
       p.gear.autoDefense = typeof p.gear.autoDefense === 'boolean' ? p.gear.autoDefense : true;
       p.gear.defenseWeight = Number.isFinite(defense) ? Math.max(0, Math.min(1, defense)) : 0.5;
@@ -428,13 +431,48 @@
     function sellPlan(s, prefs, ledger, now = Date.now()) {
       return withScoringPass(s, () => sellPlanFrom(s, prefs, ledger, now));
     }
+    function loadoutProtection(s) {
+      const reasons = new Map(), profile = s.gearProfile;
+      for (const name of PROFILE_IDS)
+        for (const id of array(profile?.loadouts?.[name])) reasons.set(num(id), longLabel(name) + '的装备');
+      for (const id of array(profile?.pending)) reasons.set(num(id), longLabel(profile.worn) + '的装备');
+      return reasons;
+    }
     function sellPlanFrom(s, prefs, ledger, now) {
       const p = config(prefs), sell = [], keep = [],
         scores = new Map(),
         provisional = p.gear.scoring === 'combat' && combatWeights(s, p) === null,
         setIds = setTemplateIds(s), backups = new Set(),
         protectedGear = new Set([...gearRejected(s.gearRejected, now).map((e) => e.id), s.gearCheck?.oldItemId]);
-      if (p.sell.keepBestBackup)
+      const protection = loadoutProtection(s), reserve = new Map();
+      const available = ASSAULT_IDS.filter((id) => assaultAvailable(s, p, id));
+      if (available.length) {
+        const owned = [...array(s.equipments), ...array(s.warehouseEquips)];
+        for (const name of ['farm', ...available]) {
+          const view = profileView(s, p, name), best = new Map();
+          withScoringPass(view.state, () => {
+            const score = (e) => equipmentScore(e, view.state, view.prefs);
+            // Only bag items can be sold, so only they compete for a backup place.
+            for (const e of array(s.equipments)) {
+              const slot = num(template(e).slotType);
+              if (e.isEquipped) continue;
+              const value = score(e);
+              scores.set(e, Math.max(scores.get(e) ?? -Infinity, value));
+              if (slot < 1 || slot > 11) continue;
+              if (!best.has(slot) || value > best.get(slot).value) best.set(slot, { e, value });
+            }
+            for (const [slot, { e, value }] of best) {
+              if (p.sell.keepBestBackup && !reserve.has(num(e.id)))
+                reserve.set(num(e.id), '该部位' + (name === 'farm' ? '' : profileLabel(name)) + '最佳备用');
+              if (name === (s.gearProfile?.worn || 'farm') || reserve.has(num(e.id))) continue;
+              const baseline = owned.find((v) => num(template(v).slotType) === slot &&
+                array(s.gearProfile?.loadouts?.[name]).includes(num(v.id))) ||
+                owned.find((v) => v.isEquipped && num(template(v).slotType) === slot);
+              if (value > (baseline ? score(baseline) : 0)) reserve.set(num(e.id), longLabel(name) + '更优');
+            }
+          });
+        }
+      } else if (p.sell.keepBestBackup)
         for (let slot = 1; slot <= 11; slot++) {
           const best = array(s.equipments)
             .filter((e) => !e.isEquipped && num(template(e).slotType) === slot)
@@ -446,7 +484,7 @@
         if (eq.isEquipped) continue;
         const t = eq.equipTmpl, id = num(eq.id), tid = num(eq.tmplId || t?.id);
         // The first matching protection explains why this bag item cannot be sold.
-        const reason = provisional ? '实战评分还没有数据，暂不出售'
+        const reason = protection.get(id) || reserve.get(id) || (provisional ? '实战评分还没有数据，暂不出售'
           : protectedGear.has(id) ? '换装核对中或在换回名单'
           : eq.hiddenWeapon || num(t?.slotType) === 12 ? '暗器'
           : p.warehouse.enabled && warehouseEligible(eq, p, setIds) ? '符合存仓条件'
@@ -462,7 +500,7 @@
           : p.sell.keepTemplateIds.map(num).includes(tid) ? '在永不出售名单'
           : backups.has(id) ? '该部位最佳备用'
           : p.sell.keepCrafted && array(ledger?.keptEquipIds).includes(id) ? '托管新打造'
-          : '';
+          : '');
         if (reason) keep.push({ eq, reason });
         else sell.push(eq);
       }
@@ -687,7 +725,7 @@
       const gear = scoringKey([prefs.gear.scoring, prefs.gear.autoDefense, prefs.gear.defenseWeight]);
       if (scoringPass?.state === state && scoringPass.contexts.has(gear)) return scoringPass.contexts.get(gear);
       // Filler and artifact records retain metadata as well as the fields used in damage formulas.
-      const key = scoringKey([STAT_KEYS.map((k) => num(state.finalAttributes[k])), num(state.role?.level),
+      const key = scoringKey([state.scoringProfile, STAT_KEYS.map((k) => num(state.finalAttributes[k])), num(state.role?.level),
         weaponId(array(state.equipments).filter((e) => !!e.isEquipped)),
         array(state.skills).map((s) => [s.currentLevel, s.skillDetail]),
         state.monsters.map((m) => [m.category, m.level, m.base, m.weight]), array(state.artifactSkills),
@@ -794,10 +832,11 @@
         }
       }
       casts.push(cast(filler, filler ? Math.max(0, 1 - used) : 1));
-      const normal = state.monsters.filter((m) => m.category === 'MONSTER');
+      const normal = state.scoringProfile ? [] : state.monsters.filter((m) => m.category === 'MONSTER');
       const ctx = { me, ...enemyEffects(skills, state), targets: (normal.length ? normal : state.monsters).map((m) =>
         ({ level: num(m.level), base: copyScoringInput(m.base), weight: m.weight })), casts, buffs, buffMult, elementMult, statMult,
         tau, filler, rotation: casts.concat(buffCasts), artifactSkills: copyScoringInput(array(state.artifactSkills)),
+        ...(state.scoringProfile ? { profile: state.scoringProfile } : {}),
         memos: { equipment: new Map(), gain: new Map(), stat: new Map(), character: new Map() },
         defenseWeight: prefs.gear.autoDefense && Number.isFinite(state.survival?.weight)
           ? state.survival.weight : prefs.gear.defenseWeight };
@@ -1282,6 +1321,12 @@
           ? ok
           : fail('缺少该装备等级所需的可用强化精华');
       }
+      if (a.type === 'WAREHOUSE_DEPOSIT' || a.type === 'SMITHY_SMELT_START' || a.type === 'SHOP_SELL_BATCH' ||
+          (a.type === 'SHOP_SELL' && payload.bagItemId == null)) {
+        const protectedIds = loadoutProtection(s);
+        if ([payload.roleEquipId, ...array(payload.roleEquipIds)].some((id) => protectedIds.has(num(id))))
+          return fail('方案装备已保留');
+      }
       if (a.type === 'SMITHY_SMELT_START') {
         const eq = equipment(payload.roleEquipId);
         return eq &&
@@ -1431,6 +1476,82 @@
       );
     }
     const RINGS_MAP_IDS = [20100, 20101, 20102];
+    const ASSAULT_PROFILES = {
+      rings: { label: '三环', longLabel: '攻坚方案·新三环', maps: RINGS_MAP_IDS, reference: ringsTargets,
+        survival: (s) => s.profileStats?.rings?.survival, waiting: '三环：等待怪物数据（56 级开放）' },
+      tower: { label: '浮屠', longLabel: '攻坚方案·无相浮屠', maps: [20070], reference: towerTargets,
+        survival: () => ({ weight: 1 }), waiting: '浮屠：等待试炼数据' },
+    };
+    const ASSAULT_IDS = Object.keys(ASSAULT_PROFILES), PROFILE_IDS = ['farm', ...ASSAULT_IDS];
+    const profileLabel = (name) => ASSAULT_PROFILES[name]?.label || '挂机';
+    const longLabel = (name) => ASSAULT_PROFILES[name]?.longLabel || '挂机方案';
+    const mapProfile = (id) => ASSAULT_IDS.find((name) => ASSAULT_PROFILES[name].maps.includes(num(id)));
+    const profileLocked = (s) => !!(s.rings?.run || s.trial?.run || mapProfile(s.role?.mapId));
+    const profileWearable = (eq, s, p) => !!eq && num(template(eq).slotType) !== 12 &&
+      num(template(eq).reqLevel) <= num(s.role?.level) && (eq.isBound || !num(template(eq).bindOnEquip) || p.gear.allowBinding);
+    const ringsMaps = (s) => array(s?.maps).filter((m) =>
+      RINGS_MAP_IDS.includes(num(m.id)) && num(m.reqLevel) <= num(s.role?.level));
+    function keptFloors(records, now = Date.now()) {
+      const ordered = array(records).filter((f) => f?.number > 0 && array(f.enemies).length)
+        .sort((a, b) => b.at - a.at);
+      if (!ordered.length) return [];
+      const highest = ordered.filter((f) => now - f.at <= 7 * 86400000).sort((a, b) => b.number - a.number).slice(0, 5);
+      return highest.includes(ordered[0]) ? highest : [...highest, ordered[0]];
+    }
+    function towerTargets(s) {
+      const floors = keptFloors(s?.towerFloors);
+      const list = floors.flatMap((floor) => {
+        const hp = floor.enemies.reduce((sum, e) => sum + num(e.base.hp), 0);
+        return floor.enemies.map((e) => ({ ...e, category: 'TOWER', weight: hp ? num(e.base.hp) / hp / floors.length : 0 }));
+      });
+      return { source: list.length ? 'tower' : 'none', floors: floors.map((f) => f.number), mapIds: [], list };
+    }
+    function ringRefs(map) {
+      return [['monsters', 'monsterId', 'MONSTER'], ['leaders', 'leaderId', 'LEADER'], ['bosses', 'bossId', 'BOSS']]
+        .flatMap(([list, key, category]) => array(map[list]).map((v) => ({ id: num(v[key]), category, count: num(v.count) })));
+    }
+    function ringsTargets(s) {
+      const groups = [], mapIds = [];
+      for (const map of ringsMaps(s)) {
+        const refs = ringRefs(map), entries = refs.map((r) => s.monsterTemplates?.get?.(r.category + ':' + r.id));
+        if (!entries.length || entries.some((e) => !e)) continue;
+        const hp = refs.map((r, i) => r.count * num(entries[i].base.hp)), total = hp.reduce((a, b) => a + b, 0);
+        if (!total) continue;
+        mapIds.push(map.id);
+        groups.push(entries.map((e, i) => ({ ...e, weight: hp[i] / total })));
+      }
+      const list = groups.flat();
+      for (const entry of list) entry.weight /= groups.length;
+      return { source: list.length ? 'rings' : 'none', mapIds, list };
+    }
+    function assaultTargets(s, name) {
+      return ASSAULT_PROFILES[name].reference(s);
+    }
+    function assaultAvailable(s, p, name) {
+      return !!s && !!p.gear?.assault?.enabled && p.gear.scoring === 'combat' && assaultTargets(s, name).source !== 'none';
+    }
+    // Snapshots copy inventory and role records on every tick. Equal records can reuse a view;
+    // store-backed collections with methods keep their own identity.
+    function equalSnapshot(a, b) {
+      if (a === b) return true;
+      if (!a || !b || typeof a !== 'object' || typeof b !== 'object' ||
+          Object.getPrototypeOf(a) !== Object.getPrototypeOf(b) || typeof a.get === 'function' ||
+          typeof a.has === 'function') return false;
+      const keys = Object.keys(a);
+      return keys.length === Object.keys(b).length && keys.every((k) => Object.hasOwn(b, k) && equalSnapshot(a[k], b[k]));
+    }
+    const profileViews = new Map();
+    function profileView(s, p, profile) {
+      if (!ASSAULT_IDS.includes(profile) || !s) return { state: s, prefs: p };
+      const { list, ...scoreTargets } = assaultTargets(s, profile), previous = profileViews.get(profile);
+      const view = { state: { ...s, scoringProfile: profile, monsters: list, scoreTargets,
+        aoeTargets: s.profileStats?.[profile]?.alive ?? 1, survival: ASSAULT_PROFILES[profile].survival(s) ?? null },
+        prefs: { ...p, gear: { ...p.gear, scoring: 'combat', autoDefense: p.gear.assault.autoDefense,
+          defenseWeight: p.gear.assault.defenseWeight } } };
+      if (previous && equalSnapshot(view, previous)) return previous;
+      profileViews.set(profile, view);
+      return view;
+    }
     const RING_NAMES = ['黄金之链', '玄佛珠', '熔岩之地'];
     const ringStage = (stage) => '第' + (stage + 1) + '环「' + RING_NAMES[stage] + '」';
     function ringsStatus(s, prefs, daily) {
@@ -1446,7 +1567,16 @@
         stopped: (!daily?.roundOpen && num(daily?.rounds) >= prefs.rings.roundsPerDay) ||
           num(daily?.refusals) >= 3, at: r?.at ?? null };
     }
-    function ringsPlan(s, p, daily, now) {
+    function gearProfileTarget(s, p, ledger, now) {
+      if (profileLocked(s)) return s.gearProfile?.worn || 'farm';
+      if (!p.gear.enabled || p.gear.profile === 'farm') return 'farm';
+      if (p.gear.profile !== 'auto') return assaultAvailable(s, p, p.gear.profile) ? p.gear.profile : 'farm';
+      if (!assaultAvailable(s, p, 'rings')) return 'farm';
+      const daily = ledger?.rings?.day === s.rings?.day ? ledger?.rings : null;
+      return ringsPlan(s, p, daily, now, { ignoreRefresh: true })?.payload.action === 'enter' ? 'rings' : 'farm';
+    }
+    const gearChange = (a) => a.family === 'gear' && ['EQUIP_ITEM', 'WAREHOUSE_WITHDRAW'].includes(a.type);
+    function ringsPlan(s, p, daily, now, { ignoreRefresh = false, hasGearAction } = {}) {
       if (!p.rings?.enabled || !num(s.role?.id) || num(s.role.level) < 56 || s.activity || s.arenaMatch?.active ||
           s.trial?.run || [20050, 20051, 20052, 20070].includes(num(s.role.mapId))) return null;
       const r = s.rings, status = ringsStatus(s, p, daily);
@@ -1462,12 +1592,12 @@
       // the character must never stand idle there.
       const unconfirmedRun = r.run && RINGS_MAP_IDS.includes(num(s.role?.mapId)) &&
         Number.isFinite(s.ringsDirtyAt) && now - s.ringsDirtyAt > 15000;
-      if (s.ringsDirty && !unconfirmedRun) return query();
+      if (!ignoreRefresh && s.ringsDirty && !unconfirmedRun) return query();
       if (r.run) {
         if (s.ringsFighting || !RING_NAMES[r.run.stage] || now - (s.ringsStartAt ?? -Infinity) < 5000) return null;
         return action('COMBAT_START', {}, '新三环：挑战' + ringStage(r.run.stage), 'rings', { noResponse: true });
       }
-      if (now - r.at > p.rings.refreshMinutes * 60000) return query();
+      if (!ignoreRefresh && now - r.at > p.rings.refreshMinutes * 60000) return query();
       if (s.gearCheck || arenaRush(p, now) || num(daily?.refusals) >= 3 || !num(r.townId)) return null;
       let next;
       if (p.rings.claimInbox && status.pending > 0) next = request('inbox', '领取暂存奖励');
@@ -1482,7 +1612,10 @@
         if (!next && !status.done && !status.stopped &&
             (!status.roundOpen || status.retries < status.maxRetries)) next = request('enter', '从第一环开始');
       }
-      return next && now - r.at > 60000 ? query() : next;
+      if (!ignoreRefresh && next && now - r.at > 60000) return query();
+      if (!ignoreRefresh && next?.payload.action === 'enter' && gearProfileTarget(s, p, { rings: daily }, now) === 'rings' &&
+          (s.gearProfile?.worn !== 'rings' || array(s.gearProfile?.pending).length || hasGearAction?.())) return null;
+      return next;
     }
     const FARM_MAP_EXCLUDED_IDS = [20050, 20051, 20052, 20060, 20061, 20070, ...RINGS_MAP_IDS];
     function farmMap(map) {
@@ -1509,7 +1642,8 @@
       return total;
     }
     function gearCheckStart(a, before, s, buckets, prefs, now) {
-      if (a.type !== 'EQUIP_ITEM' || a.family !== 'gear' || a.gearSwapBack || s.gearCheck ||
+      if (a.type !== 'EQUIP_ITEM' || a.family !== 'gear' || a.gearSwapBack || a.profileSwitch ||
+          ASSAULT_IDS.includes((s.gearProfile || before.gearProfile)?.worn) || s.gearCheck ||
           !config(prefs).gear.fieldCheck || !farmMap(roleMap(s)) || num(before.role.id) !== num(s.role.id)) return null;
       const item = array(before.equipments).find((e) => num(e.id) === num(a.payload.roleEquipId));
       if (!item || item.isEquipped || !array(s.equipments).some((e) => num(e.id) === num(item.id) && e.isEquipped)) return null;
@@ -1658,6 +1792,17 @@
       const danger = Math.max(sustain, burst, death);
       return { weight: Math.round(clamp(share + danger) * 100) / 100,
         share, ratio, low, deaths, hours, sustain, burst, death, danger, safe: danger === 0 };
+    }
+    function assaultWeight(totals, healPerSecond, failed = false) {
+      failed = !!failed || num(totals?.deaths) > 0;
+      const battle = num(totals?.battle);
+      if (!failed && (battle < 300000 || !(healPerSecond > 0))) return null;
+      const ratio = battle && healPerSecond > 0 ? Math.min(1, num(totals.hpLost) / (battle / 1000) / healPerSecond) : 0;
+      const low = battle ? num(totals.low) / battle : 0;
+      const sustain = Math.max(0, (ratio - SUSTAIN_LINE) / (1 - SUSTAIN_LINE)), burst = Math.min(1, low / LOW_HP_SHARE);
+      const danger = Math.max(sustain, burst);
+      return { weight: failed ? 1 : Math.round(Math.max(0.5, danger) * 100) / 100,
+        ratio, low, sustain, burst, danger, failed, hours: battle / 3600000, safe: !failed && !danger };
     }
     function healPerSecond(s) {
       return potionEffect(potionChoices(s, 'HP')[0], 'HP') / 3;
@@ -2106,11 +2251,12 @@
       return { ...result, ready: true };
     }
     function plans(s, prefs, ledger, now = Date.now()) {
-      return withScoringPass(s, () => plansFrom(s, prefs, ledger, now));
+      const p = config(prefs), name = s?.gearProfile?.worn;
+      const view = profileView(s, p, ASSAULT_IDS.includes(name) && assaultAvailable(s, p, name) ? name : 'farm');
+      return withScoringPass(view.state, () => plansFrom(view.state, view.prefs, ledger, now, s, p));
     }
-    function plansFrom(s, prefs, ledger, now) {
-      const p = config(prefs),
-        out = [];
+    function plansFrom(s, p, ledger, now, farmState, farmPrefs) {
+      const out = [], materials = !ASSAULT_IDS.includes(s?.gearProfile?.worn);
       if (!s?.role || !num(s.role.id)) return out;
       const add = (a) => {
         if (allowed(a, s, p, ledger) && materialCheck(a, s, p).ok) {
@@ -2123,19 +2269,25 @@
         equipped = array(s.equipments).filter((e) => !!e.isEquipped);
       const ring = ringsPlan(s, p, ledger.rings?.day === s.rings?.day ? ledger.rings : null, now);
       if (p.rings?.enabled && num(role.level) >= 56 && s.rings?.run) return ring ? [ring] : [];
-      const rejected = new Set(gearRejected(s.gearRejected, now).map((e) => e.id)),
-        protectedGear = new Set([...rejected, s.gearCheck?.oldItemId]);
-      if (s.gearCheck?.verdict?.state === 'worse') {
+      const protection = loadoutProtection(s), pending = array(s.gearProfile?.pending);
+      const rejected = new Set(materials ? gearRejected(s.gearRejected, now).map((e) => e.id) : []),
+        protectedGear = new Set([...rejected, s.gearCheck?.oldItemId, ...protection.keys()]);
+      if (!profileLocked(s) && !pending.length && s.gearCheck?.verdict?.state === 'worse') {
         const rollback = gearCheckRollback(s.gearCheck, s);
         if (rollback) add(rollback);
       }
       const fields = array(s.maps).filter(fieldMap);
-      if (p.gear.scoring === 'combat' && fields.length &&
+      const missing = p.gear.assault.enabled && p.gear.scoring === 'combat' ? ringsMaps(s).flatMap(ringRefs)
+        .filter((r) => !s.monsterTemplates?.has?.(r.category + ':' + r.id)) : [];
+      if (p.gear.scoring === 'combat' && (fields.length || missing.length) &&
           // A monster the server does not return must not cause a request on every tick.
-          (now - num(s.monsterTemplatesAt) > 86400000 || (now - num(s.monsterTemplatesAt) > 1800000 && fields.some((m) =>
-            monsters(m).some((v) => !s.monsterTemplates?.has('MONSTER:' + v.monsterId)))))) {
+          (now - num(s.monsterTemplatesAt) > 86400000 || (now - num(s.monsterTemplatesAt) > 1800000 && (missing.length || fields.some((m) =>
+            monsters(m).some((v) => !s.monsterTemplates?.has('MONSTER:' + v.monsterId))))))) {
         const ids = [...new Set(fields.flatMap((m) => monsters(m).map((v) => v.monsterId)))];
-        add(action('GET_MONSTER_TMPL', { refs: ids.map((id) => ({ id, category: 'MONSTER' })) },
+        const refs = ids.map((id) => ({ id, category: 'MONSTER' }));
+        for (const { id, category } of missing)
+          if (!refs.some((r) => r.id === id && r.category === category)) refs.push({ id, category });
+        add(action('GET_MONSTER_TMPL', { refs },
           '读取怪物属性', 'read', { readOnly: true }));
       }
       if ((p.potions.enabled || p.gear.scoring === 'combat' && p.gear.autoDefense) && !array(s.potionTemplates).length)
@@ -2382,7 +2534,7 @@
             '暗器：' + name, 'trial', { responseType: 'TRIAL_RESPONSE', ...options });
           const hiddenEquip = townSafe && !equipped.some((e) => num(template(e).slotType) === 12) &&
             array(s.equipments).find((e) => !e.isEquipped && num(template(e).slotType) === 12);
-          if (hiddenEquip)
+          if (hiddenEquip && !profileLocked(s) && !pending.length)
             add(action('EQUIP_ITEM', { roleEquipId: num(hiddenEquip.id) },
               '穿戴暗器「' + template(hiddenEquip).name + '」', 'trial', { inBattle: true }));
           if (!trial || !Number.isFinite(trial.at) ||
@@ -2423,7 +2575,16 @@
 
       let gearChosenId = null;
       const warehouseSetIds = setTemplateIds(s);
-      if (p.gear.enabled && !s.gearCheck) {
+      if (pending.length && !profileLocked(s)) {
+        const id = num(pending[0]), bag = array(s.equipments).find((e) => num(e.id) === id),
+          warehouse = p.gear.fromWarehouse && array(s.warehouseEquips).find((e) => num(e.id) === id), eq = bag || warehouse;
+        if (profileWearable(eq, s, p) && !eq.isEquipped) {
+          gearChosenId = id;
+          add(action(bag ? 'EQUIP_ITEM' : 'WAREHOUSE_WITHDRAW', { roleEquipId: id },
+            longLabel(s.gearProfile.worn) + '：' + (bag ? '穿戴' : '取出') + '「' + template(eq).name + '」',
+            'gear', { inBattle: true, profileSwitch: s.gearProfile.worn }));
+        }
+      } else if (p.gear.enabled && !s.gearCheck && !profileLocked(s)) {
         const candidatesFrom = (items) => array(items)
           .filter(
             (e) =>
@@ -2480,7 +2641,7 @@
           );
       }
       if (p.sell.enabled) {
-        const sellable = sellPlan(s, p, ledger, now).sell;
+        const sellable = sellPlan(farmState, farmPrefs, ledger, now).sell;
         const batch = s.batchSell !== false, items = sellable.slice(0, 20);
         if (sellable.length >= (batch ? p.sell.batchMin : 1))
           add(
@@ -2554,7 +2715,7 @@
             );
         }
       }
-      if (p.gems.enabled) {
+      if (materials && p.gems.enabled) {
         if (p.gems.synth) {
           const grouped = new Map();
           for (const b of array(s.bagItems))
@@ -2709,7 +2870,7 @@
         }
       }
       if (p.smithy.enabled) {
-        if (p.smithy.appraisal) {
+        if (materials && p.smithy.appraisal) {
           const eq = equipped
             .concat(array(s.equipments).filter((e) => !e.isEquipped))
             .find(
@@ -2729,7 +2890,7 @@
               ),
             );
         }
-        if (p.smithy.enhance)
+        if (materials && p.smithy.enhance)
           for (const eq of equipped) {
             const next = num(eq.enhanceLevel) + 1;
             if (next > p.smithy.targetEnhance || ENHANCE_RATE[next] < p.smithy.minEnhanceSuccess)
@@ -2751,7 +2912,7 @@
                 ),
               );
           }
-        if (p.smithy.smelt) {
+        if (materials && p.smithy.smelt) {
           if (num(role.smeltingItemId) > 0 && num(role.smeltingTargetExp) > 0) {
             const remaining = num(role.smeltingTargetExp) - num(role.smeltingExp);
             if (remaining <= 0)
@@ -2784,7 +2945,7 @@
             const eq = array(s.equipments)
               .filter((e) => !e.hiddenWeapon && num(template(e).slotType) !== 12 &&
                 (!p.warehouse.enabled || !warehouseEligible(e, p, warehouseSetIds)) &&
-                (p.smithy.allowSmeltEquipped || !e.isEquipped))
+                !protection.has(num(e.id)) && (p.smithy.allowSmeltEquipped || !e.isEquipped))
               .find(
                 (e) =>
                   num(template(e).slotType) === 1 &&
@@ -2820,7 +2981,7 @@
                 ),
               );
           }
-        if (p.smithy.forge)
+        if (materials && p.smithy.forge)
           for (const section of array(s.bagItems)) {
             if (num(section.count) <= 0 || num(section.itemId) < 5044 || num(section.itemId) > 5049)
               continue;
@@ -2866,7 +3027,7 @@
             }
           }
       }
-      if (p.craft.enabled) {
+      if (materials && p.craft.enabled) {
         if (p.craft.exchange) {
           const names = ['御赐精纺套', '御赐熟铜套', '御赐精钢套', '御赐黄金套', '御赐混沌套'];
           for (let index = 4; index >= 0; index--) {
@@ -2932,6 +3093,9 @@
           }
         }
       }
+      if (ring?.payload.action === 'enter' && out.includes(ring) && out.some(gearChange) &&
+          gearProfileTarget(farmState, farmPrefs, ledger, now) === 'rings')
+        out.splice(out.indexOf(ring), 1);
       for (const a of out) {
         if (a.type === 'LEVEL_UP') a.key += ':level=' + num(role.level);
         else if (a.type === 'UPGRADE_SKILL')
@@ -3172,7 +3336,9 @@
       gemCharm,
       roleMap,
       townFor,
-      RINGS_MAP_IDS, RING_NAMES, ringStage, ringsStatus, ringsPlan,
+      RINGS_MAP_IDS, ASSAULT_PROFILES, ASSAULT_IDS, PROFILE_IDS, longLabel, mapProfile, keptFloors,
+      assaultTargets, assaultWeight, assaultAvailable, profileView, gearProfileTarget,
+      combatSignature, profileLabel, profileLocked, profileWearable, gearChange, RING_NAMES, ringStage, ringsStatus, ringsPlan,
       farmMap,
       fieldMap,
       gearCheckStart, gearCheckAfter, gearCheckVerdict, gearCheckRestored, gearCheckRollback, gearRejected, gearCheckText,
@@ -3478,7 +3644,20 @@
       if (!held || now - held.at >= 60000 || held.mapId !== s.lastMapId ||
           (held.survival === null) !== (survival === null))
         bridge.scoringHold = { at: now, mapId: s.lastMapId, survival, aoeTargets: s.aoeTargets };
-      return { aoeTargets: bridge.scoringHold.aoeTargets, monsters: selected.list, scoreTargets: { source: selected.source, mapIds: selected.mapIds },
+      const profileStats = {};
+      if (!untracked && prefs.gear.assault?.enabled && prefs.gear.scoring === 'combat') {
+        for (const id of P.ASSAULT_IDS) profileStats[id] = { alive: bridge.cache.profileTargets?.[id]?.alive ?? 1 };
+      }
+      if (profileStats.rings && P.assaultAvailable(s, prefs, 'rings')) {
+        const result = bridge.cache.rings?.rings?.lastSettlement, failed = !!result && result.reason !== '通关';
+        const pressure = bridge.profilePressure?.('rings'), lost = failed || P.num(pressure?.deaths) > 0;
+        const hold = bridge.ringsHold;
+        if (!hold || hold.role !== s.role?.id || now - hold.at >= 60000 || hold.lost !== lost)
+          bridge.ringsHold = { at: now, role: s.role?.id, lost, survival: P.assaultWeight(pressure, heal, failed),
+            alive: bridge.cache.profileTargets?.rings?.alive ?? 1 };
+        profileStats.rings = bridge.ringsHold;
+      }
+      return { ...(untracked ? {} : { profileStats }), aoeTargets: bridge.scoringHold.aoeTargets, monsters: selected.list, scoreTargets: { source: selected.source, mapIds: selected.mapIds },
         monsterTemplates: s.monsterTemplates, monsterTemplatesAt: bridge.cache.monsterTemplatesAt,
         survivalReason: !heal ? 'potions' : pressure?.battle < 1800000 ? 'data' : undefined,
         survival: bridge.scoringHold.survival };
@@ -3771,6 +3950,10 @@
           this.cache.monsterTemplatesAt = monsters.at;
         }
         const saved = readStorage(PREFIX + ':targets', null);
+        this.cache.profileTargets = Object.fromEntries(P.ASSAULT_IDS.map((id) => {
+          const alive = readStorage(PREFIX + ':alive:' + id, null) ?? undefined;
+          return [id, { alive, aliveSaved: alive }];
+        }));
         this.cache.targets = { mapId: null, list: new Map() };
         if (saved && Number.isFinite(saved.mapId) && Array.isArray(saved.list) &&
             saved.list.every((e) => Array.isArray(e) && e.length === 2 &&
@@ -3912,16 +4095,18 @@
             if (this.ringsCombat && packet.data?.stage !== 'running') this.invalidateRings();
             this.ringsCombat = packet.data?.stage === 'running';
           }
+          const assaultMap = type === 'COMBAT_STATE' && P.mapProfile(this.character()?.role?.mapId);
           if (type === 'COMBAT_STATE' && packet.data?.stage === 'running' &&
-              Array.isArray(packet.data.monsterSlots) && P.farmMap(P.array(this.character()?.maps).find(
-                (map) => P.num(map.id) === P.num(this.character()?.role?.mapId)))) {
+              Array.isArray(packet.data.monsterSlots) && (assaultMap || P.farmMap(P.array(this.character()?.maps).find(
+                (map) => P.num(map.id) === P.num(this.character()?.role?.mapId))))) {
             const alive = packet.data.monsterSlots.filter((m) => m && !m.isDead && m.currentHp > 0).length;
-            const targets = this.cache.targets;
+            const targets = assaultMap ? ((this.cache.profileTargets ||= {})[assaultMap] ||= {}) : this.cache.targets;
             targets.alive = targets.alive === undefined ? alive : targets.alive + 0.02 * (alive - targets.alive);
             // Packets arrive about three times a second; store the mean only after a visible change.
             if (targets.aliveSaved === undefined || Math.abs(targets.alive - targets.aliveSaved) >= 0.25) {
               targets.aliveSaved = targets.alive;
-              writeStorage(PREFIX + ':targets', { mapId: targets.mapId, list: Array.from(targets.list), alive: targets.alive });
+              if (assaultMap) writeStorage(PREFIX + ':alive:' + assaultMap, targets.alive);
+              else writeStorage(PREFIX + ':targets', { mapId: targets.mapId, list: Array.from(targets.list), alive: targets.alive });
             }
           }
           if (type === 'COMBAT_STATE' && Array.isArray(packet.data?.monsterSlots) &&
@@ -4059,8 +4244,20 @@
           const match = type === 'ARENA_STATE' ? data :
             type === 'ARENA_RESPONSE' && data?.action === 'challenge' ? data.battle : null;
           if (match) this.cache.arenaMatch = { ...copy(match), at: Date.now() };
-          if (type === 'TRIAL_RESPONSE' && data?.trial)
-            this.cache.trial = { trial: copy(data.trial), at: Date.now() };
+          if (type === 'TRIAL_RESPONSE' && data?.trial) {
+            const trial = data.trial, at = Date.now(), role = this.character()?.role?.id;
+            const ended = this.cache.trial?.trial?.run && trial.run === null;
+            this.cache.trial = { trial: copy(trial), at };
+            if (role && trial.floor?.number > 0 && P.array(trial.floor.enemies).length) {
+              const { number, kind, enemies } = trial.floor;
+              const record = { number, kind, at, enemies: enemies.map((e) => ({ level: P.num(e.level),
+                base: Object.fromEntries(Object.keys(P.WEIGHTS).map((key) => [key, P.num(e.base?.[key])])) })) };
+              const floors = this.towerFloors(role).filter((f) => f.number !== number);
+              this.cache.towerFloors = P.keptFloors([record, ...floors], at);
+              writeStorage(PREFIX + ':towerFloors:' + role, this.cache.towerFloors);
+            }
+            if (ended) this.onTowerEnd?.();
+          }
           this.packetTypes.push({ type, time: this.lastMessage });
           this.packetTypes = this.packetTypes.slice(-40);
           const pending = this.pendingWaiters(), waiter = pending.find((w) => matchesResponse(w, packet));
@@ -4249,6 +4446,13 @@
             }
         return false;
       }
+      towerFloors(role) {
+        if (this.cache.floorRole !== role) {
+          this.cache.floorRole = role;
+          this.cache.towerFloors = P.keptFloors(readStorage(PREFIX + ':towerFloors:' + role, []));
+        }
+        return this.cache.towerFloors;
+      }
       state() {
         const c = this.character();
         if (!c?.role?.id) return null;
@@ -4280,6 +4484,7 @@
           welfareHistory: this.cache.welfareHistory || null,
           combat: this.statsRates?.() || null,
           arenaMatch: this.cache.arenaMatch || null,
+          towerFloors: this.towerFloors(r.id),
           trial: this.cache.trial ? { ...this.cache.trial.trial, at: this.cache.trial.at } : null,
           rings: this.cache.rings ? { ...this.cache.rings.rings, at: this.cache.rings.at } : null,
           ringsDirty: this.ringsEpoch !== this.ringsConfirmed,
@@ -5068,6 +5273,14 @@
       resetScoring() {
         this.stats?.resetPressure();
         this.bridge.scoringHold = null;
+        this.bridge.ringsHold = null;
+        this.bridge.cache.profileTargets = {};
+        for (const id of P.ASSAULT_IDS) writeStorage(PREFIX + ':alive:' + id, null);
+        const role = this.bridge.character?.()?.role?.id || this.bridge.cache.floorRole;
+        if (role) {
+          this.bridge.cache.towerFloors = [];
+          writeStorage(PREFIX + ':towerFloors:' + role, []);
+        }
         this.bridge.cache.monsterTemplates.clear();
         this.bridge.cache.monsterTemplatesAt = 0;
         writeStorage(PREFIX + ':monsters', null);
@@ -5115,6 +5328,7 @@
         this.bridge = new Bridge((text, level) => this.log(text, level));
         this.bridge.scoringNow = now;
         this.bridge.onMessage = (type, packet) => this.received(type, packet);
+        this.bridge.onTowerEnd = () => this.towerEnded();
         this.bridge.onLateResponse = (waiter, packet, elapsedMs) => this.lateResponse(waiter, packet, elapsedMs);
         this.bridge.recordStats = (packet) => {
           const own = this.bridge.character()?.role,
@@ -5130,6 +5344,7 @@
         };
         this.bridge.statsRates = () => this.stats?.rates() || null;
         this.bridge.scoringPrefs = () => this.prefs;
+        this.bridge.profilePressure = (name) => this.stats?.pressure((id) => P.mapProfile(id) === name);
         this.bridge.pressure = (maps) => this.stats?.pressure((id) => P.farmMap(P.array(maps).find((m) => P.num(m.id) === id)));
         window.addEventListener('pagehide', () => { this.stats?.flush(); this.flushLogs(); });
         this.bridge.onDisconnect = () => {
@@ -5167,6 +5382,11 @@
       ensureGearState(id, now = Date.now()) {
         if (!id || this.gearRoleId === id) return;
         this.gearRoleId = id;
+        const profile = readStorage(PREFIX + ':gearProfile:' + id, {}) || {};
+        this.gearProfile = { worn: P.PROFILE_IDS.includes(profile.worn) ? profile.worn : 'farm',
+          loadouts: Object.fromEntries(P.PROFILE_IDS.map((name) => [name, P.array(profile.loadouts?.[name])])),
+          pending: P.array(profile.pending), changedAt: P.num(profile.changedAt), mode: profile.mode,
+          failures: profile.failures || {}, changed: P.num(profile.changed), names: profile.names || {} };
         const saved = readStorage(PREFIX + ':gearCheck:' + id, null), check = saved?.check;
         this.gearCheck = check && Number.isFinite(check.startedAt) && check.before && check.base &&
           Array.isArray(check.worn) ? check : null;
@@ -5190,7 +5410,59 @@
           this.gearRejected = rejected;
           this.saveGearState();
         }
-        return { ...s, gearCheck: this.gearCheck, gearRejected: rejected };
+        return { ...s, gearCheck: this.gearCheck, gearRejected: rejected, gearProfile: this.gearProfile };
+      }
+      saveProfile() {
+        writeStorage(PREFIX + ':gearProfile:' + this.gearRoleId, this.gearProfile);
+      }
+      towerEnded() {
+        if (this.prefs.gear.profile !== 'tower') return;
+        this.prefs.gear.profile = 'auto';
+        writeStorage(CONFIG, this.prefs);
+        if (this.panel?.pending) this.panel.pending.gear.profile = 'auto';
+        this.log('无相浮屠结束，装备方案回到自动');
+      }
+      updateProfile(s, now) {
+        const g = this.gearProfile;
+        if (!g || P.profileLocked(s)) return;
+        const mode = this.prefs.gear.profile, target = P.gearProfileTarget({ ...s, gearProfile: g,
+          gearCheck: this.gearCheck, activity: this.activity || this.arenaPending }, this.prefs, { rings: this.ringsDaily(s.rings) }, now);
+        const bag = P.array(s.equipments), warehouse = P.array(s.warehouseEquips);
+        let switched = false, dirty = false;
+        if (target !== g.worn && (!g.changedAt || now - g.changedAt >= 60000 || mode !== g.mode)) {
+          const equipped = bag.filter((e) => e.isEquipped && P.num(P.template(e).slotType) !== 12);
+          for (const e of equipped) g.names[e.id] = P.template(e).name;
+          g.loadouts[g.worn] = equipped.map((e) => P.num(e.id));
+          this.log('装备方案：' + P.profileLabel(g.worn) + ' → ' + P.profileLabel(target) + '（' + (mode === 'auto' ? '新三环' : '手动') + '）');
+          g.pending = g.loadouts[target].filter((id) => !g.loadouts[g.worn].includes(id));
+          // The destination is restored once, including when coming back to farm.
+          Object.assign(g, { worn: target, changedAt: now, failures: {}, changed: 0 });
+          switched = dirty = true;
+        }
+        if (g.worn === 'farm' && !this.prefs.gear.assault.enabled)
+          for (const name of P.ASSAULT_IDS) if (g.loadouts[name].length) { g.loadouts[name] = []; dirty = true; }
+        if (mode !== g.mode) { g.mode = mode; dirty = true; }
+        const hadPending = g.pending.length;
+        g.pending = g.pending.filter((id) => {
+          const eq = bag.find((e) => P.num(e.id) === id), stored = warehouse.find((e) => P.num(e.id) === id);
+          if (eq?.isEquipped) g.changed++;
+          else {
+            const owned = eq || (this.prefs.gear.fromWarehouse && stored);
+            if (owned && P.profileWearable(owned, s, this.prefs) && !(g.failures[id] >= 2)) return true;
+            this.log('方案装备「' + (P.template(eq || stored).name || g.names[id] || id) + '」不在背包或仓库，已跳过');
+          }
+          dirty = true;
+          return false;
+        });
+        if ((switched || hadPending) && !g.pending.length)
+          this.log(P.longLabel(g.worn) + '已就绪（换装 ' + g.changed + ' 件）');
+        if (dirty) this.saveProfile();
+      }
+      profileFailure(a) {
+        const g = this.gearProfile, id = a.payload.roleEquipId;
+        if (!a.profileSwitch || !g?.pending.includes(id)) return;
+        g.failures[id] = P.num(g.failures[id]) + 1;
+        this.saveProfile();
       }
       gearStatus(s, now = Date.now()) {
         this.ensureGearState(P.num(s?.role?.id), now);
@@ -5235,7 +5507,7 @@
           return;
         }
         if (this.gearCheck) return;
-        this.gearCheck = P.gearCheckStart(a, before, after, this.stats?.buckets, this.prefs, now);
+        this.gearCheck = P.gearCheckStart(a, before, { ...after, gearProfile: this.gearProfile }, this.stats?.buckets, this.prefs, now);
         if (!this.gearCheck) return;
         this.stats?.flush();
         this.saveGearState();
@@ -5720,12 +5992,41 @@
               reason: '活动结束后继续人物升级',
             });
         }
+        const gear = this.gearStatus(s), mode = this.prefs.gear.profile,
+          worn = (s && this.gearProfile?.worn) || 'farm', rings = this.ringsDaily(s?.rings, roleId);
+        const scoring = (state, prefs) => ({ since: this.stats?.pressureFrom?.at ?? null, ...P.scoringStatus(state, prefs),
+          pending: prefs.gear.scoring === 'combat' && !P.combatWeights(state, prefs), weights: P.combatWeights(state, prefs) });
+        const status = { scoring: { mode: this.prefs.gear.scoring, aoeTargets: s?.aoeTargets, ...scoring(s, this.prefs) } };
+        const scores = { farm: { ...status.scoring } };
+        status.scoring.profiles = scores;
+        const profiles = P.PROFILE_IDS.map((id) => {
+          const available = id === 'farm' || P.assaultAvailable(s, this.prefs, id);
+          const why = available ? '' : !this.prefs.gear.assault.enabled ? '攻坚方案未启用' :
+            this.prefs.gear.scoring !== 'combat' ? '固定权重评分下没有攻坚方案' : P.ASSAULT_PROFILES[id].waiting;
+          if (id !== 'farm') {
+            scores[id] = null;
+            if (available) {
+              const view = P.profileView(s, this.prefs, id);
+              scores[id] = { mode: view.prefs.gear.scoring, aoeTargets: view.state.aoeTargets, ...scoring(view.state, view.prefs) };
+              if (id === 'tower') {
+                const floors = view.state.scoreTargets.floors;
+                Object.assign(scores[id], { floors, mapNames: floors.map((n) => '第 ' + n + ' 层'),
+                  highestFloor: s.trial?.highestFloor, lastDeathFloor: s.trial?.lastDeathFloor });
+              }
+            }
+          }
+          return { id, label: P.profileLabel(id), available, why };
+        });
         return {
           network: { timeoutMs: this.responseTimeout(),
             lateAnswers: (this.lateAnswers || []).filter((at) => Date.now() - at < 600000).length,
             pendingQueries: this.bridge.queryWaiters?.size ?? this.pendingQueries?.size ?? 0 },
           perf: this.perfStatus(),
-          gear: this.gearStatus(s),
+          gear,
+          gearProfile: { enabled: this.prefs.gear.enabled, profiles, mode, worn, pending: s ? P.array(this.gearProfile?.pending).length : 0,
+            target: s ? P.gearProfileTarget({ ...s, gearProfile: this.gearProfile, gearCheck: this.gearCheck,
+              activity: this.activity || this.arenaPending }, this.prefs, { rings }, Date.now()) : 'farm',
+            reason: mode === 'auto' ? '自动' : '手动' },
           stats: this.stats ? { summary: this.stats.summary(), rates: this.stats.rates(), series: this.stats.series() } : null,
           potions: Object.fromEntries(['HP', 'MP'].map((attr) => {
             const pick = s?.role ? P.potionPick(s, this.prefs, attr, Date.now()) : null;
@@ -5766,10 +6067,7 @@
           lastFailure: this.lastFailure ? copy(this.lastFailure) : null,
           updates: this.updates ? this.updates.status() : null,
           logs: this.logs.slice(0, this.prefs.logs.showCount),
-          scoring: { mode: this.prefs.gear.scoring, aoeTargets: s?.aoeTargets, since: this.stats?.pressureFrom?.at ?? null,
-            ...P.scoringStatus(s, this.prefs),
-            pending: this.prefs.gear.scoring === 'combat' && !P.combatWeights(s, this.prefs),
-            weights: P.combatWeights(s, this.prefs) },
+          ...status,
           pets: { count: s?.pets?.pets.length ?? null, capacity: s?.pets?.capacity ?? null,
             active: s?.pets?.pets.find((entry) => entry.pet.id === s.pets.activePetId) || null,
             eggs: s ? P.petEggs(s).reduce((sum, item) => sum + P.num(item.count), 0) : null,
@@ -5930,14 +6228,16 @@
         const petSignature = () => JSON.stringify(['pets', 'activePetId', 'pendingRewards']
           .map((key) => this.bridge.cache.pets?.state?.[key]));
         const petBefore = petSignature();
-        const before = this.bridge.state();
+        const snapshot = this.bridge.state(), before = snapshot && { ...snapshot, gearProfile: this.gearProfile };
         if (!before) return;
+        if (P.profileLocked(before) && (a.type === 'EQUIP_ITEM' || a.family === 'gear')) return;
         const ringsCommand = a.type === 'RINGS_COMMAND', ringsEpoch = this.bridge.ringsEpoch;
         if (a.family === 'rings') {
           const current = P.ringsPlan({ ...before, activity: this.activity || this.arenaPending,
             gearCheck: this.gearCheck, ringsStartAt: this.ringsStartAt,
             ringsFighting: !!before.rings?.run && (this.bridge.ringsCombat || this.bridge.battle().stage === 'running') },
-          this.prefs, this.ringsDaily(before.rings), Date.now());
+          this.prefs, this.ringsDaily(before.rings), Date.now(), {
+            hasGearAction: () => this.planningPass(before, this.prefs).some(P.gearChange) });
           if (!this.enabled || !current || current.key !== a.key ||
               (a.requiresTown && P.num(before.role.mapId) !== P.num(before.rings?.townId))) return;
           if (ringsCommand && !a.readOnly) a.payload.revision = before.rings.revision;
@@ -6002,6 +6302,7 @@
             P.recordExperience(this.ledger, a.type, extraExp);
           }
           const success = result.success ?? result.code === 200;
+          if (!success && a.profileSwitch) { this.profileFailure(a); return; }
           if (!success && trialClaim) {
             this.log(a.label + '：' + (result.message || '操作未成功'), 'warning');
             this.suppress(a, 1800000);
@@ -6126,6 +6427,7 @@
             this.suppress(a, 60000);
             return;
           }
+          if (a.profileSwitch && e.code === 'SERVER_ERROR') { this.profileFailure(a); return; }
           if (a.type === 'SHOP_SELL_BATCH') { this.batchFallback(); return; }
           if (a.family === 'pet' && String(e.message).includes('请先结束战斗')) {
             this.log(safeMessage(e.message), 'warning');
@@ -6294,6 +6596,7 @@
           return;
         }
         const rings = P.RINGS_MAP_IDS.includes(P.num(s.role.mapId));
+        if (!actionBlocked) this.updateProfile(s, now);
         const autoRings = this.prefs.rings?.enabled && P.num(s.role.level) >= 56;
         if (autoRings) {
           const mapId = P.num(s.role.mapId), prior = this.ringsMap, town = P.num(s.rings?.townId);
@@ -6313,8 +6616,10 @@
           const otherActivity = s.trial?.run || s.arenaMatch?.active || this.arenaPending ||
             [20050, 20051, 20052, 20070].includes(mapId) || this.activity?.mapId === mapId;
           if (!otherActivity && (s.rings?.run || !s.rings || s.ringsDirty)) {
-            const a = P.ringsPlan({ ...s, ringsFighting: fighting, ringsStartAt: this.ringsStartAt },
-              this.prefs, this.ringsDaily(s.rings), now);
+            const a = P.ringsPlan({ ...s, gearProfile: this.gearProfile, gearCheck: this.gearCheck,
+              ringsFighting: fighting, ringsStartAt: this.ringsStartAt },
+              this.prefs, this.ringsDaily(s.rings), now, {
+                hasGearAction: () => this.planningPass(s, this.prefs, now).some(P.gearChange) });
             if (s.rings?.run && fighting)
               this.reason = '新三环：' + P.ringStage(s.rings.run.stage) + '战斗中';
             if (this.activity) {
@@ -6985,7 +7290,7 @@
       limits: "三项每日额度及各功能的每日操作上限填 0 均表示不限（仍受保留金币、保留经验约束）。保存不会清零已用额度。托管暂停时，保存后需点击“开始托管”。",
       json: "修改后先载入，再保存。模板ID与评分权重均保存在本机配置中。",
       scoreLink: "评分方式、权重和计算公式在“评分”页。",
-      reset: "重置只影响自动生存权重用的实测数据和怪物属性缓存，统计页的收益数据不变。重置后战斗满 30 分钟前使用手动权重。",
+      reset: "清除攻坚群攻记录、怪物属性缓存和浮屠楼层，从现在起统计各方案的生存权重。统计页的收益数据不变。挂机需要 30 分钟战斗数据，三环需要 5 分钟或一次挑战失败。",
       points: "点数指装备上的点数，已计入被动技能的加成。详细说明见“计算公式”。",
       linear: "固定权重与游戏战力相同，可在高级JSON配置中调整。",
       reference: "评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。战斗数据不足 30 分钟时生存权重用手动值。",
@@ -7386,6 +7691,14 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             return;
           }
           if (b.dataset.result != null) { this.openResult(Number(b.dataset.result)); return; }
+          if (b.dataset.gearProfile && !b.disabled) {
+            const current = this.controller.prefs, profile = b.dataset.gearProfile;
+            this.pending.gear.profile = profile;
+            this.controller.updateConfig({ ...current, gear: { ...current.gear, profile } });
+            this.requestBody();
+            return;
+          }
+          if (b.dataset.scoreProfile) { this.scoreProfile = b.dataset.scoreProfile; this.requestBody(); return; }
           if (b.dataset.range || b.dataset.metric) {
             const state = this.uiState(), key = b.dataset.range ? 'range' : 'metric', value = b.dataset[key];
             if (state[key] !== value) {
@@ -8112,7 +8425,7 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
           this.statsPaintAt = Date.now();
         }
         if (['score', 'scoreStatus', 'scoreStats', 'scoreFormula'].includes(this.section)) {
-          html = this.scoreHTML(status, this.indexing ? null : TLPolicy.scoringDetail(s, this.pending));
+          html = this.profileScoreHTML(status, s);
           this.scoreKey = this.liveContentKey(html);
           this.scorePaintAt = Date.now();
         }
@@ -8191,6 +8504,8 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             f('技能最高等级', 'growth.maxSkillLevel', { unit: '级', dependsOn: 'growth.skills' }) +
             f('技能优先于人物升级', 'growth.skillBeforeLevel', { dependsOn: 'growth.skills' }) +
             f('优先技能模板ID', 'growth.skillPriority', { help: '逗号分隔', dependsOn: 'growth.skills' }), true) +
+            g('装备方案', '<div class="gear-profile-status">' + this.profileStatusHTML(status) + '</div>' +
+            f('启用攻坚方案', 'gear.assault.enabled', { help: '挂机方案按挂机地图的怪物评分。三环方案按新三环的小怪和首领评分，浮屠方案按无相浮屠最近打到的高层敌人评分，生存权重更高。自动挑战新三环前换上三环装，结束后换回。脚本不会自动进塔，进塔前点“浮屠”，试炼结束自动换回。自动出售时各方案里评分高的都会保留。' })) +
             g('装备选择',
             f('按评分自动穿戴', 'gear.enabled') +
             f('最低评分增益', 'gear.minGainPercent', { step: 0.1, unit: '%' }) +
@@ -8534,6 +8849,31 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
           (u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : '') +
           '</div>' + this.sectionHTML('自动安装', '', false, { help: HELP.install }) + '</div>';
       }
+      profileButtons(attribute, choices, selected, disabled = () => false) {
+        return '<div class="segmented" role="group" aria-label="装备方案">' + choices.map((name) =>
+          '<button type="button" data-' + attribute + '="' + name + '" aria-pressed="' + (name === selected) + '"' +
+          (disabled(name) ? ' disabled' : '') + '>' + (name === 'auto' ? '自动' : TLPolicy.profileLabel(name)) + '</button>').join('') + '</div>';
+      }
+      profileStatusHTML(status) {
+        const g = status.gearProfile || {}, mode = g.mode || this.pending.gear.profile;
+        const unavailable = (g.profiles || []).filter((profile) => !profile.available);
+        return this.statRow('当前穿戴', TLPolicy.longLabel(g.worn), { chip: this.chip(mode === 'auto' ? '自动' : '手动') +
+          (g.pending ? this.chip('切换中 ' + g.pending + ' 件') : '') }) +
+          [...new Set(unavailable.map((profile) => profile.why))].map((why) => this.infoBar(why)).join('') +
+          this.profileButtons('gear-profile', ['auto', ...TLPolicy.PROFILE_IDS], mode, (name) =>
+            !(g.enabled ?? this.controller?.prefs?.gear.enabled ?? this.pending.gear.enabled) || (TLPolicy.ASSAULT_IDS.includes(name) &&
+            !g.profiles?.some((profile) => profile.id === name && profile.available)));
+      }
+      profileScoreHTML(status, s) {
+        const choices = (status.gearProfile?.profiles || []).filter((v) => v.available).map((v) => v.id);
+        const switchable = choices.length > 1 && ['scoreStatus', 'scoreStats'].includes(this.section);
+        const selected = this.scoreProfile || status.gearProfile?.worn;
+        const name = switchable && choices.includes(selected) ? selected : 'farm';
+        const view = TLPolicy.profileView(s, this.pending, name);
+        const detail = this.indexing ? null : TLPolicy.scoringDetail(view.state, view.prefs);
+        return (switchable ? this.profileButtons('score-profile', choices, name) : '') +
+          this.scoreHTML(name === 'farm' ? status : { ...status, scoring: status.scoring.profiles[name] }, detail);
+      }
       scoreHTML(status, detail) {
         if (this.section === 'scoreStatus') return this.scoreLiveHTML(status, detail);
         if (this.section === 'scoreStats') return this.scoreAttributesHTML(detail);
@@ -8544,6 +8884,8 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
           f('评分参照怪物', 'gear.targets', { choices: [['pool', '可进入的最高 6 张挂机地图（推荐）'], ['map', '只看最近挂机的地图']] }) +
           f('自动调整生存权重', 'gear.autoDefense', { help: '按实测战况调整' }) +
           f('生存权重', 'gear.defenseWeight', { min: 0, max: 1, step: 0.1, help: '自动关闭或数据不足时使用；0 只看输出，1 输出与生存并重' }) +
+          f('攻坚：自动调整生存权重', 'gear.assault.autoDefense', { dependsOn: 'gear.assault.enabled' }) +
+          f('攻坚生存权重', 'gear.assault.defenseWeight', { min: 0, max: 1, step: 0.1, dependsOn: 'gear.assault.enabled', help: '自动关闭或数据不足时使用；默认 1，输出与生存并重' }) +
           f('逛摊淘宝显示装备评分', 'market.showScore') +
           f('背包和仓库图标显示评分', 'market.bagScore') +
           f('逛摊评分类型', 'market.scoreType', { dependsOn: 'market.showScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
@@ -8556,7 +8898,7 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
         return '<div class="table-scroll"><table class="income-table"><thead><tr>' + headers.map((v) => '<th>' + esc(v) + '</th>').join('') +
           '</tr></thead><tbody>' + rows.map((row) => '<tr>' + row.map((v, i) => (mapTable && i === 0 ? '<td title="' + esc(v) + '">' : '<td>') + (v && typeof v === 'object' && 'html' in v ? v.html : esc(v)) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
       }
-      scoreDangerHTML(v) {
+      scoreDangerHTML(v, isRings, settlement) {
         const percent = (n) => (Number(n || 0) * 100).toFixed(1) + '%',
           rows = [
             ['药费占收入', v ? percent(v.share) : '—', '0–100%', '—'],
@@ -8565,6 +8907,10 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             ['阵亡次数', v ? v.deaths + ' 次' : '—', '有阵亡时 0.5', v ? Number(v.death).toFixed(2) : '—'],
             ['战斗数据时长', v ? Number(v.hours).toFixed(1) + ' 小时' : '—', '至少 30 分钟', '—'],
           ];
+        if (isRings) {
+          rows[0] = ['最近挑战结果', settlement ? settlement.reason === '通关' ? '通关' : '失败' : '—', '失败时权重为 1', '—'];
+          rows.splice(3, 2, ['战斗数据时长（至少 5 分钟）', v ? (v.hours * 60).toFixed(1) + ' 分钟' : '—', '至少 5 分钟', '—']);
+        }
         return '<div class="block-title">危险度' + (v ? this.chip(Number(v.danger).toFixed(2), v.safe ? 'ok' : 'warn') : '') +
           '</div>' + this.scoreTableHTML(['指标', '当前', '标准', '危险度'], rows);
       }
@@ -8580,8 +8926,10 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             score.mapNames.map((name) => this.chip(name)).join('') : this.chip('等待数据') }) +
           this.statRow('生存权重', score.weight ?? this.pending.gear.defenseWeight, {
             chip: this.chip(score.auto ? '自动' : '手动') +
-              (survival ? this.chip(survival.safe ? '安全' : '有风险', survival.safe ? 'ok' : 'warn') : this.chip('等待数据')),
-          }) + this.scoreDangerHTML(survival);
+              (score.source === 'tower' ? '' : survival ? this.chip(survival.safe ? '安全' : '有风险', survival.safe ? 'ok' : 'warn') : this.chip('等待数据')),
+          }) + (score.source === 'tower' ? this.statRow('最高通关', (score.highestFloor ?? '—') + ' 层') +
+            this.statRow('上次死亡', (score.lastDeathFloor ?? '—') + ' 层') :
+            this.scoreDangerHTML(survival, score.source === 'rings', status.rings?.lastSettlement));
         if (pending) html += this.infoBar('实战评分等待战斗数据');
         if (score.autoDefense && !score.auto)
           html += this.infoBar(score.survivalReason === 'potions' ? '未读到生命药数据，用手动值；开始托管后自动读取' : '数据不足，用手动值');
@@ -8636,7 +8984,8 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
           labels = ['实战值', '分数', '单件装备分数', '人物实战评分', '每次伤害', '主伤害', '元素伤害', '命中与会心率',
             '会心伤害倍率', '会心起点', '会心上限', '技能减益', '技能倍数', '技能轮转', '神器技能', '自动生存权重', '危险度', '低血量'];
         return this.sectionHTML('计算公式', '<div class="formula-table">' +
-          this.scoreTableHTML(['项目', '公式'], lines.map((line, index) => [labels[index], line])) + '</div>', true,
+          this.scoreTableHTML(['项目', '公式'], lines.map((line, index) => [labels[index], line])) +
+          '</div>' + this.infoBar('三环内按小怪和首领的总气血加权，每环等重。失败后生存权重为 1，其余按实测危险度调整，最低 0.5。浮屠按最近打到的高层敌人评分，自动生存权重为 1。'), true,
           { help: [HELP.reference, HELP.defense] });
       }
       rangeSwitch() {
@@ -8774,13 +9123,14 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
         if (this.section === 'stats' && !this.dirty && Date.now() - this.statsPaintAt >= 5000 &&
           this.statsKey !== this.liveContentKey(this.statsHTML(s.stats, this.controller.bridge.state()?.maps, s))) this.renderBody(s);
         if (['scoreStatus', 'scoreStats'].includes(this.section) && !this.dirty && Date.now() - this.scorePaintAt >= 5000 &&
-          this.scoreKey !== this.liveContentKey(this.scoreHTML(s, TLPolicy.scoringDetail(this.controller.bridge.state(), this.pending)))) this.renderBody(s);
+          this.scoreKey !== this.liveContentKey(this.profileScoreHTML(s, this.controller.bridge.state()))) this.renderBody(s);
         if (this.section === 'battle') {
           this.paintFragment('.welfare-status', this.welfareHTML(this.controller.bridge.state(), s.ledger));
           this.paintFragment('.arena-status', this.arenaHTML(s.arena));
           this.paintFragment('.rings-status', this.ringsHTML(s.rings));
         }
         if (this.section === 'growth') {
+          this.paintFragment('.gear-profile-status', this.profileStatusHTML(s));
           this.paintFragment('.gear-check-status', this.gearCheckHTML(s.gear));
           this.paintFragment('.hidden-status', this.hiddenHTML(s.hidden));
         }
