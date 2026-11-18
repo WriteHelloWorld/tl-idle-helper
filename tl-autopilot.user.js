@@ -1437,7 +1437,12 @@
         key: 'rings:' + name + ':' + itemId,
       });
       const query = () => request('status', '查询状态');
-      if (!r || !Number.isFinite(r.at) || s.ringsDirty) return query();
+      if (!r || !Number.isFinite(r.at)) return query();
+      // With a known run on a ring map the fight starts even when the status stays unconfirmed for 15 s:
+      // the character must never stand idle there.
+      const unconfirmedRun = r.run && RINGS_MAP_IDS.includes(num(s.role?.mapId)) &&
+        Number.isFinite(s.ringsDirtyAt) && now - s.ringsDirtyAt > 15000;
+      if (s.ringsDirty && !unconfirmedRun) return query();
       if (r.run) {
         if (s.ringsFighting || !RING_NAMES[r.run.stage] || now - (s.ringsStartAt ?? -Infinity) < 5000) return null;
         return action('COMBAT_START', {}, '新三环：挑战' + ringStage(r.run.stage), 'rings', { noResponse: true });
@@ -3825,6 +3830,7 @@
         this.authFailed = false;
         this.welfareRequests = new Map();
         this.ringsRequests = new Map();
+        this.ringsRequestAt = new Map();
         const send = socket.send;
         const bridge = this;
         socket.send = function (data) {
@@ -3833,6 +3839,7 @@
               const packet = JSON.parse(data);
               if (packet.type === 'RINGS_COMMAND') {
                 bridge.ringsRequests.set(packet.payload?.requestId, packet.payload?.action);
+                bridge.ringsRequestAt.set(packet.payload?.requestId, Date.now());
                 if (packet.payload?.action !== 'status') bridge.invalidateRings();
               }
               if (packet.type === 'WELFARE_LOTTERY_COMMAND' && packet.payload?.requestId) {
@@ -3925,6 +3932,7 @@
             this.cache.trial = null;
             this.cache.rings = null;
             this.ringsRequests.clear();
+            this.ringsRequestAt.clear();
             this.ringsCombat = false;
             this.invalidateRings();
             this.cache.viewedPlayers = new Map();
@@ -3986,13 +3994,16 @@
           }
           const data = packet.data;
           if (type === 'RINGS_RESPONSE') {
-            // Some replies omit the UUID. Only a single outstanding command is attributable.
-            const outstanding = new Set(this.ringsRequests.keys());
-            for (const late of this.lateWaiters || [])
-              if (late.type === 'RINGS_COMMAND' && late.socket === socket && late.lateUntil > Date.now())
-                outstanding.add(late.requestId);
-            const id = data?.requestId ?? packet.requestId ??
-              (outstanding.size === 1 ? outstanding.values().next().value : null);
+            // The server does not echo the request id (seen live on 2026-11-18) and the game client sends its
+            // own status commands on a map change, so answers are matched to commands in the order sent.
+            const cutoff = Date.now() - 20000;
+            for (const [key, at] of this.ringsRequestAt)
+              if (at < cutoff) {
+                this.ringsRequestAt.delete(key);
+                this.ringsRequests.delete(key);
+              }
+            const id = data?.requestId ?? packet.requestId ?? this.ringsRequests.keys().next().value ?? null;
+            this.ringsRequestAt.delete(id);
             packet.ringsRequestId = id;
             if (this.ringsRequests.has(id) && this.ringsRequests.get(id) !== 'status') this.invalidateRings();
             this.ringsRequests.delete(id);
@@ -4101,6 +4112,7 @@
         return this.socket?.readyState === 1;
       }
       invalidateRings() {
+        if (this.ringsEpoch === this.ringsConfirmed || this.ringsDirtyAt == null) this.ringsDirtyAt = Date.now();
         this.ringsEpoch = (this.ringsEpoch || 0) + 1;
       }
       pinia() {
@@ -4250,6 +4262,7 @@
           trial: this.cache.trial ? { ...this.cache.trial.trial, at: this.cache.trial.at } : null,
           rings: this.cache.rings ? { ...this.cache.rings.rings, at: this.cache.rings.at } : null,
           ringsDirty: this.ringsEpoch !== this.ringsConfirmed,
+          ringsDirtyAt: this.ringsDirtyAt ?? null,
           combatPower: c.combatPower,
           warehouseEquipCount: Array.isArray(c.warehouseEquips) ? c.warehouseEquips.length : 0,
           warehouseEquips: copy(c.warehouseEquips) || [],
@@ -5402,13 +5415,16 @@
         const last = r.lastSettlement;
         const settlementKey = last && JSON.stringify([last.runId, last.stage]);
         if (last?.day === r.day && !d.settlements?.includes(settlementKey)) {
+          // The settlement found at the first look of the day happened before the script watched: no log line.
+          const seenBefore = !!d.settlements;
           (d.settlements ||= []).push(settlementKey);
           d.lastRunId = last.runId;
           d.lastResult = copy(last);
           const cleared = last.reason === '通关', result = cleared ? last.rewarded ?
             '通关，神兵符 绑定 ' + P.num(last.bound) + ' / 不绑定 ' + P.num(last.unbound) :
-            '通关，今日该环奖励已满' : '挑战失败（' + last.reason + '）';
-          this.log('新三环 ' + P.ringStage(last.stage) + '：' + result, cleared ? 'success' : 'warning');
+            '通关，今日该环奖励已满' : last.reason === '挑战失败' ? '挑战失败' : '挑战失败（' + last.reason + '）';
+          if (seenBefore || d.owned)
+            this.log('新三环 ' + P.ringStage(last.stage) + '：' + result, cleared ? 'success' : 'warning');
           changed = true;
         }
         if (d.owned && !r.run) {
@@ -6266,6 +6282,7 @@
             this.bridge.invalidateRings();
             if (this.ringsUiCombat && !active) this.bridge.ringsCombat = false;
             s.ringsDirty = true;
+            s.ringsDirtyAt = this.bridge.ringsDirtyAt;
           }
           this.ringsMap = mapId;
           this.ringsUiCombat = (rings || !!s.rings?.run) && active;
