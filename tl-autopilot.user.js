@@ -6477,19 +6477,20 @@
       updateConfig(value) {
         const previous = this.prefs;
         this.prefs = P.config(value);
-        // 配置作用范围切换的迁移：切「每角色独立」= 全局键保留模式并播种当前
-        // 角色键；切「共用」= 以保存者为准写全局键，并清掉各角色键（防止下次
+        // 配置作用范围切换的迁移：模式标记必须持久化到全局键（构造器与 setRole
+        // 的模式判定读的就是它——漏写会导致刷新后模式回落 shared、角色配置失效）。
+        // 切「每角色独立」= 全局键更新模式 + 以当前配置播种当前角色键；
+        // 切「共用」= 全局键更新模式并以保存者为准 + 清掉各角色键（防止下次
         // 切回独立时旧角色配置复活）。其他运行中页签在保存/刷新后跟随新模式
         if (this.prefs.roleConfig !== previous.roleConfig) {
+          writeStorage(CONFIG, this.prefs);
           if (this.prefs.roleConfig === 'per-role' && this.roleId)
             writeStorage(PREFIX + ':config:' + this.roleId, this.prefs);
-          else {
-            writeStorage(CONFIG, this.prefs);
+          else
             for (let i = localStorage.length - 1; i >= 0; i--) {
               const k = localStorage.key(i);
               if (k && k.startsWith(PREFIX + ':config:')) localStorage.removeItem(k);
             }
-          }
         }
         if (!this.prefs.disguise.enabled && this.panel?.cover) this.panel.toggleDisguise();
         if (previous.storage.indexedDB !== this.prefs.storage.indexedDB) this.logReady = this.syncLogStorage();
