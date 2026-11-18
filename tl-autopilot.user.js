@@ -3547,7 +3547,7 @@
     const P = TLPolicy,
       PREFIX = 'tl-autopilot-v1',
       CONFIG = PREFIX + ':config',
-      RUNNING = PREFIX + ':running';
+      RUNNING = PREFIX + ':running'; // 已退役：运行标记按角色分键（runningKey()）
     const conflictDocuments = new WeakSet();
     function showConflictNotice(win, doc) {
       const id = 'tl-idle-helper-conflict';
@@ -5801,10 +5801,14 @@
         this.perfRecent = [];
         this.prefs = P.config(readStorage(CONFIG, {}));
         writeStorage(CONFIG, this.prefs);
-        this.enabled = !!(
+        // 托管恢复判定移到首次 setRole（角色已知后读 :running:<roleId>）：
+        // 全局 running 键在多开时会让恢复跟随最后一个启停的页签
+        this.enabled = false;
+        this.resumeWanted = !!(
           (this.prefs.resumeAfterReload || this.prefs.reconnect.autoReload) &&
           readStorage(RUNNING, false)
         );
+        this.resumeDecided = false;
         this.reason = '等待游戏角色';
         const logs = readStorage(PREFIX + ':log', []);
         this.logs = P.logPrune(Array.isArray(logs) && logs.every((v) => v && ['time', 'level', 'text'].every((k) => typeof v[k] === 'string')) ? logs.slice(0, 60) : [], this.prefs.logs.keepDays);
@@ -6322,6 +6326,10 @@
       saveLedger() {
         if (this.ledger) writeStorage(this.ledgerKey(), this.ledger);
       }
+      // 运行标记按角色分键：多开时 A 暂停不再影响 B 刷新后的自动恢复
+      runningKey() {
+        return PREFIX + ':running:' + (this.roleId || 0);
+      }
       // 配置存储键：shared=全局一份；per-role=每角色一份。开关 roleConfig 存在
       // 全局配置上——全局键因此始终是「模式 + 新角色模板」的权威来源，角色键
       // 只存该角色的差异化配置
@@ -6343,6 +6351,17 @@
           if (this.prefs.roleConfig === 'per-role') {
             const roleStored = readStorage(PREFIX + ':config:' + id, null);
             this.prefs = P.config({ ...this.prefs, ...(roleStored || {}), roleConfig: this.prefs.roleConfig });
+          }
+          // 托管恢复判定（沿用各角色自己的 resumeAfterReload 偏好）；本页签内
+          // 手动 开始/暂停 后不再自动决定
+          if (!this.resumeDecided) {
+            this.resumeDecided = true;
+            const gate = this.prefs.resumeAfterReload || this.prefs.reconnect.autoReload;
+            // 角色键缺失（升级首日）回落旧全局键，保住单开用户的托管恢复
+            if (this.resumeWanted && gate && readStorage(this.runningKey(), readStorage(RUNNING, false))) {
+              this.enabled = true;
+              this.log('已恢复上次托管状态');
+            }
           }
           // Recruiting teams and two-hour rounds can span local midnight.
           const yesterday = new Date();
@@ -6390,7 +6409,7 @@
         this.timeoutResume = null;
         this.lastPause = null;
         writeStorage(PREFIX + ':lastPause', null);
-        writeStorage(RUNNING, true);
+        writeStorage(this.runningKey(), true);
         this.reason = '正在检查角色与策略';
         // Automatic recovery retains cooldowns so retries do not consume unkeyed late replies.
         if (!wasUncertain && !fromLateResponse) this.suppressed.clear();
@@ -6422,7 +6441,7 @@
         this.lastPause = { at: Date.now(), reason, byUser };
         writeStorage(PREFIX + ':lastPause', this.lastPause);
         this.enabled = false;
-        writeStorage(RUNNING, false);
+        writeStorage(this.runningKey(), false);
         this.reason = reason;
         this.releaseLease();
         this.log(reason, 'warning');
@@ -7510,7 +7529,7 @@
         // Whether Tampermonkey has installed the new version is not visible from here, so a reload is
         // tried once at once, then every 6 hours, 5 times per version.
         this.updates.markApply(now);
-        writeStorage(RUNNING, true);
+        writeStorage(this.runningKey(), true);
         this.log('发现新版本 v' + this.updates.status().latestVersion + '，刷新页面以启用');
         location.reload();
         return true;
@@ -7530,7 +7549,7 @@
         }
         this.reloads.push(now);
         writeStorage(PREFIX + ':reloads', this.reloads);
-        writeStorage(RUNNING, true);
+        writeStorage(this.runningKey(), true);
         location.reload();
       }
     }
