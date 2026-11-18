@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name TL战斗数据记录器
 // @namespace https://github.com/YatsukiRenka/tl-idle-helper
-// @version 0.1.6
+// @version 0.1.7
 // @description 本地记录自身战斗数据用于评分校准，不上传任何数据。
 // @match https://tl.jayczee.top/*
 // @match https://tl2.jayczee.top/*
@@ -174,8 +174,8 @@
           artifacts.set(artifact[1], (artifacts.get(artifact[1]) || 0) + Number(artifact[2].startsWith('自身')));
           continue;
         }
-        const hit = /^(【暴击】)?你施展【([^】]+)】，对【[^】]+】造成了 ([\d,]+) 点(?:暴击)?伤害[。！]$/.exec(e.text);
-        const miss = !hit && /^你施展【([^】]+)】，被【[^】]+】闪避了！$/.exec(e.text);
+        const hit = /^(【暴击】)?你施展【([^】]+)】(?:\(第\d+击\))?，对【[^】]+】造成了 ([\d,]+) 点(?:暴击)?伤害[。！]$/.exec(e.text);
+        const miss = !hit && /^你施展【([^】]+)】(?:\(第\d+击\))?，被【[^】]+】闪避了！$/.exec(e.text);
         if (!hit && !miss) continue;
         const name = hit ? hit[2] : miss[1], crit = Number(!!hit?.[1]);
         if (hit) {
@@ -286,7 +286,7 @@
       const hours = Object.keys(this.data.hours), configs = Object.values(this.data.configs);
       return { battleHours: Object.values(this.data.hours).reduce((n, b) => n + b.battle, 0) / 3600000, configs: configs.length, hours: hours.length, samples: configs.reduce((n, c) => n + c.out.length + c.in.length, 0), bytes: JSON.stringify(this.data).length, since: hours.length ? Math.min(...hours.map(k => Number(k.split('|')[0]))) * 3600000 : null };
     }
-    exportData(meta) { return { format: 'tl-combat-data', version: 1, recorder: '0.1.6', exportedAt: this.now(), ...meta, data: clone(this.data) }; }
+    exportData(meta) { return { format: 'tl-combat-data', version: 1, recorder: '0.1.7', exportedAt: this.now(), ...meta, data: clone(this.data) }; }
   }
   if (typeof module !== 'undefined') { module.exports = { Recorder, ATTRS, hash }; return; }
   if (window.__TL_COMBAT_RECORDER__) return;
