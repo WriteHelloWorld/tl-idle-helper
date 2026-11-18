@@ -165,7 +165,8 @@
         minGainPercent: 1, allowBinding: true, fromWarehouse: true, weights: WEIGHTS,
         fieldCheck: true, fieldMinutes: 20, fieldDropPercent: 5,
       },
-      market: { sort: 'off', showScore: true, bagScore: true, tipScore: true, tipBound: true, scoreType: 'combat', bagScoreType: 'combat' },
+      market: { sort: 'off', showScore: true, bagScore: true, tipScore: true, tipBound: true,
+        bagFilter: true, setTag: true, tipSet: true, scoreType: 'combat', bagScoreType: 'combat' },
       sell: {
         enabled: true,
         maxQuality: 1,
@@ -687,27 +688,89 @@
       const weapon = items.find((e) => num(template(e).slotType) === 1);
       return num(weapon?.tmplId || template(weapon).id);
     }
-    function setEffects(eqs, state) {
-      const out = {}, worn = new Set(eqs.map((e) => num(e.tmplId || template(e).id)));
-      for (const set of array(state.equipSets)) {
-        const weapons = [], groups = [];
+    const SLOT_NAMES = ['', '武器', '衣服', '帽子', '护腕', '鞋子', '项链', '戒指', '护符', '腰带', '护肩', '手套', '暗器'];
+    const SLOT_SHORT = ['', ...'武衣帽腕鞋链戒符带肩手暗'];
+    const equipmentTemplateId = eq => num(eq.tmplId || template(eq).id);
+    const knownTemplate = (state, id) => state.allEquipTemplates?.get?.(num(id)) || lookup(state.allEquipTemplates, id);
+    function setRules(set, state, candidates = []) {
+      let groups = array(parse(set.memberGroups, []));
+      if (!set.memberGroups) {
+        const weapons = [];
+        groups = [];
         for (const id of array(parse(set.equipTmplIds, []))) {
-          const t = lookup(state.allEquipTemplates, id) ||
-            template(array(state.equipments).concat(eqs).find((e) =>
-              num(e.tmplId || template(e).id) === num(id)));
+          const t = knownTemplate(state, id) || template(array(state.equipments).concat(candidates)
+            .find(eq => equipmentTemplateId(eq) === num(id)));
           if (num(t.slotType) === 1) weapons.push(id);
           else groups.push([id]);
         }
         if (weapons.length) groups.push(weapons);
-        const members = set.memberGroups ? array(parse(set.memberGroups, [])) : groups;
-        const count = members.filter((g) => g.some((id) => worn.has(num(id)))).length;
-        const tiers = set.bonusTiers ? array(parse(set.bonusTiers, [])) :
-          [{ pieces: members.length, effects: set.effects }];
+      }
+      return { groups, tiers: set.bonusTiers ? array(parse(set.bonusTiers, [])) :
+        [{ pieces: groups.length, effects: set.effects }] };
+    }
+    function setEffects(eqs, state) {
+      const out = {}, worn = new Set(eqs.map(equipmentTemplateId));
+      for (const set of array(state.equipSets)) {
+        const { groups, tiers } = setRules(set, state, eqs);
+        const count = groups.filter(g => g.some(id => worn.has(num(id)))).length;
         for (const tier of tiers)
           if (num(tier.pieces) > 0 && count >= num(tier.pieces))
             addStats(out, stats(tier.effects));
       }
       return out;
+    }
+    const setIndexes = new WeakMap();
+    function setIndex(state) {
+      let index = setIndexes.get(state);
+      if (index && index.source === state.equipSets && index.sets.length === array(state.equipSets).length) return index;
+      index = { source: state.equipSets, sets: [], templates: new Map() };
+      for (const set of array(state.equipSets)) {
+        const rules = setRules(set, state, array(state.warehouseEquips)), info = { id: set.id, name: set.name };
+        index.sets.push({ ...info, ...rules });
+        for (const group of rules.groups)
+          for (const id of group) index.templates.set(num(id), info);
+      }
+      setIndexes.set(state, index);
+      return index;
+    }
+    function setOfTemplate(state, tmplId) {
+      return setIndex(state).templates.get(num(tmplId)) || null;
+    }
+    function setCollection(state) {
+      const inventory = new Map();
+      const record = (eq, location) => {
+        const id = equipmentTemplateId(eq);
+        if (!inventory.has(id)) inventory.set(id, []);
+        inventory.get(id).push({ eq, location });
+      };
+      for (const eq of array(state.equipments)) record(eq, eq.isEquipped ? 'worn' : 'bag');
+      for (const eq of array(state.warehouseEquips)) record(eq, 'warehouse');
+      const result = [];
+      for (const set of setIndex(state).sets) {
+        let spare = 0, worn = 0, owned = 0;
+        const members = set.groups.map(group => {
+          const ids = group.map(num), pieces = ids.flatMap(id => inventory.get(id) || []);
+          const first = ['worn', 'bag', 'warehouse'].map(loc => pieces.find(p => p.location === loc)).find(Boolean);
+          const id = first ? equipmentTemplateId(first.eq) : ids[0];
+          const t = first && template(first.eq), catalog = knownTemplate(state, id);
+          if (first) { owned++; spare += pieces.length - 1; }
+          if (first?.location === 'worn') worn++;
+          return { ids, name: t?.name || catalog?.name || String(id), slot: num(t?.slotType ?? catalog?.slotType), worn: first?.location === 'worn',
+            bag: pieces.filter(p => p.location === 'bag').length, warehouse: pieces.filter(p => p.location === 'warehouse').length };
+        });
+        if (!owned) continue;
+        const tiers = set.tiers.filter(t => num(t.pieces) > 0).map(t => ({
+          pieces: num(t.pieces), active: worn >= t.pieces, reachable: owned >= t.pieces,
+          effects: Object.entries(parse(t.effects, {}) || {}).filter(([, v]) => Number.isFinite(Number(v)))
+            .map(([key, v]) => ({ key, name: SET_EFFECT_NAMES.get(camel(key)) || key, value: num(v) })),
+        }));
+        result.push({ id: set.id, name: set.name, total: members.length, owned, worn, spare, members, tiers });
+      }
+      return result.sort((a, b) => b.owned / b.total - a.owned / a.total || b.owned - a.owned || a.id - b.id);
+    }
+    function bagFilterMatch(eq, filter, info) {
+      return (!filter.slot || num(template(eq).slotType) === filter.slot) &&
+        (!filter.setId || info.setId === filter.setId) && (!filter.upgrade || !!info.upgrade);
     }
     const MAIN_SOFTCAP = 1.15, ELEMENT_RATE = 2.5;
     function hitDamage(a, d, la, ld, mult = EMPTY_MULT, result = {}) {
@@ -926,6 +989,7 @@
       return p.out * (p.taken > 0 && p.hp > 0 ? (p.hp / p.taken) ** ctx.defenseWeight : 1);
     }
     const SCORE_ATTRIBUTES = Object.entries({ hp: '气血', extAtk: '外攻', intAtk: '内攻', extDef: '外防', intDef: '内防', critRate: '会心', critDef: '会防', avoidance: '闪避', precision: '命中', iceAtk: '冰攻', fireAtk: '火攻', poisonAtk: '毒攻', holyAtk: '玄攻', iceDef: '冰抗', fireDef: '火抗', poisonDef: '毒抗', holyDef: '玄抗' });
+    const SET_EFFECT_NAMES = new Map([...SCORE_ATTRIBUTES, ['allAtk', '全属性攻击'], ['allDef', '全属性抗性']]);
     function scoringDetail(state, prefs) {
       return withScoringPass(state, () => scoringDetailFrom(state, prefs));
     }
@@ -1630,7 +1694,8 @@
       const team = array(board?.teams).find(t => array(t.members).some(m => m.roleId === role?.id));
       const fighting = runs.some(r => r.status === 'FIGHTING');
       const unclaimed = runs.filter(r => r.status === 'FINISHED' && !r.claimed).length;
-      const exhausted = board?.remaining === 0 && !team && !fighting && !(prefs.invasion.claim && unclaimed) &&
+      // With no run left a recruiting team cannot start either: the next visit waits for the round change.
+      const exhausted = board?.remaining === 0 && !fighting && !(prefs.invasion.claim && unclaimed) &&
         now >= board.roundId && num(daily?.visitAt) < board.endsAt + 30000;
       const sect = board?.sect ?? null;
       return { enabled: prefs.invasion.enabled, level20: num(role?.level) >= 20, sect,
@@ -3376,6 +3441,7 @@
       slots,
       lookup,
       template, equipQuality, setTemplateIds, sellPlan, gemScoreOrder,
+      SLOT_NAMES, SLOT_SHORT, setCollection, setOfTemplate, bagFilterMatch, equipmentTemplateId, setIndex,
       poolMaps, scoreTargets, survivalWeight, healPerSecond, scoringStatus, scoringText, SUSTAIN_LINE, LOW_HP_SHARE, HP_LINE,
       viewedState, isViewedProfile, profileState, profileScoreText, tooltipContext,
       CRIT_BASE, CRIT_RATE, CRIT_FLOOR, CRIT_DEF_OFFSET, CRIT_DEF_RATE, CRIT_DEF_DIVISOR, critMultiplier,
@@ -5223,24 +5289,40 @@
           for (const node of document.querySelectorAll('.tl-tip-score, .tl-tip-arrow, .tl-profile-score')) node.remove();
         if (!tipBound)
           for (const node of document.querySelectorAll('.tl-tip-bound')) node.remove();
+        const toolsOn = prefs.market.bagFilter || prefs.market.setTag || prefs.market.tipSet;
+        if (this.bagStyle || ((grids.length || tips.length) && toolsOn))
+          this.ensureBagStyle(toolsOn && (grids.length || tips.length));
+        if (this.bagFrames) this.clearClosedBags(grids);
         if (!cards.length && !grids.length && !tips.length && !profiles.length) return;
-        const state = cards.length || grids.length || tipScore ? this.state() : null;
-        const scanTips = tips.length && (tipScore || tipBound),
+        const state = cards.length || grids.length || tipScore || (tips.length && prefs.market.tipSet) ? this.state() : null;
+        let collection;
+        const getCollection = () => collection ||= this.inventoryCollection(state);
+        const tipSet = prefs.market.tipSet && state?.equipSets?.length;
+        const scanTips = tips.length && (tipScore || tipBound || tipSet),
           scoreProfiles = profiles.length && state && tipScore,
           instances = scanTips || scoreProfiles ? Array.from(this.controller.bridge.components()) : [],
           profileInstances = instances.filter((vm) => vm.type?.__name === 'CharacterProfile' && vm.props?.modelValue),
           entries = this.controller.bridge.cache?.viewedPlayers;
+        if (tips.length && !tipSet)
+          for (const node of document.querySelectorAll('.tl-tip-set, .tl-tip-set-where')) node.remove();
         if (scanTips) {
           const items = new Map();
           for (const vm of instances)
             if (vm.type?.__name === 'ItemTooltip') items.set(vm.subTree?.el, vm.props.item);
           for (const tip of tips) {
-            if (!items.has(tip)) continue;
+            if (!items.has(tip)) {
+              if (tipSet) this.drawTipSet(tip, null);
+              continue;
+            }
             const item = items.get(tip);
             if (tipBound) this.drawBound(tip, item);
-            if (!tipScore || !state) continue;
+            if ((!tipScore && !tipSet) || !state) continue;
             const context = P.tooltipContext(item, profileInstances.map((vm) => vm.props), state, entries);
-            this.drawTip(tip, this.tipInfo(item, context.state, prefs, context), item);
+            if (tipScore) this.drawTip(tip, this.tipInfo(item, context.state, prefs, context), item);
+            if (tipSet) {
+              const data = context.compare && item?.equipTmpl ? getCollection() : null;
+              this.drawTipSet(tip, data, item);
+            }
           }
         }
         if (scoreProfiles) {
@@ -5265,15 +5347,234 @@
           }
         }
         if (cards.length) this.scanMarket(cards, prefs.market?.showScore !== false ? state : null, prefs);
-        if (grids.length) this.scanBag(grids, prefs.market?.bagScore !== false ? state : null, prefs);
+        if (grids.length) this.scanBag(grids, state, prefs, getCollection);
+      }
+      inventoryCollection(state) {
+        const signature = eq => [eq.id, P.equipmentTemplateId(eq), !!eq.isEquipped];
+        const key = JSON.stringify([state.role?.id, state.equipSets?.length, state.allEquipTemplates?.size, P.array(state.equipments).map(signature),
+          P.array(state.warehouseEquips).map(signature)]);
+        const old = this.bagCollection;
+        if (old?.key === key && old.state.equipSets === state.equipSets &&
+            old.state.allEquipTemplates === state.allEquipTemplates) return old;
+        const sets = P.setCollection(state);
+        return this.bagCollection = { key, state, sets, byId: new Map(sets.map(set => [set.id, set])) };
+      }
+      drawTipSet(tip, data, item) {
+        const info = data && P.setOfTemplate(data.state, P.equipmentTemplateId(item));
+        let line = tip.querySelector?.('.tl-tip-set');
+        if (!info) {
+          line?.remove();
+          for (const node of tip.querySelectorAll?.('.tl-tip-set-where') || []) node.remove();
+          return;
+        }
+        const set = data.byId.get(info.id), members = set?.members || [];
+        const rows = Array.from(tip.querySelectorAll('.set-member'));
+        const aliases = new Map();
+        for (const m of members) {
+          aliases.set(m.name, m);
+          for (const id of m.ids) {
+            const t = data.state.allEquipTemplates?.get?.(id) || P.lookup(data.state.allEquipTemplates, id);
+            if (t?.name) aliases.set(t.name, m);
+          }
+        }
+        const names = [...aliases.keys()].sort((a, b) => b.length - a.length);
+        for (const row of rows) {
+          let where = row.querySelector('.tl-tip-set-where');
+          const label = row.textContent.replace(/ · (背包|仓库)$/, '').trim();
+          const m = aliases.get(names.find(name => label.includes(name)));
+          const text = m && !m.worn && (m.bag ? ' · 背包' : m.warehouse ? ' · 仓库' : '');
+          if (!text) { where?.remove(); continue; }
+          if (!where) where = this.bagNode(row, 'span', 'tl-tip-set-where');
+          if (where.textContent !== text) where.textContent = text;
+        }
+        const last = rows.at(-1), group = last?.parentElement;
+        let anchor = last?.closest?.('.set-block, .set-info, .tooltip-set') ||
+          (group?.classList.contains('set-members') && group.parentElement !== tip ? group.parentElement : group);
+        if (!anchor || anchor === tip) anchor = last || tip.querySelector('.tl-tip-bound') || tip.querySelector('.tooltip-row');
+        if (!anchor) { line?.remove(); return; }
+        if (anchor.nextElementSibling?.textContent.trim().startsWith('收益')) anchor = anchor.nextElementSibling;
+        while (anchor.nextElementSibling?.classList.contains('tl-tip-score')) anchor = anchor.nextElementSibling;
+        const total = set?.total ?? P.setIndex(data.state).sets.find(s => s.id === info.id).groups.length;
+        const text = '已收集 ' + (set?.owned || 0) + '/' + total + '（穿戴 ' + (set?.worn || 0) +
+          ' · 背包 ' + members.filter(m => m.bag).length + ' · 仓库 ' + members.filter(m => m.warehouse).length + '）';
+        if (!line) { line = document.createElement('div'); line.className = 'tl-tip-set'; }
+        if (line.textContent !== text) line.textContent = text;
+        if (anchor.nextElementSibling !== line) anchor.parentNode.insertBefore(line, anchor.nextSibling);
+      }
+      ensureBagStyle(on) {
+        if (!on) { this.bagStyle?.remove(); this.bagStyle = null; return; }
+        if (!document.head || this.bagStyle?.parentNode === document.head) return;
+        const existing = document.getElementById('tl-bag-style');
+        if (existing) { this.bagStyle = existing; return; }
+        const style = document.createElement('style');
+        style.id = 'tl-bag-style';
+        style.textContent = `
+.tl-bag-set{position:absolute;top:0;left:0;padding:0 2px;font:bold 9px/12px sans-serif;pointer-events:none;background:#121821dc;color:#ddd;z-index:1}
+.tl-bag-set.tl-bag-complete{color:#f0d684}
+.tl-bag-bar,.tl-bag-sets{position:absolute;top:40px;background:#121821f5;color:#f0d684;border:1px solid #5a4d38;border-radius:4px;box-sizing:border-box;z-index:5;font:12px/1.5 sans-serif}
+.tl-bag-bar{right:100%;margin-right:4px;display:flex;flex-direction:column;gap:2px;padding:2px}
+.tl-bag-bar.tl-bag-right{left:100%;right:auto;margin:0 0 0 4px}
+.tl-bag-sets{right:calc(100% + 36px);width:250px;max-height:420px;overflow:auto;padding:6px}
+.tl-bag-sets.tl-bag-right{right:auto;left:calc(100% + 36px)}
+.tl-bag-bar button,.tl-bag-sets button{color:inherit;background:#202733;border:1px solid #5a4d38;border-radius:3px;cursor:pointer}
+.tl-bag-bar button{width:22px;height:22px;padding:0;font-size:12px}
+.tl-bag-bar button[aria-pressed=true],.tl-bag-sets button[aria-pressed=true]{background:#4b4029;border-color:#f0d684}
+.tl-bag-separator{border-top:1px solid #5a4d38}
+.tl-bag-title,.tl-bag-row{display:flex;align-items:center;gap:4px}
+.tl-bag-title{justify-content:space-between}.tl-bag-row{width:100%;margin-top:4px;text-align:left}
+.tl-bag-dot{width:6px;height:6px;border-radius:50%;border:1px solid #9e9e9e;flex:none}
+.tl-bag-worn{background:#69f0ae;border-color:#69f0ae}.tl-bag-owned{background:#f0d684;border-color:#f0d684}
+.tl-bag-detail{padding:3px;color:#ddd}.tl-bag-missing{color:#9e9e9e}.tl-bag-chip{color:#f0d684;margin-left:4px}
+.tl-tip-set,.tl-tip-set-where{color:#f0d684}.tl-tip-set{font-size:12px}`;
+        document.head.appendChild(style);
+        this.bagStyle = style;
+      }
+      bagNode(parent, tag, cls, text) {
+        const node = document.createElement(tag);
+        node.className = cls;
+        if (text != null) node.textContent = text;
+        parent.appendChild(node);
+        return node;
+      }
+      bagButton(parent, cls, text, label, click) {
+        const button = this.bagNode(parent, 'button', cls, text);
+        button.setAttribute('type', 'button');
+        button.setAttribute('aria-label', label);
+        button.title = label;
+        button.addEventListener('click', click);
+        return button;
+      }
+      closeSetList() {
+        if (!this.openBagFrame) return;
+        this.openBagFrame.querySelector('.tl-bag-sets')?.remove();
+        this.openBagFrame = null;
+        document.removeEventListener('click', this.outsideBagClick, true);
+      }
+      toggleSetList(frame) {
+        const open = this.openBagFrame === frame;
+        this.closeSetList();
+        if (!open) {
+          this.openBagFrame = frame;
+          this.outsideBagClick = event => {
+            if (!frame.querySelector('.tl-bag-sets')?.contains(event.target) &&
+                !frame.querySelector('.tl-bag-bar')?.contains(event.target)) this.closeSetList();
+          };
+          document.addEventListener('click', this.outsideBagClick, true);
+        }
+        this.scan();
+        frame.querySelector('.tl-bag-sets')?.focus();
+      }
+      drawSetList(frame, data, side) {
+        let dialog = frame.querySelector('.tl-bag-sets');
+        if (!dialog) {
+          dialog = this.bagNode(frame, 'div', 'tl-bag-sets');
+          dialog.setAttribute('role', 'dialog');
+          dialog.setAttribute('aria-label', '套装收集');
+          dialog.tabIndex = -1;
+          dialog.addEventListener('keydown', e => {
+            if (e.key !== 'Escape') return;
+            e.stopPropagation();
+            this.closeSetList();
+            frame.querySelector('.tl-bag-toggle')?.focus();
+          });
+        }
+        const cls = 'tl-bag-sets' + side;
+        if (dialog.className !== cls) dialog.className = cls;
+        const selected = this.bagFilter.setId;
+        if (dialog._sets === data && dialog._selected === selected &&
+            dialog._elements.every(([node, parent]) => node.parentNode === parent)) return;
+        dialog._sets = data;
+        dialog._selected = selected;
+        dialog.textContent = '';
+        const title = this.bagNode(dialog, 'div', 'tl-bag-title', '套装收集（' + data.sets.length + '）');
+        const select = id => {
+          this.bagFilter.setId = id === selected ? 0 : id;
+          this.scan();
+          dialog.focus();
+        };
+        if (selected) this.bagButton(title, 'tl-bag-clear', '清除筛选', '清除筛选', () => select(0));
+        if (!data.sets.length) this.bagNode(dialog, 'div', 'tl-bag-missing', '还没有套装装备');
+        for (const set of data.sets) {
+          const label = set.name + ' ' + set.owned + '/' + set.total;
+          const row = this.bagButton(dialog, 'tl-bag-row', label, label, () => select(set.id));
+          row.setAttribute('aria-pressed', String(selected === set.id));
+          for (const m of set.members) this.bagNode(row, 'span', 'tl-bag-dot ' +
+            (m.worn ? 'tl-bag-worn' : m.bag || m.warehouse ? 'tl-bag-owned' : 'tl-bag-missing'));
+          if (selected !== set.id) continue;
+          const detail = this.bagNode(dialog, 'div', 'tl-bag-detail');
+          for (const m of set.members) {
+            const count = (place, n) => n && place + (n > 1 ? '×' + n : '');
+            const places = [m.worn && '已穿戴', count('背包', m.bag), count('仓库', m.warehouse)].filter(Boolean);
+            this.bagNode(detail, 'div', places.length ? '' : 'tl-bag-missing',
+              [P.SLOT_NAMES[m.slot], m.name, places.join(' · ') || '缺'].join(' '));
+          }
+          for (const tier of set.tiers) {
+            const line = this.bagNode(detail, 'div', '', tier.pieces + ' 件：' +
+              tier.effects.map(e => e.name + (e.value >= 0 ? ' +' : ' ') + e.value).join('、'));
+            this.bagNode(line, 'span', 'tl-bag-chip', tier.active ? '已激活' : tier.reachable ? '可激活' :
+              '还差 ' + (tier.pieces - set.owned) + ' 件');
+          }
+          if (set.spare) this.bagNode(detail, 'div', '', '重复 ' + set.spare + ' 件');
+        }
+        dialog._elements = Array.from(dialog.querySelectorAll('*'), node => [node, node.parentNode]);
+      }
+      drawBagBar(frame, data, scoring) {
+        const filter = this.bagFilter;
+        let bar = frame.querySelector('.tl-bag-bar');
+        if (!bar) {
+          bar = this.bagNode(frame, 'div', 'tl-bag-bar');
+          bar.setAttribute('role', 'toolbar');
+          bar.setAttribute('aria-label', '装备筛选');
+        }
+        const side = frame.getBoundingClientRect().left < 40 ? ' tl-bag-right' : '';
+        if (bar.className !== 'tl-bag-bar' + side) bar.className = 'tl-bag-bar' + side;
+        const slots = P.SLOT_NAMES.length;
+        if (bar.children.length !== slots + 2 + Number(scoring) || bar._scoring !== scoring) {
+          bar.textContent = '';
+          bar._scoring = scoring;
+          for (let slot = 0; slot < slots; slot++)
+            this.bagButton(bar, 'tl-bag-slot', P.SLOT_SHORT[slot] || '全', slot ? '部位：' + P.SLOT_NAMES[slot] : '全部部位', () => {
+              filter.slot = filter.slot === slot ? 0 : slot;
+              this.scan();
+            });
+          this.bagNode(bar, 'div', 'tl-bag-separator');
+          this.bagButton(bar, 'tl-bag-toggle', '套', '套装收集', () => this.toggleSetList(frame));
+          if (scoring) this.bagButton(bar, 'tl-bag-upgrade', '▲', '只看可提升', () => {
+            filter.upgrade = !filter.upgrade;
+            this.scan();
+          });
+        }
+        Array.from(bar.children).forEach((button, i) => {
+          if (i === slots) return;
+          const pressed = String(i < slots ? filter.slot === i : i === slots + 1 ? !!filter.setId : filter.upgrade);
+          if (button.getAttribute('aria-pressed') !== pressed) button.setAttribute('aria-pressed', pressed);
+        });
+        if (this.openBagFrame === frame) this.drawSetList(frame, data, side);
+      }
+      clearClosedBags(grids) {
+        for (const [grid, frame] of this.bagFrames) {
+          if (Array.prototype.includes.call(grids, grid)) continue;
+          grid._tlBagObserver?.disconnect();
+          grid._tlBagObserver = null;
+          this.clearBagFrame(frame);
+          for (const cell of grid.children) {
+            if (cell.style.opacity === '0.22') cell.style.opacity = '';
+            cell.querySelector('.tl-bag-set')?.remove();
+          }
+          this.bagFrames.delete(grid);
+        }
+      }
+      clearBagFrame(frame) {
+        frame?.querySelector('.tl-bag-bar')?.remove();
+        if (frame && frame === this.openBagFrame) this.closeSetList();
       }
       // Inventory equip tab: slot i renders the i-th unequipped equipment in store order.
-      bagList(grid, state) {
+      bagList(grid, state, frame) {
         if (!state) return null;
         const slots = Array.from(grid.children).filter((n) => n.classList?.contains('grid-slot'));
         if (!slots.length) return null;
         let root = grid,
-          tab = null;
+          tab = frame?.querySelector('.game-tab-button.is-active');
         for (let i = 0; root && !tab; i++) {
           root = root.parentElement;
           tab = root?.querySelector('.game-tab-button.is-active');
@@ -5323,15 +5624,46 @@
             '%）',
         };
       }
-      scanBag(grids, state, prefs) {
-        const view = state ? MarketScore.prepare(this, state, prefs) : null;
+      scanBag(grids, state, prefs, getCollection = () => this.inventoryCollection(state)) {
+        const { bagFilter, setTag, bagScore } = prefs.market, scoring = bagScore !== false;
+        const filter = this.bagFilter ||= { slot: 0, setId: 0, upgrade: false };
+        if (!scoring) filter.upgrade = false;
+        const view = state && scoring ? MarketScore.prepare(this, state, prefs) : null;
         for (const grid of grids) {
-          const list = this.bagList(grid, state),
+          const frame = grid.closest?.('.game-window-shell__frame');
+          const list = this.bagList(grid, state, frame),
             slots = list?.slots || Array.from(grid.querySelectorAll('.grid-slot'));
+          const equipmentTab = list || (bagFilter && frame?.querySelector('.game-tab-button.is-active')?.textContent.trim() === '装备');
+          const data = state && equipmentTab && (bagFilter || setTag) ? getCollection() : null;
+          if (frame && (bagFilter || setTag)) {
+            (this.bagFrames ||= new Map()).set(grid, frame);
+            if (!grid._tlBagObserver && typeof MutationObserver !== 'undefined') {
+              grid._tlBagObserver = new MutationObserver(() => this.schedule());
+              grid._tlBagObserver.observe(frame.closest('.inventory-window, .warehouse-window') || frame,
+                { subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+            }
+          } else if (this.bagFrames?.delete(grid)) {
+            grid._tlBagObserver?.disconnect();
+            grid._tlBagObserver = null;
+          }
+          if (bagFilter && frame && data) this.drawBagBar(frame, data, scoring);
+          else this.clearBagFrame(frame);
           slots.forEach((slot, i) => {
             const old = slot.querySelector(':scope > .tl-bag-score'),
-              eq = list ? list.items[i] : null,
-              want = eq && !slot.classList.contains('empty-slot') ? this.bagLabel(eq, state, prefs, view) : null;
+              eq = list && !slot.classList.contains('empty-slot') ? list.items[i] : null,
+              want = eq && scoring ? this.bagLabel(eq, state, prefs, view) : null;
+            const set = eq && data && P.setOfTemplate(data.state, P.equipmentTemplateId(eq));
+            let tag = slot.querySelector(':scope > .tl-bag-set');
+            if (setTag && set) {
+              if (!tag) tag = this.bagNode(slot, 'span', 'tl-bag-set');
+              const entry = data.byId.get(set.id), cls = 'tl-bag-set' + (entry && entry.owned === entry.total ? ' tl-bag-complete' : '');
+              if (tag.className !== cls) tag.className = cls;
+              const letter = Array.from(set.name)[0];
+              if (tag.textContent !== letter) tag.textContent = letter;
+            } else tag?.remove();
+            const dim = bagFilter && eq && !P.bagFilterMatch(eq, filter, { setId: set?.id, upgrade: want?.text.startsWith('▲') });
+            if (dim && slot.style.opacity !== '0.22') slot.style.opacity = '0.22';
+            else if (!dim && slot.style.opacity === '0.22') slot.style.opacity = '';
             if (!want) {
               old?.remove();
               return;
@@ -9148,6 +9480,9 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
           f('背包仓库评分类型', 'market.bagScoreType', { dependsOn: 'market.bagScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
           f('详情和人物面板显示实战评分', 'market.tipScore', { help: '装备详情及人物面板' }) +
           f('物品详情显示绑定状态', 'market.tipBound', { help: '已绑定、未绑定、装备后绑定' }) +
+          f('背包和仓库显示部位筛选条', 'market.bagFilter', { help: '筛选条在背包和仓库窗口左侧，只调暗不匹配的装备，不会移动或隐藏；角标是套装名的第一个字，集齐为金色；套装列表里绿点是已穿戴，金点是在背包或仓库，空心是还缺。' }) +
+          f('套装装备显示角标', 'market.setTag') +
+          f('物品详情显示套装收集情况', 'market.tipSet') +
           f('逛摊按脚本排序', 'market.sort', { immediate: true, choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }), true);
       }
       scoreTableHTML(headers, rows, mapTable = false) {
