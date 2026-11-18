@@ -5804,10 +5804,7 @@
         // 托管恢复判定移到首次 setRole（角色已知后读 :running:<roleId>）：
         // 全局 running 键在多开时会让恢复跟随最后一个启停的页签
         this.enabled = false;
-        this.resumeWanted = !!(
-          (this.prefs.resumeAfterReload || this.prefs.reconnect.autoReload) &&
-          readStorage(RUNNING, false)
-        );
+        this.resumeWanted = !!(this.prefs.resumeAfterReload || this.prefs.reconnect.autoReload);
         this.resumeDecided = false;
         this.reason = '等待游戏角色';
         const logs = readStorage(PREFIX + ':log', []);
