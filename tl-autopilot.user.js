@@ -136,6 +136,7 @@
         keepMinAverage: 118, feed: false, feedKeepExp: 0, refreshMinutes: 10 },
       arena: { enabled: true, like: true, claim: true, challenge: true, maxPerDay: 10,
         maxPowerRatio: 1.1, refreshMinutes: 30, rushMinutes: 10 },
+      rings: { enabled: false, roundsPerDay: 2, maxRetries: 2, claimInbox: true, exchange: 'off', refreshMinutes: 10 },
       hidden: { enabled: true, claim: false, claimElement: 'auto', wash: true, washQuality: true, inbox: true, feed: false,
         maxLevel: 100, keepExp: 0, refreshMinutes: 30 },
       potions: {
@@ -286,6 +287,10 @@
       p.welfare.pick = p.welfare.pick === 'fixed' ? 'fixed' : 'random';
       p.welfare.numbers = welfareNumbers(p.welfare.numbers)?.join(',') || '';
       p.arena.maxPerDay = integer(p.arena.maxPerDay);
+      p.rings.roundsPerDay = Math.max(1, Math.min(10, integer(p.rings.roundsPerDay)));
+      p.rings.maxRetries = Math.max(0, Math.min(20, integer(p.rings.maxRetries)));
+      p.rings.refreshMinutes = Math.max(1, Math.min(120, integer(p.rings.refreshMinutes)));
+      if (!['off', 'ring', 'jade', 'ringFirst', 'jadeFirst'].includes(p.rings.exchange)) p.rings.exchange = 'off';
       p.arena.rushMinutes = Math.max(0, Math.min(120, integer(p.arena.rushMinutes)));
       p.arena.maxPowerRatio = Math.max(0.5, Math.min(3, p.arena.maxPowerRatio));
       for (const section of [p.arena, p.hidden])
@@ -1406,6 +1411,54 @@
       );
     }
     const RINGS_MAP_IDS = [20100, 20101, 20102];
+    const RING_NAMES = ['黄金之链', '玄佛珠', '熔岩之地'];
+    const ringStage = (stage) => '第' + (stage + 1) + '环「' + RING_NAMES[stage] + '」';
+    function ringsStatus(s, prefs, daily) {
+      if (!s?.role?.id) return null;
+      const r = s.rings, counts = array(r?.counts), failures = num(daily?.failures);
+      return { enabled: prefs.rings.enabled, level56: num(s.role.level) >= 56, counts,
+        run: r?.run ? { stage: r.run.stage } : null, bound: num(r?.bound), unbound: num(r?.unbound),
+        pending: num(r?.pendingBound) + num(r?.pendingUnbound), lastSettlement: r?.lastSettlement ?? null,
+        rounds: num(daily?.rounds), roundsPerDay: prefs.rings.roundsPerDay, roundOpen: !!daily?.roundOpen,
+        retries: num(daily?.retries), maxRetries: prefs.rings.maxRetries, cleared: num(daily?.cleared),
+        runs: num(daily?.runs), failures,
+        done: counts.length === 3 && counts.every((n) => n >= 2),
+        stopped: (!daily?.roundOpen && num(daily?.rounds) >= prefs.rings.roundsPerDay) ||
+          num(daily?.refusals) >= 3, at: r?.at ?? null };
+    }
+    function ringsPlan(s, p, daily, now) {
+      if (!p.rings?.enabled || !num(s.role?.id) || num(s.role.level) < 56 || s.activity || s.arenaMatch?.active ||
+          s.trial?.run || [20050, 20051, 20052, 20070].includes(num(s.role.mapId))) return null;
+      const r = s.rings, status = ringsStatus(s, p, daily);
+      const request = (name, label, itemId = 0) => ({
+        ...action('RINGS_COMMAND', { action: name, itemId, ...(r ? { revision: r.revision } : {}) },
+          '新三环：' + label, 'rings', { readOnly: name === 'status', requiresTown: name !== 'status',
+            townId: r?.townId, responseType: 'RINGS_RESPONSE' }),
+        key: 'rings:' + name + ':' + itemId,
+      });
+      const query = () => request('status', '查询状态');
+      if (!r || !Number.isFinite(r.at) || s.ringsDirty) return query();
+      if (r.run) {
+        if (s.ringsFighting || !RING_NAMES[r.run.stage] || now - (s.ringsStartAt ?? -Infinity) < 5000) return null;
+        return action('COMBAT_START', {}, '新三环：挑战' + ringStage(r.run.stage), 'rings', { noResponse: true });
+      }
+      if (now - r.at > p.rings.refreshMinutes * 60000) return query();
+      if (s.gearCheck || arenaRush(p, now) || num(daily?.refusals) >= 3 || !num(r.townId)) return null;
+      let next;
+      if (p.rings.claimInbox && status.pending > 0) next = request('inbox', '领取暂存奖励');
+      else {
+        const order = { ring: [98011], jade: [98012], ringFirst: [98011, 98012], jadeFirst: [98012, 98011] };
+        if (status.bound + status.unbound >= 300 && order[p.rings.exchange]) {
+          const owned = new Set([...array(s.equipments), ...array(s.warehouseEquips), ...array(s.bagItems)]
+            .map((e) => num(e.equipTmpl?.id ?? e.tmpl?.id ?? e.tmplId ?? e.itemId)));
+          const id = order[p.rings.exchange].find((id) => !owned.has(id));
+          if (id) next = request('exchange', id === 98011 ? '兑换重楼戒' : '兑换重楼玉', id);
+        }
+        if (!next && !status.done && !status.stopped &&
+            (!status.roundOpen || status.retries < status.maxRetries)) next = request('enter', '从第一环开始');
+      }
+      return next && now - r.at > 60000 ? query() : next;
+    }
     const FARM_MAP_EXCLUDED_IDS = [20050, 20051, 20052, 20060, 20061, 20070, ...RINGS_MAP_IDS];
     function farmMap(map) {
       return !!map && num(map.mapType) !== 1 && map.show !== false &&
@@ -2043,6 +2096,8 @@
       };
       const role = s.role,
         equipped = array(s.equipments).filter((e) => !!e.isEquipped);
+      const ring = ringsPlan(s, p, ledger.rings?.day === s.rings?.day ? ledger.rings : null, now);
+      if (p.rings?.enabled && num(role.level) >= 56 && s.rings?.run) return ring ? [ring] : [];
       const rejected = new Set(gearRejected(s.gearRejected, now).map((e) => e.id)),
         protectedGear = new Set([...rejected, s.gearCheck?.oldItemId]);
       if (s.gearCheck?.verdict?.state === 'worse') {
@@ -2192,6 +2247,7 @@
             }),
           );
       }
+      if (ring) add(ring);
       const growth = [],
         progress = levelProgress(s, p, ledger);
       if (progress?.ready)
@@ -3090,7 +3146,7 @@
       gemCharm,
       roleMap,
       townFor,
-      RINGS_MAP_IDS,
+      RINGS_MAP_IDS, RING_NAMES, ringStage, ringsStatus, ringsPlan,
       farmMap,
       fieldMap,
       gearCheckStart, gearCheckAfter, gearCheckVerdict, gearCheckRestored, gearCheckRollback, gearRejected, gearCheckText,
@@ -3150,7 +3206,7 @@
       else doc.addEventListener('DOMContentLoaded', show, { once: true });
     }
     const ALLOWED = new Set([
-      'ARENA_COMMAND', 'PET_COMMAND', 'TRIAL_COMMAND',
+      'ARENA_COMMAND', 'PET_COMMAND', 'TRIAL_COMMAND', 'RINGS_COMMAND', 'COMBAT_START',
       'ENTER_GAME',
       'ENTER_MAP',
       'EQUIP_ITEM',
@@ -3427,11 +3483,11 @@
     function requestAllowed(action) {
       return ALLOWED.has(action?.type) || (action?.type === 'USE_ITEM' && (action.petHatch === true || action.doubleExp === true));
     }
-    const responseHasId = (action) => ['ARENA_COMMAND', 'PET_COMMAND', 'ONLINE_LOTTERY_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(action.type) || action.petHatch;
+    const responseHasId = (action) => ['ARENA_COMMAND', 'PET_COMMAND', 'RINGS_COMMAND', 'ONLINE_LOTTERY_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(action.type) || action.petHatch;
     const responseType = (action) => action.responseType || action.type + '_RESPONSE';
     const responseKey = (action) => JSON.stringify([responseType(action),
       responseHasId(action) ? action.requestId ?? action.payload?.requestId ?? null : null]);
-    const parallelQuery = (action) => action.readOnly && !action.requiresTown;
+    const parallelQuery = (action) => action.readOnly && !action.requiresTown && action.family !== 'rings';
     function ensureRequestId(action) {
       if ((responseHasId(action) || action.type === 'TRIAL_COMMAND') && action.payload?.requestId == null)
         action.payload = { ...action.payload, requestId:
@@ -3445,7 +3501,8 @@
       if (waiter.doubleExp && (packet.success ?? packet.code === 200) &&
           !packet.data?.effects?.some((effect) => effect.type === 'DOUBLE_EXP_BUFF')) return false;
       return packet.type === waiter.responseType && (!responseHasId(waiter) ||
-        packet.data?.requestId === waiter.requestId);
+        packet.data?.requestId === waiter.requestId || (waiter.type === 'RINGS_COMMAND' &&
+          (packet.requestId ?? packet.ringsRequestId) === waiter.requestId));
     }
     const statsFields = 'wall battle exp expBase gold sell potion hpPotions mpPotions kills deaths hpLost mpUsed low'.split(' ');
     const statsTotals = () => Object.fromEntries(statsFields.map((k) => [k, 0]));
@@ -3730,6 +3787,7 @@
       rejectWaiter(waiter, error) {
         if (!this.hasWaiter(waiter)) return;
         this.removeWaiter(waiter);
+        if (waiter.type === 'RINGS_COMMAND') this.ringsRequests?.delete(waiter.requestId);
         if (error.code === 'RESPONSE_TIMEOUT') {
           this.lateWaiters ||= new Set();
           waiter.lateUntil = Date.now() + 120000;
@@ -3766,12 +3824,17 @@
         this.sessionReady = false;
         this.authFailed = false;
         this.welfareRequests = new Map();
+        this.ringsRequests = new Map();
         const send = socket.send;
         const bridge = this;
         socket.send = function (data) {
           if (typeof data === 'string') {
             try {
               const packet = JSON.parse(data);
+              if (packet.type === 'RINGS_COMMAND') {
+                bridge.ringsRequests.set(packet.payload?.requestId, packet.payload?.action);
+                if (packet.payload?.action !== 'status') bridge.invalidateRings();
+              }
               if (packet.type === 'WELFARE_LOTTERY_COMMAND' && packet.payload?.requestId) {
                 bridge.welfareRequests.set(packet.payload.requestId, { action: packet.payload.action, page: packet.payload.page });
                 if (bridge.welfareRequests.size > 100)
@@ -3785,7 +3848,7 @@
                 bridge.cache.consignment.clear();
                 bridge.cache.consignmentVersion = P.num(bridge.cache.consignmentVersion) + 1;
               }
-              if (!bridge.sending && bridge.waiter && !bridge.waiter.petHatch && packet.type === bridge.waiter.type && !['ARENA_COMMAND', 'PET_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(packet.type))
+              if (!bridge.sending && bridge.waiter && !bridge.waiter.petHatch && packet.type === bridge.waiter.type && !['ARENA_COMMAND', 'PET_COMMAND', 'RINGS_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(packet.type))
                 bridge.waiter.interference = true;
             } catch {}
           }
@@ -3816,6 +3879,11 @@
           if (typeof packet.type !== 'string') return;
           this.lastMessage = Date.now();
           const type = packet.type;
+          if (type === 'COMBAT_STATE' && (this.cache.rings?.rings?.run ||
+              P.RINGS_MAP_IDS.includes(P.num(this.character()?.role?.mapId)))) {
+            if (this.ringsCombat && packet.data?.stage !== 'running') this.invalidateRings();
+            this.ringsCombat = packet.data?.stage === 'running';
+          }
           if (type === 'COMBAT_STATE' && packet.data?.stage === 'running' &&
               Array.isArray(packet.data.monsterSlots) && P.farmMap(P.array(this.character()?.maps).find(
                 (map) => P.num(map.id) === P.num(this.character()?.role?.mapId)))) {
@@ -3855,6 +3923,10 @@
             this.cache.arena = null;
             this.cache.arenaMatch = null;
             this.cache.trial = null;
+            this.cache.rings = null;
+            this.ringsRequests.clear();
+            this.ringsCombat = false;
+            this.invalidateRings();
             this.cache.viewedPlayers = new Map();
           }
           if (type === 'GET_PLAYER_INFO_RESPONSE' && packet.success && packet.data?.role?.id) {
@@ -3913,6 +3985,22 @@
             (this.cache.activityStamp || (this.cache.activityStamp = {})).wushuang = Date.now();
           }
           const data = packet.data;
+          if (type === 'RINGS_RESPONSE') {
+            // Some replies omit the UUID. Only a single outstanding command is attributable.
+            const outstanding = new Set(this.ringsRequests.keys());
+            for (const late of this.lateWaiters || [])
+              if (late.type === 'RINGS_COMMAND' && late.socket === socket && late.lateUntil > Date.now())
+                outstanding.add(late.requestId);
+            const id = data?.requestId ?? packet.requestId ??
+              (outstanding.size === 1 ? outstanding.values().next().value : null);
+            packet.ringsRequestId = id;
+            if (this.ringsRequests.has(id) && this.ringsRequests.get(id) !== 'status') this.invalidateRings();
+            this.ringsRequests.delete(id);
+            if (packet.success && data?.rings) {
+              this.cache.rings = { rings: copy(data.rings), at: Date.now() };
+              if (!data.rings.run) this.ringsCombat = false;
+            }
+          }
           const lottery = type === 'ONLINE_LOTTERY_STATE' ? data :
             type === 'ONLINE_LOTTERY_RESPONSE' ? data?.state : null;
           if (lottery && typeof lottery.balance !== 'undefined')
@@ -3962,10 +4050,10 @@
             for (const current of pending) {
               const unattributed = pending.length > 1 && current !== this.waiter,
                 message = safeMessage(packet.message || '操作错误');
-              this.rejectWaiter(current, this.requestError(current,
+              this.rejectWaiter(current, Object.assign(this.requestError(current,
                 unattributed ? 'SERVER_ERROR_UNATTRIBUTED' : 'SERVER_ERROR',
                 unattributed ? '服务器返回错误“' + message + '”，无法确定对应哪个查询' :
-                  current.label + '：等待响应时服务器提示“' + message + '”', type));
+                  current.label + '：等待响应时服务器提示“' + message + '”', type), { serverMessage: message }));
             }
           this.recordStats?.(packet);
           this.filler?.response(packet);
@@ -4011,6 +4099,9 @@
       }
       get connected() {
         return this.socket?.readyState === 1;
+      }
+      invalidateRings() {
+        this.ringsEpoch = (this.ringsEpoch || 0) + 1;
       }
       pinia() {
         const app = document.querySelector('#app')?.__vue_app__;
@@ -4157,6 +4248,8 @@
           combat: this.statsRates?.() || null,
           arenaMatch: this.cache.arenaMatch || null,
           trial: this.cache.trial ? { ...this.cache.trial.trial, at: this.cache.trial.at } : null,
+          rings: this.cache.rings ? { ...this.cache.rings.rings, at: this.cache.rings.at } : null,
+          ringsDirty: this.ringsEpoch !== this.ringsConfirmed,
           combatPower: c.combatPower,
           warehouseEquipCount: Array.isArray(c.warehouseEquips) ? c.warehouseEquips.length : 0,
           warehouseEquips: copy(c.warehouseEquips) || [],
@@ -4228,7 +4321,7 @@
           'BEAR_ENTER',
         ];
         const nested = [
-          'ARENA_RESPONSE', 'PET_RESPONSE', 'TRIAL_RESPONSE', 'ONLINE_LOTTERY_RESPONSE', 'WELFARE_LOTTERY_RESPONSE',
+          'ARENA_RESPONSE', 'PET_RESPONSE', 'TRIAL_RESPONSE', 'RINGS_RESPONSE', 'ONLINE_LOTTERY_RESPONSE', 'WELFARE_LOTTERY_RESPONSE',
           'USE_ITEM_RESPONSE',
           'CALC_MONSTER_DROP_RESPONSE',
           'CALC_MAP_DROP_RESPONSE',
@@ -4270,6 +4363,10 @@
         ensureRequestId(action);
         if ((!query && this.waiter) || this.responsePending(action))
           return Promise.reject(new Error('上一个动作尚未完成'));
+        if (action.type === 'COMBAT_START') {
+          this.socket.send(JSON.stringify({ type: action.type, payload: {} }));
+          return Promise.resolve({ success: true });
+        }
         if (action.type === 'UPDATE_SETTINGS') {
           const c = this.character();
           if (c && action.setting) c.autoPotionSettings = copy(action.setting);
@@ -4299,6 +4396,7 @@
             label: action.label || action.type,
             responseType: responseType(action),
             requestId: action.payload?.requestId,
+            ...(action.type === 'RINGS_COMMAND' && { ringsAction: action.payload.action, roleId: this.character()?.role?.id }),
             key: responseKey(action),
             petHatch: action.petHatch,
             doubleExp: action.doubleExp,
@@ -5259,8 +5357,90 @@
         const pending = this.logQueue.slice().reverse(), entries = await this.logStore.read();
         return P.logText(P.logPrune([...pending, ...entries], this.prefs.logs.keepDays));
       }
-      ledgerKey() {
-        return PREFIX + ':ledger:' + this.roleId + ':' + day();
+      ledgerKey(date = day()) {
+        return PREFIX + ':ledger:' + this.roleId + ':' + date;
+      }
+      ringsDaily(r, roleId = this.roleId) {
+        if (!r?.day) return null;
+        const ledger = this.ledger?.day === r.day && this.roleId === roleId ? this.ledger :
+          readStorage(PREFIX + ':ledger:' + roleId + ':' + r.day, null);
+        return { day: r.day, rounds: 0, retries: 0, roundOpen: false, cleared: 0, runs: 0, failures: 0,
+          refusals: 0, lastRunId: null, lastResult: null, ...ledger?.rings };
+      }
+      saveRingsDaily(daily) {
+        if (this.ledger.day === daily.day) {
+          this.ledger.rings = daily;
+          writeStorage(this.ledgerKey(daily.day), this.ledger);
+        } else {
+          const key = this.ledgerKey(daily.day), ledger = readStorage(key, null) || P.freshLedger(daily.day);
+          writeStorage(key, { ...ledger, rings: daily });
+        }
+      }
+      observeRings(r, entered = false) {
+        const d = this.ringsDaily(r);
+        if (!d) return;
+        let changed = false;
+        if (entered && d.refusals) {
+          d.refusals = 0;
+          changed = true;
+        }
+        if (entered && r.run && !d.owned) {
+          if (d.roundOpen) {
+            d.retries++;
+            this.log('新三环第 ' + d.rounds + ' 轮：失败后第 ' + d.retries + ' 次重试', 'warning');
+          } else {
+            d.rounds++;
+            d.retries = 0;
+            d.roundOpen = true;
+          }
+          d.previousClearId = r.lastSettlement?.stage === 2 && r.lastSettlement.reason === '通关'
+            ? r.lastSettlement.runId : null;
+          d.owned = true;
+          d.runs++;
+          changed = true;
+        }
+        const last = r.lastSettlement;
+        const settlementKey = last && JSON.stringify([last.runId, last.stage]);
+        if (last?.day === r.day && !d.settlements?.includes(settlementKey)) {
+          (d.settlements ||= []).push(settlementKey);
+          d.lastRunId = last.runId;
+          d.lastResult = copy(last);
+          const cleared = last.reason === '通关', result = cleared ? last.rewarded ?
+            '通关，神兵符 绑定 ' + P.num(last.bound) + ' / 不绑定 ' + P.num(last.unbound) :
+            '通关，今日该环奖励已满' : '挑战失败（' + last.reason + '）';
+          this.log('新三环 ' + P.ringStage(last.stage) + '：' + result, cleared ? 'success' : 'warning');
+          changed = true;
+        }
+        if (d.owned && !r.run) {
+          if (last?.stage === 2 && last.day === r.day && last.reason === '通关' &&
+              last.runId !== d.previousClearId) {
+            d.cleared++;
+            d.roundOpen = false;
+          } else d.failures++;
+          d.owned = false;
+          changed = true;
+        }
+        if (d.roundOpen && !r.run && d.retries >= this.prefs.rings.maxRetries) {
+          d.roundOpen = false;
+          this.log('新三环第 ' + d.rounds + ' 轮失败，重试 ' + d.retries + ' 次后结束本轮', 'warning');
+          changed = true;
+        }
+        if (!r.run && !d.doneLogged && r.counts?.length === 3 && r.counts.every((n) => n >= 2)) {
+          this.log('新三环今日已完成', 'success');
+          d.doneLogged = changed = true;
+        } else if (!d.doneLogged && !d.stopLogged && !d.roundOpen && d.rounds >= this.prefs.rings.roundsPerDay) {
+          this.log('新三环今日 ' + d.rounds + ' 轮已打完', 'warning');
+          d.stopLogged = changed = true;
+        }
+        if (changed) this.saveRingsDaily(d);
+      }
+      ringsRefused(a, r, message) {
+        this.log(a.label + '：' + message, 'warning');
+        this.suppress(a, 300000);
+        if (a.payload.action !== 'enter' || !r?.day) return;
+        const d = this.ringsDaily(r);
+        if (++d.refusals === 3) this.log('新三环进入被拒绝：' + message, 'warning');
+        this.saveRingsDaily(d);
       }
       saveLedger() {
         if (this.ledger) writeStorage(this.ledgerKey(), this.ledger);
@@ -5364,6 +5544,11 @@
       }
       lateResponse(waiter, packet, elapsedMs) {
         const now = Date.now(), previous = this.responseTimeout(now);
+        if (waiter.ringsAction === 'enter' && waiter.roleId === this.roleId &&
+            packet.success && packet.data?.rings?.run) {
+          this.observeRings(packet.data.rings, true);
+          this.bridge.invalidateRings();
+        }
         this.responseTimeouts = (this.responseTimeouts || []).filter((entry) =>
           entry.waiter !== waiter && now - entry.at < 600000);
         this.lateAnswers = [...(this.lateAnswers || []).filter((at) => now - at < 600000), now];
@@ -5535,6 +5720,7 @@
           arena: s?.arena?.board ? { rank: s.arena.board.ownRank,
             attempts: ledger?.arena.attempts ?? 0, liked: s.arena.board.liked,
             reward: s.arena.board.reward } : null,
+          rings: P.ringsStatus(s, this.prefs, this.ringsDaily(s?.rings, roleId)),
           hidden: s?.trial?.weapon ? { level: s.trial.level, quality: s.trial.weapon.quality,
             sand: s.trial.balances?.sand, jade: s.trial.balances?.jade,
             seals: s.trial.balances?.seals } : null,
@@ -5583,7 +5769,12 @@
       planningPass(state, prefs, now = Date.now()) {
         const clock = this.planNow || monotonicNow, started = clock();
         try {
-          return P.plans(this.gearState(state, now), prefs, this.ledger, now);
+          const s = this.gearState(state, now);
+          if (!prefs.rings?.enabled) return P.plans(s, prefs, this.ledger, now);
+          return P.plans({ ...s, activity: this.activity || this.arenaPending,
+            ringsFighting: !!s.rings?.run && (this.bridge.ringsCombat || this.bridge.battle().stage === 'running'),
+            ringsStartAt: this.ringsStartAt }, prefs,
+          { ...this.ledger, rings: this.ringsDaily(s.rings) }, now);
         } finally {
           const ended = clock(), ms = Math.max(0, ended - started), at = this.now?.() ?? Date.now();
           this.nextPlanAt = ended + 4 * ms;
@@ -5703,6 +5894,17 @@
         const petBefore = petSignature();
         const before = this.bridge.state();
         if (!before) return;
+        const ringsCommand = a.type === 'RINGS_COMMAND', ringsEpoch = this.bridge.ringsEpoch;
+        if (a.family === 'rings') {
+          const current = P.ringsPlan({ ...before, activity: this.activity || this.arenaPending,
+            gearCheck: this.gearCheck, ringsStartAt: this.ringsStartAt,
+            ringsFighting: !!before.rings?.run && (this.bridge.ringsCombat || this.bridge.battle().stage === 'running') },
+          this.prefs, this.ringsDaily(before.rings), Date.now());
+          if (!this.enabled || !current || current.key !== a.key ||
+              (a.requiresTown && P.num(before.role.mapId) !== P.num(before.rings?.townId))) return;
+          if (ringsCommand && !a.readOnly) a.payload.revision = before.rings.revision;
+          if (a.type === 'COMBAT_START') this.ringsStartAt = Date.now();
+        }
         const check = P.materialCheck(a, before, this.prefs);
         if (!check.ok || !P.allowed(a, before, this.prefs, this.ledger)) {
           this.reason = a.label + '：' + (check.ok ? '当前资源或预算不足' : check.reason);
@@ -5727,6 +5929,14 @@
         this.paint();
         try {
           const result = await this.bridge.request(a, this.responseTimeout());
+          if (a.family === 'rings') {
+            if (this.bridge.state()?.role.id !== before.role.id) return;
+            if (result.success) {
+              if (a.readOnly && result.data?.rings) this.bridge.ringsConfirmed = ringsEpoch;
+              if (result.data?.rings) this.observeRings(result.data.rings, a.payload.action === 'enter');
+            } else this.ringsRefused(a, before.rings, result.message || '操作未成功');
+            return;
+          }
           if (welfareBet) { this.welfareResult(a, before, result); return; }
           if (a.petHatch && (result.success ?? result.code === 200)) {
             await this.bridge.request({ type: 'PET_COMMAND', payload: { action: 'list', petId: '' },
@@ -5836,6 +6046,15 @@
             this.pause('金币已低于保留额度，请核对当前资源');
           this.saveLedger();
         } catch (e) {
+          if (a.family === 'rings') {
+            if (this.bridge.state()?.role.id !== before.role.id) return;
+            if (e.code === 'SERVER_ERROR') this.ringsRefused(a, before.rings, safeMessage(e.serverMessage || e.message));
+            else {
+              this.log(safeMessage(e.message), 'warning');
+              this.suppress(a, 300000);
+            }
+            return;
+          }
           if (a.readOnly && e.code === 'SERVER_ERROR_UNATTRIBUTED') {
             this.suppress(a, 60000);
             if (queryBatch) queryBatch.unattributed++;
@@ -6037,11 +6256,45 @@
           return;
         }
         const rings = P.RINGS_MAP_IDS.includes(P.num(s.role.mapId));
+        const autoRings = this.prefs.rings?.enabled && P.num(s.role.level) >= 56;
+        if (autoRings) {
+          const mapId = P.num(s.role.mapId), prior = this.ringsMap, town = P.num(s.rings?.townId);
+          const active = this.bridge.battle().stage === 'running';
+          const mapChanged = prior !== mapId && (rings || P.RINGS_MAP_IDS.includes(prior) ||
+            mapId === town || prior === town);
+          if (mapChanged || this.ringsUiCombat && !active) {
+            this.bridge.invalidateRings();
+            if (this.ringsUiCombat && !active) this.bridge.ringsCombat = false;
+            s.ringsDirty = true;
+          }
+          this.ringsMap = mapId;
+          this.ringsUiCombat = (rings || !!s.rings?.run) && active;
+          const fighting = active || this.bridge.ringsCombat;
+          if (!this.busy && s.rings) this.observeRings(s.rings);
+          const otherActivity = s.trial?.run || s.arenaMatch?.active || this.arenaPending ||
+            [20050, 20051, 20052, 20070].includes(mapId) || this.activity?.mapId === mapId;
+          if (!otherActivity && (s.rings?.run || !s.rings || s.ringsDirty)) {
+            const a = P.ringsPlan({ ...s, ringsFighting: fighting, ringsStartAt: this.ringsStartAt },
+              this.prefs, this.ringsDaily(s.rings), now);
+            if (s.rings?.run && fighting)
+              this.reason = '新三环：' + P.ringStage(s.rings.run.stage) + '战斗中';
+            if (this.activity) {
+              this.activity = null;
+              this.bridge.cache.activityStatus = {};
+            }
+            const available = a && (this.suppressed.get(a.key) || 0) <= now;
+            if (available && !actionBlocked) await this.execute(a);
+            if (s.rings?.run || rings || available) {
+              this.paint();
+              return;
+            }
+          }
+        } else this.ringsMap = null;
         if (!actionBlocked) {
           this.updateGearCheck(s, now);
           if (!rings && this.maybeApplyUpdate(now)) return;
         }
-        if (rings || P.num(s.role.mapId) === 20070 || s.trial?.run) {
+        if ((rings && !autoRings) || P.num(s.role.mapId) === 20070 || s.trial?.run) {
           if (actionBlocked) return;
           if ((this.planNow || monotonicNow)() < (this.nextPlanAt ?? -Infinity)) {
             this.paint();
@@ -6132,11 +6385,14 @@
         const queries = plans.filter(parallelQuery);
         if (queries.length) this.executeQueries(queries).catch((e) => this.pause(e.message));
         if (actionBlocked) return;
+        const errandTown = (a) => a.townId ? { id: a.townId } : P.townFor(s, a.npc);
         const candidate = plans.find((a) => !parallelQuery(a) && !this.bridge.responsePending?.(a) &&
-          (!a.requiresTown || !!P.townFor(s, a.npc)));
+          (!a.requiresTown || !!errandTown(a)));
         if (candidate) {
+          if (candidate.family === 'rings' && candidate.requiresTown &&
+              queries.some((q) => q.type === 'ZL_STATUS' || q.type === 'CAMP_STATUS')) return;
           if (
-            candidate.type === 'UPDATE_SETTINGS' ||
+            candidate.readOnly && candidate.family === 'rings' || candidate.type === 'UPDATE_SETTINGS' ||
             (candidate.inBattle && !candidate.requiresTown)
           ) {
             await this.execute(candidate);
@@ -6156,14 +6412,14 @@
           }
           if (now - this.idleSince < 1500) return;
           if (candidate.requiresTown) {
-            const town = P.townFor(s, candidate.npc);
+            const town = errandTown(candidate);
             if (!town) return;
             if (P.num(town.id) !== P.num(s.role.mapId)) {
               await this.execute({
                 kind: 'request',
                 type: 'ENTER_MAP',
                 payload: { mapId: P.num(town.id) },
-                label: '前往「' + town.name + '」办理 ' + candidate.label,
+                label: candidate.family === 'rings' ? '新三环：前往楼兰' : '前往「' + town.name + '」办理 ' + candidate.label,
                 family: 'travel',
                 moneyCost: 0,
                 expCost: 0,
@@ -6701,8 +6957,8 @@
       intro: "人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。",
       updates: "自动检查：打开或刷新页面时一次，之后每小时一次；手动检查间隔至少 60 秒。",
     };
-    const CSS = `:host([data-theme="dark"]){--bg:#202020;--surface:#2b2b2b;--surface-alt:#1c1c1c;--control:#2f2f2f;--stroke:#3d3d3d;--stroke-strong:#9d9d9d;--divider:#353535;--text:#ffffff;--text-2:#c8c8c8;--text-3:#9a9a9a;--accent:#e2bd6b;--accent-hover:#edcd85;--on-accent:#2b2100;--accent-text:#e9c97e;--accent-soft:rgba(226,189,107,.14);--ok:#6ccb5f;--warn:#ffb454;--err:#ff99a4;--hover:rgba(255,255,255,.06);--pressed:rgba(255,255,255,.035);--shadow:0 16px 40px rgba(0,0,0,.42);color-scheme:dark}
-:host([data-theme="light"]){--bg:#f3f3f3;--surface:#ffffff;--surface-alt:#ebebeb;--control:#ffffff;--stroke:#d6d6d6;--stroke-strong:#868686;--divider:#e6e6e6;--text:#1a1a1a;--text-2:#5a5a5a;--text-3:#767676;--accent:#c99a1c;--accent-hover:#b98a12;--on-accent:#1f1700;--accent-text:#7d5800;--accent-soft:rgba(201,154,28,.16);--ok:#0f7b0f;--warn:#9a5b00;--err:#c42b1c;--hover:rgba(0,0,0,.045);--pressed:rgba(0,0,0,.025);--shadow:0 16px 40px rgba(0,0,0,.16);color-scheme:light}
+    const CSS = `:host([data-theme="dark"]){--bg:#202020;--surface:#2b2b2b;--surface-alt:#1c1c1c;--control:#2f2f2f;--stroke:#3d3d3d;--stroke-strong:#9d9d9d;--divider:#353535;--text:#ffffff;--text-strong:#ffffff;--text-2:#c8c8c8;--text-3:#9a9a9a;--accent:#e2bd6b;--accent-hover:#edcd85;--on-accent:#2b2100;--accent-text:#e9c97e;--accent-soft:rgba(226,189,107,.14);--ok:#6ccb5f;--warn:#ffb454;--err:#ff99a4;--hover:rgba(255,255,255,.06);--pressed:rgba(255,255,255,.035);--shadow:0 16px 40px rgba(0,0,0,.42);color-scheme:dark}
+:host([data-theme="light"]){--bg:#f3f3f3;--surface:#ffffff;--surface-alt:#ebebeb;--control:#ffffff;--stroke:#d6d6d6;--stroke-strong:#868686;--divider:#e6e6e6;--text:#1a1a1a;--text-strong:#000000;--text-2:#5a5a5a;--text-3:#767676;--accent:#c99a1c;--accent-hover:#b98a12;--on-accent:#1f1700;--accent-text:#7d5800;--accent-soft:rgba(201,154,28,.16);--ok:#0f7b0f;--warn:#9a5b00;--err:#c42b1c;--hover:rgba(0,0,0,.045);--pressed:rgba(0,0,0,.025);--shadow:0 16px 40px rgba(0,0,0,.16);color-scheme:light}
 :host{all:initial;font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;color:var(--text);font-size:13px;line-height:1.5;font-variant-numeric:tabular-nums}
 *{box-sizing:border-box}[hidden]{display:none!important}
 ::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-thumb{background:var(--stroke);border-radius:4px}::-webkit-scrollbar-track{background:transparent}
@@ -6749,7 +7005,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
 .segmented{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}.segmented button{flex:1;padding:4px;border:1px solid var(--stroke);border-radius:4px;background:var(--control);font-size:12px;white-space:nowrap}.segmented button[aria-pressed=true]{background:var(--accent-soft);color:var(--accent-text);border-color:var(--accent)}.segmented button:hover{background:var(--hover)}
 .trend{display:block;width:100%;height:140px;overflow:visible}.chart-line{fill:none;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}.chart-area{fill:var(--accent-soft)}.chart-dot{fill:var(--surface);stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}.chart-grid{stroke:var(--divider);vector-effect:non-scaling-stroke}.chart-label{fill:var(--text-3);font-size:11px}.chart-range{fill:var(--hover)}.chart-hit{fill:transparent}.chart-guide{stroke:var(--stroke-strong);visibility:hidden;vector-effect:non-scaling-stroke}.chart-hour.tip-active .chart-guide{visibility:visible}.chart-hour:focus-visible{outline:none}.chart-hour:focus-visible .chart-dot{stroke-width:3}
 .formula-table td:last-child{font-family:Consolas,monospace;text-align:left;overflow-wrap:anywhere}.formula-table th:last-child{text-align:left}.quality-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text-3);margin-right:4px}.quality-1{background:var(--text-2)}.quality-2{background:oklch(from var(--accent) l c 250)}.quality-3{background:oklch(from var(--accent) l c 305)}.quality-4{background:var(--warn)}.quality-5{background:var(--err)}
-.side,.content{display:flex;flex-direction:column;min-height:0;min-width:0}.side{background:var(--surface-alt)}.search-box{display:flex;padding:8px;gap:4px}.search-box input{min-width:0;width:100%}.page-tabs{flex:1}.group-heading{flex:none;height:24px;font-size:12px;color:var(--text-2);padding:3px 8px}.page-header{display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid var(--divider)}.dirty{text-align:right}.footer{justify-content:flex-end}.searching .active{opacity:.5}label.field:has(select){display:flex;flex-wrap:wrap}label.field:has(select) .field-label{flex:1}label.field:has(select) .field-control{max-width:60%}label.field:has(select) .field-error{width:100%}.search-field>div{min-width:0}.search-field .breadcrumb{display:block;margin:0;height:auto;padding:0;font-size:12px;color:var(--text-2)}.current-status{padding:12px}.current-status .summary{padding:0;border:0}.current-status>.block-title{margin-top:0}.flash{animation:field-flash 600ms ease-out}@keyframes field-flash{from{background:var(--accent-soft)}}.hud-update,mark{background:var(--accent-soft);color:var(--accent-text)}
+.side,.content{display:flex;flex-direction:column;min-height:0;min-width:0}.side{background:var(--surface-alt)}.search-box{display:flex;padding:8px;gap:4px}.search-box input{min-width:0;width:100%}.page-tabs{flex:1}.group-heading{flex:none;height:24px;font-size:14px;line-height:20px;font-weight:700;color:var(--text-strong);padding:2px 8px}.page-header{display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid var(--divider)}.dirty{text-align:right}.footer{justify-content:flex-end}.searching .active{opacity:.5}label.field:has(select){display:flex;flex-wrap:wrap}label.field:has(select) .field-label{flex:1}label.field:has(select) .field-control{max-width:60%}label.field:has(select) .field-error{width:100%}.search-field>div{min-width:0}.search-field .breadcrumb{display:block;margin:0;height:auto;padding:0;font-size:12px;color:var(--text-2)}.current-status{padding:12px}.current-status .summary{padding:0;border:0}.current-status>.block-title{margin-top:0}.flash{animation:field-flash 600ms ease-out}@keyframes field-flash{from{background:var(--accent-soft)}}.hud-update,mark{background:var(--accent-soft);color:var(--accent-text)}
 @media(max-width:819px){.main{display:flex;flex-direction:column}.side{flex:none}.content{flex:1}.page-tabs{flex-direction:row;overflow-x:auto}.group-heading{white-space:nowrap;align-self:center}.page-tabs button{max-width:none}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}`;
     class Panel {
@@ -7618,7 +7874,20 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             f('对手战力上限', 'arena.maxPowerRatio', { unit: '倍', help: '只挑战战力不超过自己 × 此倍数的对手', dependsOn: 'arena.challenge' }) +
             f('比武榜刷新间隔', 'arena.refreshMinutes', { unit: '分钟', dependsOn: 'arena.enabled' }) +
             f('结算前冲榜时长', 'arena.rushMinutes', { unit: '分钟', help: '0 关闭', dependsOn: 'arena.challenge' }) +
-            '<div class="arena-status">' + this.arenaHTML(status.arena) + '</div>', false, { help: HELP.arena });
+            '<div class="arena-status">' + this.arenaHTML(status.arena) + '</div>', false, { help: HELP.arena }) +
+            g('新三环',
+            f('自动挑战新三环', 'rings.enabled') +
+            f('每日挑战轮数', 'rings.roundsPerDay', { unit: '轮', min: 1, max: 10, dependsOn: 'rings.enabled',
+              help: '每天最多打几轮。每环每天只发 2 次奖励，打满 2 轮即可拿全' }) +
+            f('每轮失败后重试次数', 'rings.maxRetries', { unit: '次', min: 0, max: 20, dependsOn: 'rings.enabled',
+              help: '一轮里失败后最多再进几次，每轮重新计数；0 表示失败后本轮直接结束' }) +
+            f('自动领取暂存的神兵符', 'rings.claimInbox', { dependsOn: 'rings.enabled' }) +
+            f('攒够 300 枚自动兑换', 'rings.exchange', { dependsOn: 'rings.enabled',
+              choices: [['off', '不兑换'], ['ring', '只换重楼戒'], ['jade', '只换重楼玉'], ['ringFirst', '先戒后玉'], ['jadeFirst', '先玉后戒']],
+              help: '已有的那件不会重复兑换；兑换的装备获得即绑定' }) +
+            f('状态刷新间隔', 'rings.refreshMinutes', { unit: '分钟', min: 1, max: 120, dependsOn: 'rings.enabled' }) +
+            '<div class="rings-status">' + this.ringsHTML(status.rings) + '</div>', false, {
+              help: '56 级开放。在楼兰何悦处从第一环打起，每环 5 枚神兵符，每环每天最多领 2 次；失败后从第一环重开。' });
         }
         if (this.section === 'growth')
           html =
@@ -7859,6 +8128,23 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           (s.batchSell !== false && count > 0 && count < p.sell.batchMin ? this.statTile('还差', p.sell.batchMin - count + ' 件') : '') +
           '</div><div class="chips">' + [...reasons].map(([reason, n]) => this.chip(reason + ' ' + n)).join('') + '</div>' +
           this.scoreTableHTML(['名称', '品质', '等级', '评分', '模板ID'], rows);
+      }
+      ringsHTML(r) {
+        if (!r) return '';
+        if (!r.level56) return this.chip('56 级开放');
+        if (r.at == null) return this.chip('未读取');
+        const names = TLPolicy.RING_NAMES, last = r.lastSettlement;
+        return this.statRow('今日奖励', '', { html: names.map((name, i) =>
+          '<span>' + name + ' ' + TLPolicy.num(r.counts[i]) + '/2</span>').join(' · ') }) +
+          this.statRow('神兵符', r.bound + ' 绑定 + ' + r.unbound + ' 不绑定') +
+          (r.pending ? this.statRow('暂存', r.pending + ' 枚') : '') +
+          this.statRow('本轮', r.run ? '第 ' + (r.run.stage + 1) + ' 环「' + names[r.run.stage] + '」' : '未进入',
+            { chip: r.run ? this.chip('进行中', 'ok') : '' }) +
+          this.statRow('今日轮数', (r.rounds ? '第 ' + r.rounds + ' 轮' : '未开始') + ' / 共 ' + r.roundsPerDay + ' 轮', {
+            chip: r.done ? this.chip('今日已完成', 'ok') : r.stopped ? this.chip('今日轮数已用完', 'warn') : '' }) +
+          (r.roundOpen ? this.statRow('本轮重试', r.retries + ' / ' + r.maxRetries + ' 次') : '') +
+          this.statRow('最近结算', last ? names[last.stage] + ' · ' + last.reason + ' · ' +
+            TLPolicy.num(last.bound) + ' 绑定 + ' + TLPolicy.num(last.unbound) + ' 不绑定' : '暂无');
       }
       gearCheckHTML(gear) {
         const check = gear?.check, fmt = (n) => n == null ? '—' : Number(n).toFixed(1),
@@ -8191,6 +8477,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         if (this.section === 'battle') {
           this.paintFragment('.welfare-status', this.welfareHTML(this.controller.bridge.state(), s.ledger));
           this.paintFragment('.arena-status', this.arenaHTML(s.arena));
+          this.paintFragment('.rings-status', this.ringsHTML(s.rings));
         }
         if (this.section === 'growth') {
           this.paintFragment('.gear-check-status', this.gearCheckHTML(s.gear));
