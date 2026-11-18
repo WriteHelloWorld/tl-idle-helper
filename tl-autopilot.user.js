@@ -6349,17 +6349,6 @@
             const roleStored = readStorage(PREFIX + ':config:' + id, null);
             this.prefs = P.config({ ...this.prefs, ...(roleStored || {}), roleConfig: this.prefs.roleConfig });
           }
-          // 托管恢复判定（沿用各角色自己的 resumeAfterReload 偏好）；本页签内
-          // 手动 开始/暂停 后不再自动决定
-          if (!this.resumeDecided) {
-            this.resumeDecided = true;
-            const gate = this.prefs.resumeAfterReload || this.prefs.reconnect.autoReload;
-            // 角色键缺失（升级首日）回落旧全局键，保住单开用户的托管恢复
-            if (this.resumeWanted && gate && readStorage(this.runningKey(), readStorage(RUNNING, false))) {
-              this.enabled = true;
-              this.log('已恢复上次托管状态');
-            }
-          }
           // Recruiting teams and two-hour rounds can span local midnight.
           const yesterday = new Date();
           yesterday.setDate(yesterday.getDate() - 1);
@@ -7216,6 +7205,23 @@
           try { this.bridge.stores().get('online-lottery')?.query?.('open', 0); } catch {}
         }
         if (!this.enabled) {
+          // 恢复判定：角色已知（登录态恢复）后读该角色的运行标记，判定一次。
+          // 不能放构造器（构造时角色未知），也不能放 setRole（未启用时 tick
+          // 在此分支提前返回，setRole 不会被执行到）
+          if (!this.resumeDecided) {
+            const s = this.bridge.state();
+            const rid = P.num(s?.role?.id);
+            if (rid) {
+              this.resumeDecided = true;
+              this.setRole(rid);
+              const gate = this.prefs.resumeAfterReload || this.prefs.reconnect.autoReload;
+              // 角色键缺失（升级首日）回落旧全局键，保住单开用户的托管恢复
+              if (gate && readStorage(this.runningKey(), readStorage(RUNNING, false))) {
+                this.enabled = true;
+                this.log('已恢复上次托管状态');
+              }
+            }
+          }
           if (this.gearCheck && !this.busy && this.bridge.connected && this.bridge.sessionReady) {
             const s = this.bridge.state();
             if (s) {
