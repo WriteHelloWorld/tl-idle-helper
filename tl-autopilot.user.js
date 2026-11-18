@@ -2573,6 +2573,11 @@
         }
       }
 
+      // The tower profile takes its enemies from the trial status, which the hidden-weapon upkeep reads only when it is on.
+      if (num(role.level) >= 50 && !p.hidden.enabled && p.gear.assault.enabled && p.gear.scoring === 'combat' &&
+          !s.trial?.run && (!Number.isFinite(s.trial?.at) || now - s.trial.at >= 3600000))
+        add(action('TRIAL_COMMAND', { action: 'status', ...(s.trial ? { revision: s.trial.revision } : {}) },
+          '读取无相浮屠层数据', 'trial', { responseType: 'TRIAL_RESPONSE', readOnly: true, inBattle: true }));
       let gearChosenId = null;
       const warehouseSetIds = setTemplateIds(s);
       if (pending.length && !profileLocked(s)) {
@@ -3926,6 +3931,7 @@
         this.noBatchSell = false;
         this.log = log;
         this.socket = null;
+        this.adopted = false;
         this.sessionReady = false;
         this.waiter = null;
         this.queryWaiters = new Map();
@@ -4006,64 +4012,104 @@
         waiter.reject(error);
       }
       installSocketHook() {
+        if (this.socketHookInstalled) return;
         const Native = window.WebSocket;
         if (typeof Native !== 'function') throw new Error('浏览器没有 WebSocket');
         const bridge = this;
+        const send = Native.prototype.send;
+        Native.prototype.send = function (...args) {
+          if (bridge.tryAdopt(this)) bridge.observeSend(args[0]);
+          return Reflect.apply(send, this, args);
+        };
         window.WebSocket = new Proxy(Native, {
           construct(target, args, newTarget) {
             const socket = Reflect.construct(target, args, newTarget);
-            let url;
-            try {
-              url = new URL(String(args[0]), location.href);
-            } catch {
-              return socket;
-            }
-            if (
-              url.pathname === '/ws' &&
-              url.hostname === location.hostname &&
-              url.port === location.port
-            )
-              bridge.attach(socket);
+            if (bridge.gameSocketUrl(args[0])) bridge.attach(socket);
             return socket;
           },
         });
+        this.socketHookInstalled = true;
       }
-      attach(socket) {
+      gameSocketUrl(value) {
+        try {
+          const url = new URL(String(value), location.href);
+          return url.pathname === '/ws' && url.hostname === location.hostname && url.port === location.port;
+        } catch {
+          return false;
+        }
+      }
+      tryAdopt(socket) {
+        if (socket === this.socket || this.connected || socket?.readyState !== 1 || !this.gameSocketUrl(socket.url))
+          return false;
+        this.attach(socket, true);
+        if (this.character()?.role?.id) this.enterSession();
+        this.log('已接管游戏连接（脚本启动晚于游戏）');
+        return true;
+      }
+      enterSession() {
+        this.sessionReady = true;
+        this.authFailed = false;
+        this.cache.activityStatus = {};
+        this.cache.forgePreviews = {};
+        this.cache.pets = null;
+        this.cache.lottery = null;
+        this.cache.welfare = null;
+        this.cache.welfareHistory = null;
+        this.welfareRequests.clear();
+        this.cache.arena = null;
+        this.cache.arenaMatch = null;
+        this.cache.trial = null;
+        this.cache.rings = null;
+        this.ringsRequests.clear();
+        this.ringsRequestAt.clear();
+        this.ringsCombat = false;
+        this.invalidateRings();
+        this.cache.viewedPlayers = new Map();
+      }
+      observeSend(data) {
+        if (typeof data === 'string') {
+          try {
+            const packet = JSON.parse(data);
+            if (packet.type === 'RINGS_COMMAND') {
+              this.ringsRequests.set(packet.payload?.requestId, packet.payload?.action);
+              this.ringsRequestAt.set(packet.payload?.requestId, Date.now());
+              if (packet.payload?.action !== 'status') this.invalidateRings();
+            }
+            if (packet.type === 'WELFARE_LOTTERY_COMMAND' && packet.payload?.requestId) {
+              this.welfareRequests.set(packet.payload.requestId, { action: packet.payload.action, page: packet.payload.page });
+              if (this.welfareRequests.size > 100)
+                this.welfareRequests.delete(this.welfareRequests.keys().next().value);
+            }
+            if (
+              packet.type === 'CONSIGNMENT_LIST' &&
+              P.num(packet.payload?.page) === 1 &&
+              !packet.payload?.myList && this.cache.consignment.size
+            ) {
+              this.cache.consignment.clear();
+              this.cache.consignmentVersion = P.num(this.cache.consignmentVersion) + 1;
+            }
+            if (!this.sending && this.waiter && !this.waiter.petHatch && packet.type === this.waiter.type && !['ARENA_COMMAND', 'PET_COMMAND', 'RINGS_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(packet.type))
+              this.waiter.interference = true;
+          } catch {}
+        }
+      }
+      attach(socket, adopted = false) {
         this.socket = socket;
+        this.adopted = adopted;
         this.sessionReady = false;
         this.authFailed = false;
         this.welfareRequests = new Map();
         this.ringsRequests = new Map();
         this.ringsRequestAt = new Map();
+        this.hookedSockets ||= new WeakSet();
+        if (this.hookedSockets.has(socket)) return;
+        this.hookedSockets.add(socket);
         const send = socket.send;
         const bridge = this;
         socket.send = function (data) {
-          if (typeof data === 'string') {
-            try {
-              const packet = JSON.parse(data);
-              if (packet.type === 'RINGS_COMMAND') {
-                bridge.ringsRequests.set(packet.payload?.requestId, packet.payload?.action);
-                bridge.ringsRequestAt.set(packet.payload?.requestId, Date.now());
-                if (packet.payload?.action !== 'status') bridge.invalidateRings();
-              }
-              if (packet.type === 'WELFARE_LOTTERY_COMMAND' && packet.payload?.requestId) {
-                bridge.welfareRequests.set(packet.payload.requestId, { action: packet.payload.action, page: packet.payload.page });
-                if (bridge.welfareRequests.size > 100)
-                  bridge.welfareRequests.delete(bridge.welfareRequests.keys().next().value);
-              }
-              if (
-                packet.type === 'CONSIGNMENT_LIST' &&
-                P.num(packet.payload?.page) === 1 &&
-                !packet.payload?.myList && bridge.cache.consignment.size
-              ) {
-                bridge.cache.consignment.clear();
-                bridge.cache.consignmentVersion = P.num(bridge.cache.consignmentVersion) + 1;
-              }
-              if (!bridge.sending && bridge.waiter && !bridge.waiter.petHatch && packet.type === bridge.waiter.type && !['ARENA_COMMAND', 'PET_COMMAND', 'RINGS_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(packet.type))
-                bridge.waiter.interference = true;
-            } catch {}
-          }
-          return Reflect.apply(send, this, [data]);
+          if (this === socket && socket !== bridge.socket) bridge.tryAdopt(socket);
+          bridge.observeSend(data);
+          return Reflect.apply(send, this, arguments);
         };
         socket.addEventListener('open', () => {
           if (this.socket === socket) {
@@ -4123,26 +4169,7 @@
             this.authFailed = true;
             this.sessionReady = false;
           }
-          if (type === 'ENTER_GAME_RESPONSE' && packet.success && packet.data?.role?.id) {
-            this.sessionReady = true;
-            this.authFailed = false;
-            this.cache.activityStatus = {};
-            this.cache.forgePreviews = {};
-            this.cache.pets = null;
-            this.cache.lottery = null;
-            this.cache.welfare = null;
-            this.cache.welfareHistory = null;
-            this.welfareRequests.clear();
-            this.cache.arena = null;
-            this.cache.arenaMatch = null;
-            this.cache.trial = null;
-            this.cache.rings = null;
-            this.ringsRequests.clear();
-            this.ringsRequestAt.clear();
-            this.ringsCombat = false;
-            this.invalidateRings();
-            this.cache.viewedPlayers = new Map();
-          }
+          if (type === 'ENTER_GAME_RESPONSE' && packet.success && packet.data?.role?.id) this.enterSession();
           if (type === 'GET_PLAYER_INFO_RESPONSE' && packet.success && packet.data?.role?.id) {
             const data = packet.data, role = data.role,
               entries = this.cache.viewedPlayers || (this.cache.viewedPlayers = new Map()), id = P.num(role.id);
@@ -4334,7 +4361,7 @@
         this.ringsEpoch = (this.ringsEpoch || 0) + 1;
       }
       pinia() {
-        const app = document.querySelector('#app')?.__vue_app__;
+        const app = window.document?.querySelector?.('#app')?.__vue_app__;
         if (!app?._context?.provides) return null;
         for (const key of Reflect.ownKeys(app._context.provides)) {
           const value = app._context.provides[key];
@@ -5433,7 +5460,8 @@
           const equipped = bag.filter((e) => e.isEquipped && P.num(P.template(e).slotType) !== 12);
           for (const e of equipped) g.names[e.id] = P.template(e).name;
           g.loadouts[g.worn] = equipped.map((e) => P.num(e.id));
-          this.log('装备方案：' + P.profileLabel(g.worn) + ' → ' + P.profileLabel(target) + '（' + (mode === 'auto' ? '新三环' : '手动') + '）');
+          this.log('装备方案：' + P.profileLabel(g.worn) + ' → ' + P.profileLabel(target) + '（' +
+            (mode !== 'auto' ? '手动' : target === 'rings' ? '新三环' : '自动') + '）');
           g.pending = g.loadouts[target].filter((id) => !g.loadouts[g.worn].includes(id));
           // The destination is restored once, including when coming back to farm.
           Object.assign(g, { worn: target, changedAt: now, failures: {}, changed: 0 });
@@ -5455,7 +5483,9 @@
           return false;
         });
         if ((switched || hadPending) && !g.pending.length)
-          this.log(P.longLabel(g.worn) + '已就绪（换装 ' + g.changed + ' 件）');
+          // Without a stored loadout the choice by score starts only now; nothing is ready yet.
+          this.log(P.longLabel(g.worn) + (switched && !g.loadouts[g.worn].length ? '：首次使用，按评分选装' :
+            '已就绪（换装 ' + g.changed + ' 件）'));
         if (dirty) this.saveProfile();
       }
       profileFailure(a) {
@@ -6036,6 +6066,14 @@
           enabled: this.enabled,
           connected: this.bridge.connected,
           ready: this.bridge.sessionReady,
+          connection: {
+            socket: !this.bridge.socket ? 'none' : this.bridge.connected ? 'open' :
+              this.bridge.socket.readyState === 0 ? 'connecting' : 'closed',
+            adopted: !!this.bridge.adopted,
+            sessionReady: !!this.bridge.sessionReady,
+            reconnectModal: !!this.bridge.reconnectVisible?.(),
+            storeRole: !!this.bridge.character?.()?.role?.id,
+          },
           reason: !this.enabled && this.lastPause?.byUser === false ? '托管已自行暂停（' + new Date(this.lastPause.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) + '）：' + this.lastPause.reason : this.reason,
           busy: this.busy,
           action: this.action?.label || '',
@@ -6544,6 +6582,13 @@
         const statsRole = this.bridge?.character?.()?.role;
         this.ensureStats(statsRole?.id);
         if (statsRole) this.stats?.tick(statsRole.mapId);
+        const now = Date.now();
+        const needsSocket = statsRole?.id && !this.bridge.connected;
+        const reconnectModal = (this.enabled || needsSocket) && this.bridge.reconnectVisible?.();
+        if (needsSocket && !reconnectModal && now >= (this.nextSocketProbe ?? 0)) {
+          this.nextSocketProbe = now + 30000;
+          try { this.bridge.stores().get('online-lottery')?.query?.('open', 0); } catch {}
+        }
         if (!this.enabled) {
           if (this.gearCheck && !this.busy && this.bridge.connected && this.bridge.sessionReady) {
             const s = this.bridge.state();
@@ -6558,12 +6603,14 @@
           this.paint();
           return;
         }
-        const now = Date.now();
         this.tryCloseArenaResult(now);
-        if (!this.bridge.connected || !this.bridge.sessionReady || this.bridge.reconnectVisible()) {
+        if (this.bridge.authFailed || reconnectModal || !this.bridge.connected || !this.bridge.sessionReady) {
           this.reason = this.bridge.authFailed
             ? '游戏认证失效，请在原页面重新登录'
-            : '等待游戏连接与角色快照';
+            : reconnectModal ? '游戏正在重连，等待恢复'
+            : this.bridge.connected ? '连接已建立，等待游戏进入角色'
+            : statsRole?.id ? '未接管到游戏连接（脚本启动晚于游戏，或其他脚本占用了连接），正在尝试接管；不行请刷新页面'
+            : '等待游戏连接';
           this.maybeReload(now);
           this.paint();
           return;
