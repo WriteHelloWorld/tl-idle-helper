@@ -4625,7 +4625,7 @@
             if (attr.name.startsWith('data-v-')) line.setAttribute(attr.name, attr.value);
         }
         const label = bound ? '已绑定' : on(item.equipTmpl?.bindOnEquip) || on(item.bindOnEquip)
-          ? '未绑定 · 装备后绑定' : '未绑定（可交易）';
+          ? '未绑定 · 装备后绑定' : '未绑定';
         if (line.textContent !== label) {
           line.textContent = label;
           line.style.color = bound ? '' : '#b9f6ca';
@@ -6712,7 +6712,7 @@ button,input,select,textarea,summary,input[role=switch]::before{transition:color
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 button:hover,summary:hover{background-color:var(--hover)}button:active,summary:active{background-color:var(--pressed)}
 button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.4;cursor:default}
-.shell{display:flex;flex-direction:column;position:fixed;left:max(12px,calc((100vw - 760px)/2));top:max(12px,calc((100vh - 600px)/2));width:760px;height:min(600px,calc(100vh - 24px));max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);background:var(--bg);border:1px solid var(--stroke);border-radius:8px;box-shadow:var(--shadow);pointer-events:auto;overflow:hidden}
+.shell{display:flex;flex-direction:column;position:fixed;left:max(12px,calc((100vw - 760px)/2));top:max(12px,calc((100vh - 660px)/2));width:760px;height:min(660px,calc(100vh - 24px));max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);background:var(--bg);border:1px solid var(--stroke);border-radius:8px;box-shadow:var(--shadow);pointer-events:auto;overflow:hidden}
 .head,.footer{flex-shrink:0}.head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--divider)}.head strong{font-size:14px;font-weight:600}
 .head-title{display:flex;align-items:center;flex-wrap:wrap;gap:8px;flex:1;min-width:0}.head .version{height:28px;padding:0 8px;border:1px solid transparent;border-radius:4px;background:transparent;font-size:12px;color:var(--text-2);white-space:nowrap}.head .version:disabled{cursor:default;background:transparent}.head .version.has-update{color:var(--accent-text);background:var(--accent-soft)}.head .version.has-update:hover{background:var(--hover)}.head .version.has-update:active{background:var(--pressed)}
 .btn{height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--stroke);background:var(--control)}.btn:hover{background:var(--hover)}.btn:active{background:var(--pressed)}
@@ -6724,11 +6724,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.4;curs
 .summary{margin:0;padding:12px;background:var(--surface);border:1px solid var(--stroke);border-radius:6px}.status-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.status-label{display:flex;align-items:center;gap:8px}.role-name{color:var(--text-2);min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dot{width:8px;height:8px;background:var(--text-3);border-radius:50%;flex-shrink:0}.dot.on{background:var(--ok)}.reason{padding-top:4px;font-size:15px;font-weight:600;overflow-wrap:anywhere}
 .figures{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--divider)}.figure span{display:block;font-size:11px;color:var(--text-2)}.figure strong{font-weight:600;overflow-wrap:anywhere}
 .facts{display:grid;row-gap:4px;margin:8px 0 0;padding-top:8px;border-top:1px solid var(--divider)}.facts>div{display:grid;grid-template-columns:2em minmax(0,1fr);column-gap:12px}.facts dt{color:var(--text-2);white-space:nowrap}.facts dd{margin:0;min-width:0;text-align:left;overflow-wrap:anywhere}.summary-login{margin-top:4px;font-size:12px;color:var(--text-2)}
-.tabs{display:flex;gap:4px}.tabs button{position:relative;flex:none;height:34px;border:0;background:transparent;color:var(--text-2);padding:0 12px;border-radius:4px;white-space:nowrap}.tabs button:hover{background:var(--hover)}.tabs button:active{background:var(--pressed)}.tabs button.active{color:var(--text);font-weight:600}
+.tabs{display:flex}.tabs button{position:relative;flex:none;height:28px;border:0;background:transparent;color:var(--text-2);padding:0 12px;border-radius:4px;white-space:nowrap}.tabs button:hover,.tabs button:active{background:transparent}.tabs button.active{color:var(--text);font-weight:600}
 .tabs .has-update::after{content:'';display:inline-block;width:6px;height:6px;margin-left:4px;vertical-align:middle;border-radius:50%;background:var(--accent)}
-.main{display:grid;grid-template-columns:190px minmax(0,1fr);min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--divider)}.page-tabs{flex-direction:column;min-height:0;padding:8px;background:var(--surface-alt);border-right:1px solid var(--stroke);overflow:auto}.page-tabs button{text-align:left;padding:0 8px;overflow:hidden;text-overflow:ellipsis}.page-tabs button.active{background:var(--surface)}.page-tabs button.active:hover{background:var(--hover)}.page-tabs button.active:active{background:var(--pressed)}.page-tabs button.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:4px;background:var(--accent)}
+.main{display:grid;grid-template-columns:190px minmax(0,1fr);min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--divider)}.page-tabs{flex-direction:column;min-height:0;padding:8px;background:var(--surface-alt);border-right:1px solid var(--stroke);overflow:auto}.page-tabs button{transition:none;text-align:left;padding:0 8px;overflow:hidden;text-overflow:ellipsis}.page-tabs button.active{background:var(--surface)}.page-tabs button.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:4px;background:var(--accent)}
 .body{padding:12px;flex:1;overflow:auto;min-height:0;min-width:0}.group{background:var(--surface);border:1px solid var(--stroke);border-radius:6px;margin-top:8px}.group:first-child{margin-top:0}.group>summary{display:flex;align-items:center;gap:8px;min-height:40px;padding:8px 12px;list-style:none;border-radius:4px;font-weight:600}.group>summary::-webkit-details-marker{display:none}.group>summary::after{content:'›';flex:none;color:var(--text-2);transform:rotate(0deg);transition:transform 120ms ease}.group[open]>summary::after{transform:rotate(90deg)}.section-title{min-width:0;flex:1}.section-state{font-size:12px;font-weight:400;color:var(--text-2);white-space:nowrap}.master{display:flex;align-items:center;flex:none}.section-content{padding:0 12px 8px;border-top:1px solid var(--divider)}
-.field{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 8px;min-height:40px;padding:4px 0;border-bottom:1px solid var(--divider)}.field:last-child{border-bottom:0}.field-label{display:flex;align-items:center;gap:4px;min-width:0;white-space:nowrap}.field-label>span{overflow:hidden;text-overflow:ellipsis}.field-control{display:flex;align-items:center;gap:4px}.field.dependent{padding-left:12px}.field.disabled{opacity:.45}.instant,.field-error{grid-column:1/-1}.unit{font-size:11px;color:var(--text-2);white-space:nowrap}.instant{font-size:12px;color:var(--accent-text);margin-left:4px;white-space:nowrap}
+.field{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 8px;min-height:40px;padding:4px 0;border-bottom:1px solid var(--divider)}.field:last-child:not(.search-field){border-bottom:0}.field-label{display:flex;align-items:center;gap:4px;min-width:0;white-space:nowrap}.field-label>span{overflow:hidden;text-overflow:ellipsis}.field-control{display:flex;align-items:center;gap:4px}.field.dependent{padding-left:12px}.field.disabled{opacity:.45}.instant,.field-error{grid-column:1/-1}.unit{font-size:11px;color:var(--text-2);white-space:nowrap}.instant{font-size:12px;color:var(--accent-text);margin-left:4px;white-space:nowrap}
 .control-input,.control-select{height:28px;border:1px solid var(--stroke);border-bottom-color:var(--stroke-strong);background:var(--control);border-radius:4px;padding:0 8px}.control-input{width:96px}.control-select{width:auto;max-width:100%;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
 .control-input:hover,.control-select:hover,textarea:hover{background:var(--hover)}.control-input:active,.control-select:active,textarea:active{background:var(--pressed)}.control-input:focus,.control-select:focus,textarea:focus{border-bottom:2px solid var(--accent)}input::placeholder,textarea::placeholder{color:var(--text-3)}
 input[role=switch]{appearance:none;position:relative;width:40px;height:20px;margin:0;border:1px solid var(--stroke-strong);border-radius:12px;background:transparent;cursor:pointer;flex:none}input[role=switch]::before{content:'';position:absolute;top:50%;left:3px;width:12px;height:12px;border-radius:50%;background:var(--stroke-strong);transform:translateY(-50%)}input[role=switch]:checked{background:var(--accent);border-color:var(--accent)}input[role=switch]:checked::before{background:var(--on-accent);transform:translate(20px,-50%)}input[role=switch]:hover{background:var(--hover)}input[role=switch]:checked:hover{background:var(--accent-hover);border-color:var(--accent-hover)}input[role=switch]:hover::before{left:2px;width:14px;height:14px}input[role=switch]:active{background:var(--pressed)}input[role=switch]:checked:active{background:var(--accent)}
@@ -6748,7 +6748,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
 .segmented{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}.segmented button{flex:1;padding:4px;border:1px solid var(--stroke);border-radius:4px;background:var(--control);font-size:12px;white-space:nowrap}.segmented button[aria-pressed=true]{background:var(--accent-soft);color:var(--accent-text);border-color:var(--accent)}.segmented button:hover{background:var(--hover)}
 .trend{display:block;width:100%;height:140px;overflow:visible}.chart-line{fill:none;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}.chart-area{fill:var(--accent-soft)}.chart-dot{fill:var(--surface);stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}.chart-grid{stroke:var(--divider);vector-effect:non-scaling-stroke}.chart-label{fill:var(--text-3);font-size:11px}.chart-range{fill:var(--hover)}.chart-hit{fill:transparent}.chart-guide{stroke:var(--stroke-strong);visibility:hidden;vector-effect:non-scaling-stroke}.chart-hour.tip-active .chart-guide{visibility:visible}.chart-hour:focus-visible{outline:none}.chart-hour:focus-visible .chart-dot{stroke-width:3}
 .formula-table td:last-child{font-family:Consolas,monospace;text-align:left;overflow-wrap:anywhere}.formula-table th:last-child{text-align:left}.quality-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text-3);margin-right:4px}.quality-1{background:var(--text-2)}.quality-2{background:oklch(from var(--accent) l c 250)}.quality-3{background:oklch(from var(--accent) l c 305)}.quality-4{background:var(--warn)}.quality-5{background:var(--err)}
-.side,.content{display:flex;flex-direction:column;min-height:0;min-width:0}.side{background:var(--surface-alt)}.search-box{display:flex;padding:8px;gap:4px}.search-box input{min-width:0;width:100%}.page-tabs{flex:1}.group-heading{font-size:11px;color:var(--text-2);padding:6px 8px}.page-header{display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid var(--divider)}.dirty{text-align:right}.footer{justify-content:flex-end}.searching .active{opacity:.5}.field:has(select){display:flex;flex-wrap:wrap}.field:has(select) .field-label{flex:1}.field:has(select) .field-control{max-width:60%}.field:has(select) .field-error{width:100%}.search-field{position:relative;padding-bottom:20px}.search-field .breadcrumb{position:absolute;left:0;bottom:0;height:20px;font-size:11px}.current-status{padding:12px}.current-status .summary{padding:0;border:0}.current-status>.block-title{margin-top:0}.flash{animation:field-flash 600ms ease-out}@keyframes field-flash{from{background:var(--accent-soft)}}.hud-update,mark{background:var(--accent-soft);color:var(--accent-text)}
+.side,.content{display:flex;flex-direction:column;min-height:0;min-width:0}.side{background:var(--surface-alt)}.search-box{display:flex;padding:8px;gap:4px}.search-box input{min-width:0;width:100%}.page-tabs{flex:1}.group-heading{flex:none;height:24px;font-size:12px;color:var(--text-2);padding:3px 8px}.page-header{display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid var(--divider)}.dirty{text-align:right}.footer{justify-content:flex-end}.searching .active{opacity:.5}label.field:has(select){display:flex;flex-wrap:wrap}label.field:has(select) .field-label{flex:1}label.field:has(select) .field-control{max-width:60%}label.field:has(select) .field-error{width:100%}.search-field>div{min-width:0}.search-field .breadcrumb{display:block;margin:0;height:auto;padding:0;font-size:12px;color:var(--text-2)}.current-status{padding:12px}.current-status .summary{padding:0;border:0}.current-status>.block-title{margin-top:0}.flash{animation:field-flash 600ms ease-out}@keyframes field-flash{from{background:var(--accent-soft)}}.hud-update,mark{background:var(--accent-soft);color:var(--accent-text)}
 @media(max-width:819px){.main{display:flex;flex-direction:column}.side{flex:none}.content{flex:1}.page-tabs{flex-direction:row;overflow-x:auto}.group-heading{white-space:nowrap;align-self:center}.page-tabs button{max-width:none}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}`;
     class Panel {
@@ -6950,6 +6950,14 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           this.paintDirty();
         });
         this.root.addEventListener('keydown', (e) => {
+          if (this.windowOpen && e.target.closest('.shell') &&
+            !e.target.matches('textarea') && !(e.target.matches('input') && e.target.type !== 'checkbox') &&
+            !e.altKey && !e.metaKey &&
+            (e.ctrlKey ? !e.shiftKey && e.key.toLowerCase() === 'f' : e.key === '/')) {
+            e.preventDefault();
+            this.search.focus();
+            return;
+          }
           if (e.target.matches('.hud-reason') && ['Enter', ' '].includes(e.key)) { e.preventDefault(); this.openPage('status'); return; }
           if (e.target === this.versionChip && ['Enter', ' '].includes(e.key)) {
             e.preventDefault();
@@ -7017,7 +7025,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         if (open) {
           this.place('window', this.shell);
           this.controller.paint(true);
-          this.search.focus();
+          this.root.querySelector('[data-tab="' + this.section + '"]')?.focus();
         } else {
           this.hideTooltip();
           if (this.query) this.bodyDirty = true;
@@ -7293,7 +7301,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         this.tipPinned = false;
         if (this.tooltip && !this.tooltip.hidden) this.tooltip.hidden = true;
       }
-      field(label, path, options = {}) {
+      field(label, path, options = {}, result = null) {
         const value = pathGet(this.pending, path), id = 'tl-field-' + path.replaceAll('.', '-'),
           dependency = typeof options.dependsOn === 'string' ? { path: options.dependsOn, value: true } : options.dependsOn,
           disabled = dependency && pathGet(this.pending, dependency.path) !== dependency.value,
@@ -7307,7 +7315,10 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           control = `<select class="control-select" ${attrs} aria-label="${esc(label)}" aria-describedby="${described}" title="${esc(options.choices.find(([v]) => String(v) === String(value))?.[1] || '')}">${options.choices.map(([v, t]) => `<option value="${esc(v)}" ${String(value) === String(v) ? 'selected' : ''} title="${esc(t)}">${esc(t)}</option>`).join('')}</select>`;
         else
           control = `<input type="${options.type === 'text' || Array.isArray(value) ? 'text' : 'number'}" class="control-input" ${attrs} value="${esc(Array.isArray(value) ? value.join(',') : value)}" min="${options.min ?? 0}" ${options.max != null ? 'max="' + options.max + '"' : ''} ${options.step != null ? 'step="' + options.step + '"' : ''} aria-label="${esc(label)}" aria-describedby="${described}" aria-invalid="${!!message}">`;
-        return `<label class="field${dependency ? ' dependent' : ''}${disabled ? ' disabled' : ''}" for="${id}"><span class="field-label"><span>${esc(label)}</span>${this.help(options.help)}</span><span class="field-control">${control}${options.unit ? `<span class="unit">${esc(options.unit)}</span>` : ''}</span>${options.immediate ? '<span class="instant">即时生效</span>' : ''}<span class="field-error" id="${id}-error" aria-live="polite"${message ? '' : ' hidden'}>${esc(message)}</span></label>`;
+        const tag = result ? 'div' : 'label';
+        const title = result ? `<div><label class="field-label" for="${id}"><span>${result.marked}</span>${this.help(options.help)}</label>${result.breadcrumb}</div>` :
+          `<span class="field-label"><span>${esc(label)}</span>${this.help(options.help)}</span>`;
+        return `<${tag} class="field${result ? ' search-field' : ''}${dependency ? ' dependent' : ''}${disabled ? ' disabled' : ''}" ${result ? `data-parent="${esc(result.parent)}"` : `for="${id}"`}>${title}<span class="field-control">${control}${options.unit ? `<span class="unit">${esc(options.unit)}</span>` : ''}</span>${options.immediate ? '<span class="instant">即时生效</span>' : ''}<span class="field-error" id="${id}-error" aria-live="polite"${message ? '' : ' hidden'}>${esc(message)}</span></${tag}>`;
       }
       buildIndex(status, state) {
         const entries = [], builder = Object.create(this);
@@ -7315,9 +7326,12 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         for (const name of ['sellPreview', 'logUsageHTML', 'databaseHTML']) builder[name] = () => '';
         for (const [, group, pages] of groups) for (const [page, pageName] of pages) {
           builder.section = page;
+          const pageFields = [];
           const add = (kind, section, key, field = {}, extra = []) => {
-            const terms = [group, pageName, section, ...extra].flat().filter(Boolean).join(' ').toLowerCase();
-            entries.push({ kind, group, page, pageName, section, key, ...field, terms });
+            const own = (kind === 'page' ? [group, pageName] : kind === 'section' ? [section, ...extra] : extra)
+              .flat().filter(Boolean).join(' ').toLowerCase();
+            const context = [group, pageName, section].join(' ').toLowerCase();
+            (kind === 'field' ? pageFields : entries).push({ kind, group, page, pageName, section, key, ...field, own, context });
           };
           add('page', '', '');
           if (page === 'status') add('section', '当前状态', '');
@@ -7338,6 +7352,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             return '';
           };
           builder.buildPage(status, state);
+          entries.push(...pageFields);
         }
         this.indexPending = this.pending;
         this.indexRole = status.role?.id;
@@ -7356,7 +7371,8 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
       }
       searchHTML() {
         const terms = this.query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-        const matches = this.index.filter((entry) => terms.every((term) => entry.terms.includes(term)));
+        const matches = this.index.filter(({ own, context }) => terms.some(term => own.includes(term)) &&
+          terms.every(term => own.includes(term) || context.includes(term)));
         let html = '<div class="block-title">共 ' + matches.length + ' 项</div>', previous, fields = 0;
         for (const entry of matches) {
           if (entry.kind === 'field' && ++fields > 60) continue;
@@ -7372,9 +7388,10 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           const label = entry.label, folded = label.toLowerCase(), hit = Array(label.length).fill(false);
           for (const term of terms) for (let i = folded.indexOf(term); i >= 0; i = folded.indexOf(term, i + 1)) hit.fill(true, i, i + term.length);
           const marked = label.split('').map((c, i) => (hit[i] && !hit[i-1] ? '<mark>' : '') + esc(c) + (hit[i] && !hit[i+1] ? '</mark>' : '')).join('');
-          html += '<div class="search-field" data-parent="' + esc(entry.masterPath === entry.path ? '' : entry.masterPath || '') + '">' +
-            this.field(label, entry.path, entry.options).replace('<span>' + esc(label) + '</span>', () => '<span>' + marked + '</span>') +
-            '<button' + action + '>' + esc(entry.section) + '</button></div>';
+          html += this.field(label, entry.path, entry.options, {
+            marked, breadcrumb: '<button' + action + '>' + esc(entry.section) + '</button>',
+            parent: entry.masterPath === entry.path ? '' : entry.masterPath || '',
+          });
         }
         return html + (!matches.length ? '<div class="empty-state">没有匹配的设置</div>' : fields > 60 ?
           '<div class="empty-state">还有 ' + (fields - 60) + ' 项，请输入更多关键字</div>' : '');
@@ -8205,7 +8222,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
       paintSummary(s) {
         const tone = this.statusTone({ ...s, pausedBySelf: s.pausedBySelf ?? (!s.enabled && this.controller.lastPause?.byUser === false && !!this.controller.lastPause.reason) });
         const fact = (label, value, detail = false, progress = null) => value == null || value === '' ? '' :
-          `<div class="stat-row${detail ? ' fact-detail' : ''}"><dt class="stat-label">${label}</dt><dd class="stat-value${progress ? ' level-reason' : ''}"${progress ? ' data-code="' + esc(progress.code) + '"' : ''}>${progress ? this.infoBar(value) : String(value).split(' · ').map((part) => '<span>' + esc(part) + '</span>').join('<span aria-hidden="true"> · </span>')}</dd></div>`;
+          `<div class="stat-row${detail ? ' fact-detail' : ''}"><dt class="stat-label">${label}</dt><dd class="stat-value${progress ? ' level-reason tone-' + (['paused', 'uncertain'].includes(progress.code) ? 'warn' : 'neutral') : ''}"${progress ? ' data-code="' + esc(progress.code) + '"' : ''}>${progress ? esc(value) : String(value).split(' · ').map((part) => '<span>' + esc(part) + '</span>').join('<span aria-hidden="true"> · </span>')}</dd></div>`;
         let summary = `<div class="status-line"><span class="status-label"><span class="dot ${tone}"></span><span>${s.enabled ? '托管运行中' : '已暂停'} · ${s.ready ? '角色在线' : s.connected ? '等待角色' : '等待连接'}</span></span>${s.role ? `<span class="role-name" title="${esc(s.role.nickname)} · Lv.${esc(s.role.level)}">${esc(s.role.nickname)} · Lv.${esc(s.role.level)}</span>` : ''}</div><div class="reason">${tone === 'on' ? '<div class="info-bar tone-neutral"><span>' + esc(s.reason) + '</span></div>' : this.infoBar(s.reason, tone)}</div>`;
         if (s.role) {
           const income = s.stats?.summary?.recent;
