@@ -138,6 +138,7 @@
       arena: { enabled: true, like: true, claim: true, challenge: true, maxPerDay: 10,
         maxPowerRatio: 1.1, refreshMinutes: 30, rushMinutes: 10 },
       rings: { enabled: false, roundsPerDay: 2, maxRetries: 2, claimInbox: true, exchange: 'off', refreshMinutes: 10 },
+      invasion: { enabled: false, join: true, create: true, claim: true, intervalMinutes: 10, maxRunsPerDay: 0 },
       hidden: { enabled: true, claim: false, claimElement: 'auto', wash: true, washQuality: true, inbox: true, feed: false,
         maxLevel: 100, keepExp: 0, refreshMinutes: 30 },
       potions: {
@@ -313,6 +314,8 @@
       p.rings.roundsPerDay = Math.max(1, Math.min(10, integer(p.rings.roundsPerDay)));
       p.rings.maxRetries = Math.max(0, Math.min(20, integer(p.rings.maxRetries)));
       p.rings.refreshMinutes = Math.max(1, Math.min(120, integer(p.rings.refreshMinutes)));
+      p.invasion.intervalMinutes = Math.max(3, Math.min(120, integer(p.invasion.intervalMinutes)));
+      p.invasion.maxRunsPerDay = Math.max(0, Math.min(200, integer(p.invasion.maxRunsPerDay)));
       if (!['off', 'ring', 'jade', 'ringFirst', 'jadeFirst'].includes(p.rings.exchange)) p.rings.exchange = 'off';
       p.arena.rushMinutes = Math.max(0, Math.min(120, integer(p.arena.rushMinutes)));
       p.arena.maxPowerRatio = Math.max(0.5, Math.min(3, p.arena.maxPowerRatio));
@@ -1618,6 +1621,58 @@
       return next;
     }
     const FARM_MAP_EXCLUDED_IDS = [20050, 20051, 20052, 20060, 20061, 20070, ...RINGS_MAP_IDS];
+    function invasionDaily(day) {
+      return { day, visitAt: 0, visits: 0, joined: 0, created: 0, fights: 0, claimed: 0,
+        won: 0, lost: 0, refused: { teams: [], rounds: [], runs: [] }, reports: [] };
+    }
+    function invasionStatus(s, prefs, daily, now) {
+      const board = s?.invasion?.board, role = s?.role, runs = array(board?.runs);
+      const team = array(board?.teams).find(t => array(t.members).some(m => m.roleId === role?.id));
+      const fighting = runs.some(r => r.status === 'FIGHTING');
+      const unclaimed = runs.filter(r => r.status === 'FINISHED' && !r.claimed).length;
+      const exhausted = board?.remaining === 0 && !team && !fighting && !(prefs.invasion.claim && unclaimed) &&
+        now >= board.roundId && num(daily?.visitAt) < board.endsAt + 30000;
+      const sect = board?.sect ?? null;
+      return { enabled: prefs.invasion.enabled, level20: num(role?.level) >= 20, sect,
+        sectName: ['','少林','明教','丐帮','武当','峨眉','星宿','天龙','天山','逍遥'][sect] || null,
+        ownSect: sect != null && String(sect) === String(role?.sect), remaining: board?.remaining ?? null,
+        endsAt: board?.endsAt ?? null, team: team ? { status: team.status, members: team.members.length,
+          expiresAt: team.expiresAt, leader: team.leaderId === role.id } : null,
+        fighting: board ? fighting : null, unclaimed: board ? unclaimed : null,
+        fragments: board ? array(board.fragments).filter(f => f.count > 0).map(({ name, count }) => ({ name, count })) : null,
+        today: Object.fromEntries(['visits','joined','created','fights','claimed','won','lost'].map(k => [k, num(daily?.[k])])),
+        nextVisitAt: exhausted ? board.endsAt + 30000 : daily?.visitAt ? daily.visitAt + prefs.invasion.intervalMinutes * 60000 : now,
+        boardAt: s?.invasion?.at ?? null };
+    }
+    function invasionPlan(s, p, ledger, now) {
+      const options = p.invasion;
+      if (!options?.enabled || !s.role?.id || num(s.role.level) < 20 || !array(s.maps).some(m => num(m.id) === 6) ||
+          s.activity || s.arenaMatch?.active || arenaRush(p, now) || s.trial?.run || s.rings?.run ||
+          FARM_MAP_EXCLUDED_IDS.includes(num(s.role.mapId)) || array(s.gearProfile?.pending).length) return null;
+      const daily = !ledger.day || ledger.invasion?.day === ledger.day ? ledger.invasion : null;
+      const status = invasionStatus(s, p, daily, now), board = s.invasion?.board;
+      if (!s.invasionVisit && now < status.nextVisitAt) return null;
+      const request = (name, extra, label) => action('XIAOXIAO_COMMAND', { action: name, ...extra }, '宵小入侵：' + label,
+        'invasion', { requiresTown: true, townId: 6, readOnly: ['open', 'report'].includes(name), responseType: 'XIAOXIAO_RESPONSE' });
+      if (!board || num(s.role.mapId) !== 6 || num(s.invasion.mapId ?? s.role.mapId) !== 6 || !Number.isFinite(status.boardAt) ||
+          now - status.boardAt > 30000 || (status.boardAt < board.endsAt && now >= board.endsAt) || s.invasionVisit?.travel)
+        return request('open', { page: 0 }, '查看面板');
+      const refused = daily?.refused;
+      const run = options.claim && array(board.runs).find(r => r.status === 'FINISHED' && !r.claimed && !refused?.runs.includes(r.id));
+      if (run) return daily?.reports.includes(run.id) ? request('claim', { runId: run.id }, '领取奖励') :
+        request('report', { runId: run.id }, '读取战报');
+      if (!status.team && !status.fighting && board.remaining > 0 && now < board.endsAt - 10000 &&
+          (!options.maxRunsPerDay || status.today.fights < options.maxRunsPerDay)) {
+        const team = options.join && array(board.teams).find(t => t.status === 'RECRUITING' && !refused?.teams.includes(t.id) &&
+          !s.invasionPriorRefused?.teams.includes(t.id) &&
+          t.members.length < 4 && t.members.every(m => Math.abs(m.level - s.role.level) <= 20));
+        if (team) return request('join', { teamId: team.id }, '加入「' +
+          (team.members.find(m => m.roleId === team.leaderId)?.name || '队长') + '」的队伍（' + team.members.length + '/4）');
+        if (options.create && status.ownSect && !refused?.rounds.includes(board.roundId) && !s.invasionPriorRefused?.rounds.includes(board.roundId))
+          return request('create', {}, '带队（本门派受袭）');
+      }
+      return { kind: 'visitFinished', family: 'invasion', label: '宵小入侵：查看完毕' };
+    }
     function farmMap(map) {
       return !!map && num(map.mapType) !== 1 && map.show !== false &&
         costs(map).length === 0 && monsters(map).length > 0 &&
@@ -1950,6 +2005,7 @@
         arena: { attempts: 0, lost: [] },
         activities: { zl: 0, camp: 0, bear: 0 },
         welfare: { gold: 0, yuanbao: 0, bets: 0, periods: {} },
+        invasion: invasionDaily(day),
         tianlingUsedAt: 0,
         petHatched: [],
         keptEquipIds: [],
@@ -2425,6 +2481,8 @@
           );
       }
       if (ring) add(ring);
+      const invasion = invasionPlan(s, p, ledger, now);
+      if (invasion) out.push(invasion);
       const growth = [],
         progress = levelProgress(s, p, ledger);
       if (progress?.ready)
@@ -3344,6 +3402,7 @@
       RINGS_MAP_IDS, ASSAULT_PROFILES, ASSAULT_IDS, PROFILE_IDS, longLabel, mapProfile, keptFloors,
       assaultTargets, assaultWeight, assaultAvailable, profileView, gearProfileTarget,
       combatSignature, profileLabel, profileLocked, profileWearable, gearChange, RING_NAMES, ringStage, ringsStatus, ringsPlan,
+      invasionPlan, invasionDaily, invasionStatus,
       farmMap,
       fieldMap,
       gearCheckStart, gearCheckAfter, gearCheckVerdict, gearCheckRestored, gearCheckRollback, gearRejected, gearCheckText,
@@ -3403,7 +3462,7 @@
       else doc.addEventListener('DOMContentLoaded', show, { once: true });
     }
     const ALLOWED = new Set([
-      'ARENA_COMMAND', 'PET_COMMAND', 'TRIAL_COMMAND', 'RINGS_COMMAND', 'COMBAT_START',
+      'ARENA_COMMAND', 'PET_COMMAND', 'TRIAL_COMMAND', 'RINGS_COMMAND', 'XIAOXIAO_COMMAND', 'COMBAT_START',
       'ENTER_GAME',
       'ENTER_MAP',
       'EQUIP_ITEM',
@@ -3455,8 +3514,7 @@
         localStorage.setItem(key, JSON.stringify(value));
       } catch {}
     };
-    const day = () => {
-      const d = new Date();
+    const day = (d = new Date()) => {
       return [
         d.getFullYear(),
         String(d.getMonth() + 1).padStart(2, '0'),
@@ -3691,9 +3749,10 @@
     }
     // USE_ITEM is allowed only for pet hatching or double experience; other uses stay with the player.
     function requestAllowed(action) {
+      if (action?.type === 'XIAOXIAO_COMMAND') return ['open', 'join', 'create', 'claim', 'report'].includes(action.payload?.action);
       return ALLOWED.has(action?.type) || (action?.type === 'USE_ITEM' && (action.petHatch === true || action.doubleExp === true));
     }
-    const responseHasId = (action) => ['ARENA_COMMAND', 'PET_COMMAND', 'RINGS_COMMAND', 'ONLINE_LOTTERY_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(action.type) || action.petHatch;
+    const responseHasId = (action) => ['ARENA_COMMAND', 'PET_COMMAND', 'RINGS_COMMAND', 'XIAOXIAO_COMMAND', 'ONLINE_LOTTERY_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(action.type) || action.petHatch;
     const responseType = (action) => action.responseType || action.type + '_RESPONSE';
     const responseKey = (action) => JSON.stringify([responseType(action),
       responseHasId(action) ? action.requestId ?? action.payload?.requestId ?? null : null]);
@@ -4060,11 +4119,21 @@
         this.cache.arenaMatch = null;
         this.cache.trial = null;
         this.cache.rings = null;
+        this.clearInvasion();
         this.ringsRequests.clear();
         this.ringsRequestAt.clear();
         this.ringsCombat = false;
         this.invalidateRings();
         this.cache.viewedPlayers = new Map();
+      }
+      clearInvasion(roleId = null) {
+        this.cache.invasion = null;
+        this.cache.invasionStartAt = null;
+        this.cache.invasionMapId = null;
+        this.invasionRoleId = roleId;
+      }
+      syncInvasionRole(roleId) {
+        if (this.invasionRoleId !== roleId) this.clearInvasion(roleId);
       }
       observeSend(data) {
         if (typeof data === 'string') {
@@ -4088,7 +4157,7 @@
               this.cache.consignment.clear();
               this.cache.consignmentVersion = P.num(this.cache.consignmentVersion) + 1;
             }
-            if (!this.sending && this.waiter && !this.waiter.petHatch && packet.type === this.waiter.type && !['ARENA_COMMAND', 'PET_COMMAND', 'RINGS_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(packet.type))
+            if (!this.sending && this.waiter && !this.waiter.petHatch && packet.type === this.waiter.type && !['ARENA_COMMAND', 'PET_COMMAND', 'RINGS_COMMAND', 'XIAOXIAO_COMMAND', 'WELFARE_LOTTERY_COMMAND'].includes(packet.type))
               this.waiter.interference = true;
           } catch {}
         }
@@ -4226,6 +4295,15 @@
             (this.cache.activityStamp || (this.cache.activityStamp = {})).wushuang = Date.now();
           }
           const data = packet.data;
+          if (type === 'XIAOXIAO_RESPONSE' && packet.success && data?.board?.page === 0) {
+            this.syncInvasionRole(this.character()?.role?.id);
+            this.cache.invasion = { board: copy(data.board), at: Date.now() };
+            this.cache.invasionMapId = P.num(this.character()?.role?.mapId);
+          }
+          if (type === 'XIAOXIAO_STATE') {
+            this.syncInvasionRole(this.character()?.role?.id);
+            this.cache.invasionStartAt = Date.now();
+          }
           if (type === 'RINGS_RESPONSE') {
             // The server does not echo the request id (seen live on 2026-11-18) and the game client sends its
             // own status commands on a map change, so answers are matched to commands in the order sent.
@@ -4482,6 +4560,7 @@
       }
       state() {
         const c = this.character();
+        this.syncInvasionRole(c?.role?.id);
         if (!c?.role?.id) return null;
         const r = c.role,
           role = {};
@@ -4514,6 +4593,7 @@
           towerFloors: this.towerFloors(r.id),
           trial: this.cache.trial ? { ...this.cache.trial.trial, at: this.cache.trial.at } : null,
           rings: this.cache.rings ? { ...this.cache.rings.rings, at: this.cache.rings.at } : null,
+          invasion: this.cache.invasion && { ...this.cache.invasion, mapId: this.cache.invasionMapId },
           ringsDirty: this.ringsEpoch !== this.ringsConfirmed,
           ringsDirtyAt: this.ringsDirtyAt ?? null,
           combatPower: c.combatPower,
@@ -4587,7 +4667,7 @@
           'BEAR_ENTER',
         ];
         const nested = [
-          'ARENA_RESPONSE', 'PET_RESPONSE', 'TRIAL_RESPONSE', 'RINGS_RESPONSE', 'ONLINE_LOTTERY_RESPONSE', 'WELFARE_LOTTERY_RESPONSE',
+          'ARENA_RESPONSE', 'PET_RESPONSE', 'TRIAL_RESPONSE', 'RINGS_RESPONSE', 'XIAOXIAO_RESPONSE', 'XIAOXIAO_STATE', 'ONLINE_LOTTERY_RESPONSE', 'WELFARE_LOTTERY_RESPONSE',
           'USE_ITEM_RESPONSE',
           'CALC_MONSTER_DROP_RESPONSE',
           'CALC_MAP_DROP_RESPONSE',
@@ -5703,6 +5783,62 @@
         return { day: r.day, rounds: 0, retries: 0, roundOpen: false, cleared: 0, runs: 0, failures: 0,
           refusals: 0, lastRunId: null, lastResult: null, ...ledger?.rings };
       }
+      invasionDaily() {
+        if (this.ledger.invasion?.day !== this.ledger.day)
+          this.ledger.invasion = P.invasionDaily(this.ledger.day);
+        return this.ledger.invasion;
+      }
+      finishInvasion() {
+        const daily = this.invasionDaily();
+        daily.visitAt = Date.now();
+        daily.visits++;
+        this.invasionVisit = null;
+        this.saveLedger();
+      }
+      invasionResult(a, before, result) {
+        if (this.ledger.day !== day()) this.setRole(this.roleId);
+        const { action, runId, teamId } = a.payload, daily = this.invasionDaily();
+        const visit = this.invasionVisit, data = result.data || {};
+        if (!result.success) {
+          const message = safeMessage(result.message || '操作未成功');
+          this.log(a.label + ' 被拒绝：' + message, 'warning');
+          if (result.message === '请前往大理与崔逢九交谈') {
+            this.bridge.cache.invasionMapId = 0;
+            visit.travel = true;
+            if (visit.travelAttempts >= 3) this.finishInvasion();
+          } else {
+            if (action === 'join') daily.refused.teams.push(teamId);
+            if (action === 'create') daily.refused.rounds.push(before.invasion.board.roundId);
+            if (runId) daily.refused.runs.push(runId);
+            if (++visit.refusals >= 3) this.finishInvasion();
+          }
+        } else {
+          this.log(a.label + '：完成', 'success');
+          if (action === 'join') {
+            daily.joined++;
+            const team = data.board?.teams?.find(t => t.id === teamId);
+            if (!visit.joinPush && (team?.members?.length === 4 || team?.status === 'PREPARING')) {
+              daily.fights++;
+              this.invasionAwaitPush = true;
+            }
+          }
+          if (action === 'create') daily.created++;
+          if (action === 'claim') {
+            daily.claimed++;
+            const run = before.invasion.board.runs.find(r => r.id === runId);
+            if (typeof run?.won === 'boolean') daily[run.won ? 'won' : 'lost']++;
+          }
+          if (action === 'report' && data.report) {
+            daily.reports.push(runId);
+            const r = data.report, seconds = Math.floor(P.num(r.duration) / 1000);
+            const me = r.players.find(p => p.roleId === before.role.id);
+            const loot = r.loot.filter(i => i.recipient === before.role.id).map(i => i.name + ' × ' + i.count);
+            this.log('宵小入侵战报：' + r.reason + '，用时 ' + Math.floor(seconds / 60) + ' 分 ' + seconds % 60 +
+              ' 秒，我的伤害占 ' + Number(P.num(me?.damagePercent).toFixed(2)) + '%，获得 ' + (loot.join('、') || '无'));
+          }
+        }
+        this.saveLedger();
+      }
       saveRingsDaily(daily) {
         if (this.ledger.day === daily.day) {
           this.ledger.rings = daily;
@@ -5787,7 +5923,15 @@
       setRole(id) {
         this.ensureGearState(id);
         if (this.roleId !== id || this.ledger?.day !== day()) {
+          if (this.roleId !== id) {
+            this.invasionAwaitPush = false;
+            this.invasionVisit = null;
+          }
           this.roleId = id;
+          // Recruiting teams and two-hour rounds can span local midnight.
+          const yesterday = new Date();
+          yesterday.setDate(yesterday.getDate() - 1);
+          this.invasionPriorRefused = readStorage(this.ledgerKey(day(yesterday)), null)?.invasion?.refused;
           this.ledger = P.normalizeLedger(readStorage(this.ledgerKey(), null), day());
           this.saveLedger();
           this.activity = null;
@@ -6098,6 +6242,7 @@
             attempts: ledger?.arena.attempts ?? 0, liked: s.arena.board.liked,
             reward: s.arena.board.reward } : null,
           rings: P.ringsStatus(s, this.prefs, this.ringsDaily(s?.rings, roleId)),
+          invasion: P.invasionStatus(s, this.prefs, ledger?.invasion, Date.now()),
           hidden: s?.trial?.weapon ? { level: s.trial.level, quality: s.trial.weapon.quality,
             sand: s.trial.balances?.sand, jade: s.trial.balances?.jade,
             seals: s.trial.balances?.seals } : null,
@@ -6114,7 +6259,21 @@
         };
       }
       received(type, packet) {
+        if (type === 'XIAOXIAO_STATE') {
+          const roleId = P.num(this.bridge.character()?.role?.id);
+          if (roleId && (!packet.data?.roleInfo?.role || roleId === packet.data.roleInfo.role.id)) {
+            this.setRole(roleId);
+            if (!this.invasionAwaitPush) this.invasionDaily().fights++;
+            this.invasionAwaitPush = false;
+            if (this.action?.family === 'invasion' && this.action.payload.action === 'join' && this.invasionVisit)
+              this.invasionVisit.joinPush = true;
+            this.saveLedger();
+            this.log('宵小入侵：已开战，药品已扣除');
+          }
+        }
         if (type === 'ENTER_GAME_RESPONSE' && packet.success) {
+          this.invasionVisit = null;
+          this.invasionAwaitPush = false;
           this.uncertain = false;
           if (this.lastFailure && !this.lastFailure.reconciledAt)
             this.lastFailure.reconciledAt = new Date().toISOString();
@@ -6144,8 +6303,9 @@
         const clock = this.planNow || monotonicNow, started = clock();
         try {
           const s = this.gearState(state, now);
-          if (!prefs.rings?.enabled) return P.plans(s, prefs, this.ledger, now);
-          return P.plans({ ...s, activity: this.activity || this.arenaPending,
+          if (!prefs.rings?.enabled && !prefs.invasion?.enabled) return P.plans(s, prefs, this.ledger, now);
+          return P.plans({ ...s, invasionVisit: this.invasionVisit, invasionPriorRefused: this.invasionPriorRefused,
+            activity: this.activity || this.arenaPending || s.activity,
             ringsFighting: !!s.rings?.run && (this.bridge.ringsCombat || this.bridge.battle().stage === 'running'),
             ringsStartAt: this.ringsStartAt }, prefs,
           { ...this.ledger, rings: this.ringsDaily(s.rings) }, now);
@@ -6268,6 +6428,11 @@
         const petBefore = petSignature();
         const snapshot = this.bridge.state(), before = snapshot && { ...snapshot, gearProfile: this.gearProfile };
         if (!before) return;
+        if (a.family === 'invasion') {
+          const current = P.invasionPlan({ ...before, activity: this.activity || this.arenaPending || before.activity,
+            invasionVisit: this.invasionVisit, invasionPriorRefused: this.invasionPriorRefused }, this.prefs, this.ledger, Date.now());
+          if (!this.enabled || current?.key !== a.key || P.num(before.role.mapId) !== 6 || this.invasionVisit?.travel) return;
+        }
         if (P.profileLocked(before) && (a.type === 'EQUIP_ITEM' || a.family === 'gear')) return;
         const ringsCommand = a.type === 'RINGS_COMMAND', ringsEpoch = this.bridge.ringsEpoch;
         if (a.family === 'rings') {
@@ -6295,7 +6460,13 @@
           this.action = a;
           this.reason = a.label;
         }
-        if (!welfareBet) this.charge(a);
+        if (a.family === 'invasion') {
+          this.invasionVisit ||= { refusals: 0, travelAttempts: 0 };
+          if (a.payload.action === 'join' || a.payload.action === 'create') {
+            this.invasionAwaitPush = false;
+            this.invasionVisit.joinPush = false;
+          }
+        } else if (!welfareBet) this.charge(a);
         // Stamped before sending: an unanswered request must not lead to a second pill.
         if (a.doubleExp) {
           this.ledger.tianlingUsedAt = Date.now();
@@ -6305,6 +6476,14 @@
         this.paint();
         try {
           const result = await this.bridge.request(a, this.responseTimeout());
+          if (a.family === 'invasion') {
+            if (this.invasionVisit && this.bridge.state()?.role.id === before.role.id) this.invasionResult(a, before, result);
+            return;
+          }
+          if (a.invasionTravel && this.invasionVisit?.travel) {
+            if (result.success) this.invasionVisit.travel = false;
+            else if (this.invasionVisit.travelAttempts >= 3) this.finishInvasion();
+          }
           if (a.family === 'rings') {
             if (this.bridge.state()?.role.id !== before.role.id) return;
             if (result.success) {
@@ -6780,6 +6959,10 @@
         const candidate = plans.find((a) => !parallelQuery(a) && !this.bridge.responsePending?.(a) &&
           (!a.requiresTown || !!errandTown(a)));
         if (candidate) {
+          if (candidate.kind === 'visitFinished') {
+            this.finishInvasion();
+            return;
+          }
           if (candidate.family === 'rings' && candidate.requiresTown &&
               queries.some((q) => q.type === 'ZL_STATUS' || q.type === 'CAMP_STATUS')) return;
           if (
@@ -6805,12 +6988,15 @@
           if (candidate.requiresTown) {
             const town = errandTown(candidate);
             if (!town) return;
-            if (P.num(town.id) !== P.num(s.role.mapId)) {
+            const invasionTravel = candidate.family === 'invasion';
+            if (P.num(town.id) !== P.num(s.role.mapId) || invasionTravel && this.invasionVisit?.travel) {
+              if (invasionTravel && this.invasionVisit?.travel) this.invasionVisit.travelAttempts++;
               await this.execute({
                 kind: 'request',
                 type: 'ENTER_MAP',
                 payload: { mapId: P.num(town.id) },
-                label: candidate.family === 'rings' ? '新三环：前往楼兰' : '前往「' + town.name + '」办理 ' + candidate.label,
+                invasionTravel,
+                label: candidate.family === 'rings' ? '新三环：前往楼兰' : invasionTravel ? '宵小入侵：前往大理' : '前往「' + town.name + '」办理 ' + candidate.label,
                 family: 'travel',
                 moneyCost: 0,
                 expCost: 0,
@@ -8263,7 +8449,7 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             const masterPath = master && (master.path.endsWith('.enabled') || master.label.includes('总开关')) ? master.path : null;
             add('section', title, key, {}, [options.help || '', masterPath ? master.options.help : '']);
             for (const field of fields) add('field', title, key, { ...field, masterPath }, [
-              field.label, field.options.help, field.options.unit, ...(field.options.choices || []).map(([, label]) => label),
+              field.label, field.options.help, field.options.unit, options.fieldKeywords, ...(field.options.choices || []).map(([, label]) => label),
             ]);
             fields = [];
             return '';
@@ -8540,7 +8726,17 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
               help: '已有的那件不会重复兑换；兑换的装备获得即绑定' }) +
             f('状态刷新间隔', 'rings.refreshMinutes', { unit: '分钟', min: 1, max: 120, dependsOn: 'rings.enabled' }) +
             '<div class="rings-status">' + this.ringsHTML(status.rings) + '</div>', false, {
-              help: '56 级开放。在楼兰何悦处从第一环打起，每环 5 枚神兵符，每环每天最多领 2 次；失败后从第一环重开。' });
+              help: '56 级开放。在楼兰何悦处从第一环打起，每环 5 枚神兵符，每环每天最多领 2 次；失败后从第一环重开。' }) +
+            g('宵小入侵',
+            f('自动参加宵小入侵', 'invasion.enabled') +
+            f('加入招募中的队伍', 'invasion.join', { dependsOn: 'invasion.enabled' }) +
+            f('本门派受袭时带队', 'invasion.create', { dependsOn: 'invasion.enabled' }) +
+            f('结算后领取奖励', 'invasion.claim', { dependsOn: 'invasion.enabled' }) +
+            f('回大理间隔', 'invasion.intervalMinutes', { min: 3, max: 120, unit: '分钟', dependsOn: 'invasion.enabled' }) +
+            f('每日参战上限', 'invasion.maxRunsPerDay', { min: 0, max: 200, unit: '场（0 不限）', dependsOn: 'invasion.enabled' }) +
+            '<div class="invasion-status">' + this.invasionHTML(status.invasion) + '</div>', false, {
+              fieldKeywords: '宵小入侵',
+              help: '每两小时一轮，全服每轮 10 场。四人满员自动开战。服务器模拟战斗，开战时一次扣除整场药品。参加后可以照常挂机。脚本按间隔回大理，每次打断挂机十几秒。只有受袭门派的弟子能带队。可在此查看残页。' });
         }
         if (this.section === 'growth')
           html =
@@ -8808,6 +9004,19 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
           (r.roundOpen ? this.statRow('本轮重试', r.retries + ' / ' + r.maxRetries + ' 次') : '') +
           this.statRow('最近结算', last ? names[last.stage] + ' · ' + last.reason + ' · ' +
             TLPolicy.num(last.bound) + ' 绑定 + ' + TLPolicy.num(last.unbound) + ' 不绑定' : '暂无');
+      }
+      invasionHTML(r) {
+        if (r && !r.level20) return this.chip('20 级开放');
+        if (r?.boardAt == null) return this.chip('等待数据');
+        const time = at => new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+        const team = r.fighting ? '战斗中' : r.team?.status === 'PREPARING' ? '开战准备中' : r.team ?
+          '招募中 ' + r.team.members + '/4' + (r.team.leader ? ' · 队长' : '') : '—';
+        return this.statRow('本轮受袭门派', r.sectName || '—', { chip: r.ownSect ? this.chip('本门派', 'ok') : '' }) +
+          this.statRow('全服剩余', r.remaining + ' / 10') + this.statRow('本轮结束', time(r.endsAt)) +
+          this.statRow('我的队伍', team) + this.statRow('待领取', r.unclaimed + ' 场') +
+          this.statRow('今日', '回城 ' + r.today.visits + ' 次 · 参加 ' + r.today.fights + ' 场 · 领取 ' + r.today.claimed + ' 次') +
+          this.statRow('残页', r.fragments.map(f => f.name + ' × ' + f.count).join('、') || '—') +
+          this.statRow('下次回大理', time(r.nextVisitAt));
       }
       gearCheckHTML(gear) {
         const check = gear?.check, fmt = (n) => n == null ? '—' : Number(n).toFixed(1),
@@ -9175,6 +9384,7 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
           this.paintFragment('.welfare-status', this.welfareHTML(this.controller.bridge.state(), s.ledger));
           this.paintFragment('.arena-status', this.arenaHTML(s.arena));
           this.paintFragment('.rings-status', this.ringsHTML(s.rings));
+          this.paintFragment('.invasion-status', this.invasionHTML(s.invasion));
         }
         if (this.section === 'growth') {
           this.paintFragment('.gear-profile-status', this.profileStatusHTML(s));
