@@ -3628,13 +3628,27 @@
         result.minHpPct = recent.length ? Math.min(...recent.map((v) => v.currentHp / v.maxHp * 100)) : 0;
         return result;
       }
+      series(hours = 24, now = this.now()) {
+        const end = Math.floor(now / 3600000), count = Math.max(0, Math.floor(hours)),
+          fields = 'wall battle exp expBase gold sell potion kills deaths low hpPotions mpPotions'.split(' '),
+          points = Array.from({ length: count + 1 }, (_, i) => ({
+            hour: end - count + i, ...Object.fromEntries(fields.map((key) => [key, 0])),
+          }));
+        for (const [key, bucket] of Object.entries(this.buckets)) {
+          const index = Number(key.split(':')[0]) - (end - count);
+          if (index >= 0 && index < points.length)
+            for (const field of fields) points[index][field] += bucket[field] || 0;
+        }
+        return points;
+      }
       summary() {
         this.prune();
-        const hour = statsTotals(), previous = statsTotals(), today = statsTotals(), maps = {};
+        const hour = statsTotals(), previous = statsTotals(), today = statsTotals(), day24 = statsTotals(), maps = {};
         const h = Math.floor(this.now() / 3600000), date = new Date(this.now()).toDateString();
         const add = (target, b) => statsFields.forEach((k) => target[k] += b[k]);
         for (const [key, b] of Object.entries(this.buckets)) {
           const [time, mapId] = key.split(':');
+          if (+time >= h - 24 && +time <= h) add(day24, b);
           if (+time === h) add(hour, b);
           if (+time === h - 1) add(previous, b);
           if (new Date(+time * 3600000).toDateString() === date) add(today, b);
@@ -3642,7 +3656,7 @@
         }
         const recent = { ...hour };
         if (hour.wall < 600000) add(recent, previous);
-        return { hour, previous, today, recent, maps: Object.values(maps).filter((b) => b.battle > 0).sort((a, b) => b.battle - a.battle) };
+        return { hour, previous, today, recent, day24, maps: Object.values(maps).filter((b) => b.battle > 0).sort((a, b) => b.battle - a.battle) };
       }
     }
     class Bridge {
@@ -5442,7 +5456,7 @@
             pendingQueries: this.bridge.queryWaiters?.size ?? this.pendingQueries?.size ?? 0 },
           perf: this.perfStatus(),
           gear: this.gearStatus(s),
-          stats: this.stats ? { summary: this.stats.summary(), rates: this.stats.rates() } : null,
+          stats: this.stats ? { summary: this.stats.summary(), rates: this.stats.rates(), series: this.stats.series() } : null,
           potions: Object.fromEntries(['HP', 'MP'].map((attr) => {
             const pick = s?.role ? P.potionPick(s, this.prefs, attr, Date.now()) : null;
             return [attr.toLowerCase(), pick ? { name: pick.template.name, need: pick.need, perSecond: pick.perSecond, reason: pick.reason } : null];
@@ -6592,7 +6606,7 @@
     const groups = [
       ['overview', '概览', [['status', '状态'], ['stats', '统计'], ['logs', '日志']]],
       ['strategy', '策略', [['battle', '挂机日常'], ['growth', '成长装备'], ['pets', '珍兽'], ['craft', '宝石工艺'], ['economy', '出售补药'], ['budget', '预算']]],
-      ['score', '评分', [['score', '评分']]],
+      ['score', '评分', [['score', '评分设置'], ['scoreStatus', '当前状态'], ['scoreStats', '属性分数'], ['scoreFormula', '计算公式']]],
       ['system', '系统', [['settings', '设置'], ['updates', '更新']]],
     ];
     const PANEL_KEY = 'tl-autopilot-v1:panel';
@@ -6610,7 +6624,36 @@
       for (const k of ks.slice(0, -1)) cur = cur[k];
       cur[ks.at(-1)] = value;
     };
-    const scoreSections = ['评分设置', '当前状态', '每点属性的分数', '计算公式'];
+    const HELP = {
+      budgetStatus: "默认保留强化、镶宝、星级、鉴定装备和套装部件；自动回收品质1的普通装备。宝石默认目标3级，强化默认目标+3。",
+      activities: "珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合游戏返回的资格数据核对。",
+      arena: "比武 30 级开放。挑战和领奖需要回洛阳找比武校尉，会中断挂机。点赞不中断。每天 0 点（东八区）结算前的这段时间，托管回洛阳驻守并连续挑战：榜单每 30 秒刷新一次，不受每日挑战次数上限限制，期间不进副本。",
+      gear: "比较同一张图上换装前后的每小时击杀；只有下降超过设定值且统计上可信（约 2 个标准差）才换回，换装后出现阵亡也会换回。核对期间不换其他装备。被换下的装备留在背包，不会自动出售。",
+      hiddenClaim: "领取前请确认属攻；领错后转换要 5 砂。",
+      hidden: "洗炼和喂养需要回洛阳找薛飞，会中断挂机。无相浮屠（300 万金币/轮）不会自动进入；手动进塔时托管不干预。",
+      pets: "孵蛋、出战、喂养、领取都要先停止战斗（不用回城）。放生不可恢复：只放生脚本自己刚孵出的、1 级、未锁定、未出战、资质均值低于设定值的普通宝宝；达标的自动锁定。变异和二代珍兽不会被放生。",
+      fill: "宝石、铁匠、裁缝窗口和云飘飘珍兽面板的标题栏出现“一键放入”：按当前功能页把最合适的装备、宝石、符和材料放进槽位，执行仍需自己点。镶嵌、打孔、合成、摘除、雕琢成功后，自动从背包补回刚用掉的同种符、打孔材料和宝石（合成、雕琢），直到用完。",
+      tailor: "打造按角色已持有材料处理，目标以当前下发的模板与神器预览为准。",
+      sellAppraised: "不勾选时，资质不是外攻、内攻双完美（都高于 1500）的已鉴定武器按其余规则出售；品质上限、强化、套装等保护照常生效。",
+      sell: "穿戴、强化、镶宝和星级装备始终保留。材料仅按填写的模板ID处理。",
+      warehouse: "只处理背包中未穿戴的装备；可穿戴的更优装备会先穿戴。仓库装备格满 200 时暂停存仓。符合存仓条件的装备不会被自动出售。",
+      potions: "回血量长期等于掉血量，阈值高低不改变吃药数量，只决定安全余量。智能顺序按实测的每秒掉血和耗蓝，选回复速度够用、每金币回复最多的药，并改买这种药；血量低于 35% 或阵亡后一段时间内改用最强的药。",
+      potionOrder: "游戏自动回复每次只用一颗药且有冷却。智能选择会按“最大值×(100%−阈值)”算出触发时的缺口，优先用刚好补满缺口的最小药，补不满的低级药排在后面兜底。填写指定模板ID时按填写顺序。",
+      budget: "按本机日期统计。人物升级按目标等级和保留经验执行。技能升级、冶炼各有每日额度。",
+      limits: "三项每日额度及各功能的每日操作上限填 0 均表示不限（仍受保留金币、保留经验约束）。保存不会清零已用额度。托管暂停时，保存后需点击“开始托管”。",
+      json: "修改后先载入，再保存。模板ID与评分权重均保存在本机配置中。",
+      scoreLink: "评分方式、权重和计算公式在“评分”页。",
+      reset: "重置只影响自动生存权重用的实测数据和怪物属性缓存，统计页的收益数据不变。重置后战斗满 30 分钟前使用手动权重。",
+      points: "点数指装备上的点数，已计入被动技能的加成。详细说明见“计算公式”。",
+      linear: "固定权重与游戏战力相同，可在高级JSON配置中调整。",
+      reference: "评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。战斗数据不足 30 分钟时生存权重用手动值。",
+      defense: "自动生存权重按门槛计算：安全时只等于生命药费占金币收入的比例（接近 0，防御和抗性几乎不加分）。实战评分每 100 分约等于整体实战能力的 1%；人物面板的实战评分是全身装备的合计贡献，换一件装备后它的变化等于两件装备的分数差。",
+      attributes: "分数按当前属性和参照怪物实时计算，每 100 分约等于整体实战能力的 1%。点数指装备上的点数，已计入被动技能的加成。抗性只在低于怪物对应元素攻击时有用，超出的部分不加分，所以抗性的“+100 点”远小于“+1 点”的 100 倍。",
+      stats: "经验按击杀前后的差值统计；“单倍经验”把天灵丹双倍时段折半，方便比较地图。每小时数值按在线时间折算，地图表按战斗时间折算。",
+      install: "在油猴管理面板打开本脚本的设置，启用“检查更新”。新版本由 Tampermonkey 自动安装；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。",
+      intro: "人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。",
+      updates: "自动检查：打开或刷新页面时一次，之后每小时一次；手动检查间隔至少 60 秒。",
+    };
     const CSS = `:host([data-theme="dark"]){--bg:#202020;--surface:#2b2b2b;--surface-alt:#1c1c1c;--control:#2f2f2f;--stroke:#3d3d3d;--stroke-strong:#9d9d9d;--divider:#353535;--text:#ffffff;--text-2:#c8c8c8;--text-3:#9a9a9a;--accent:#e2bd6b;--accent-hover:#edcd85;--on-accent:#2b2100;--accent-text:#e9c97e;--accent-soft:rgba(226,189,107,.14);--ok:#6ccb5f;--warn:#ffb454;--err:#ff99a4;--hover:rgba(255,255,255,.06);--pressed:rgba(255,255,255,.035);--shadow:0 16px 40px rgba(0,0,0,.42);color-scheme:dark}
 :host([data-theme="light"]){--bg:#f3f3f3;--surface:#ffffff;--surface-alt:#ebebeb;--control:#ffffff;--stroke:#d6d6d6;--stroke-strong:#868686;--divider:#e6e6e6;--text:#1a1a1a;--text-2:#5a5a5a;--text-3:#767676;--accent:#c99a1c;--accent-hover:#b98a12;--on-accent:#1f1700;--accent-text:#7d5800;--accent-soft:rgba(201,154,28,.16);--ok:#0f7b0f;--warn:#9a5b00;--err:#c42b1c;--hover:rgba(0,0,0,.045);--pressed:rgba(0,0,0,.025);--shadow:0 16px 40px rgba(0,0,0,.16);color-scheme:light}
 :host{all:initial;font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;color:var(--text);font-size:13px;line-height:1.5;font-variant-numeric:tabular-nums}
@@ -6637,15 +6680,26 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.4;curs
 .group-tabs{margin:0 16px 4px}.group-tabs button.active::before{content:'';position:absolute;left:12px;right:12px;bottom:0;height:3px;border-radius:4px;background:var(--accent)}.tabs button.has-update::after{content:'';display:inline-block;width:6px;height:6px;margin-left:4px;vertical-align:middle;border-radius:50%;background:var(--accent)}
 .main{display:grid;grid-template-columns:112px minmax(0,1fr);min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--divider)}.page-tabs{flex-direction:column;min-height:0;padding:8px;background:var(--surface-alt);border-right:1px solid var(--stroke);overflow:auto}.page-tabs button{text-align:left;padding:0 8px;overflow:hidden;text-overflow:ellipsis}.page-tabs button.active{background:var(--surface)}.page-tabs button.active:hover{background:var(--hover)}.page-tabs button.active:active{background:var(--pressed)}.page-tabs button.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:4px;background:var(--accent)}
 .body{padding:12px;max-height:min(62vh,600px);overflow:auto;min-height:0;min-width:0}.group{background:var(--surface);border:1px solid var(--stroke);border-radius:6px;margin-top:8px}.group:first-child{margin-top:0}.group>summary{display:flex;align-items:center;gap:8px;min-height:40px;padding:8px 12px;list-style:none;border-radius:4px;font-weight:600}.group>summary::-webkit-details-marker{display:none}.group>summary::after{content:'›';flex:none;color:var(--text-2);transform:rotate(0deg);transition:transform 120ms ease}.group[open]>summary::after{transform:rotate(90deg)}.section-title{min-width:0;flex:1}.section-state{font-size:12px;font-weight:400;color:var(--text-2);white-space:nowrap}.master{display:flex;align-items:center;flex:none}.section-content{padding:0 12px 8px;border-top:1px solid var(--divider)}
-.hint,.note,.more{font-size:12px;color:var(--text-2)}.hint{margin:8px 0;overflow-wrap:anywhere}.more{margin:8px 0}.more>summary{padding:4px;border-radius:4px}.more>.hint{margin-top:4px}.field{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 8px;min-height:40px;padding:4px 0;border-bottom:1px solid var(--divider)}.field:last-child{border-bottom:0}.field-label{min-width:0;overflow-wrap:anywhere}.field-control{display:flex;align-items:center;gap:4px}.field.dependent{padding-left:12px}.field.disabled{opacity:.45}.note,.field-error{grid-column:1/-1}.unit{font-size:11px;color:var(--text-2);white-space:nowrap}.instant{font-size:12px;color:var(--accent-text);margin-left:4px;white-space:nowrap}
+.field{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 8px;min-height:40px;padding:4px 0;border-bottom:1px solid var(--divider)}.field:last-child{border-bottom:0}.field-label{display:flex;align-items:center;gap:4px;min-width:0;white-space:nowrap}.field-label>span{overflow:hidden;text-overflow:ellipsis}.field-control{display:flex;align-items:center;gap:4px}.field.dependent{padding-left:12px}.field.disabled{opacity:.45}.instant,.field-error{grid-column:1/-1}.unit{font-size:11px;color:var(--text-2);white-space:nowrap}.instant{font-size:12px;color:var(--accent-text);margin-left:4px;white-space:nowrap}
 .control-input,.control-select{height:28px;border:1px solid var(--stroke);border-bottom-color:var(--stroke-strong);background:var(--control);border-radius:4px;padding:0 8px}.control-input{width:96px}.control-select{width:176px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
 .control-input:hover,.control-select:hover,textarea:hover{background:var(--hover)}.control-input:active,.control-select:active,textarea:active{background:var(--pressed)}.control-input:focus,.control-select:focus,textarea:focus{border-bottom:2px solid var(--accent)}input::placeholder,textarea::placeholder{color:var(--text-3)}
 input[role=switch]{appearance:none;position:relative;width:40px;height:20px;margin:0;border:1px solid var(--stroke-strong);border-radius:12px;background:transparent;cursor:pointer;flex:none}input[role=switch]::before{content:'';position:absolute;top:50%;left:3px;width:12px;height:12px;border-radius:50%;background:var(--stroke-strong);transform:translateY(-50%)}input[role=switch]:checked{background:var(--accent);border-color:var(--accent)}input[role=switch]:checked::before{background:var(--on-accent);transform:translate(20px,-50%)}input[role=switch]:hover{background:var(--hover)}input[role=switch]:checked:hover{background:var(--accent-hover);border-color:var(--accent-hover)}input[role=switch]:hover::before{left:2px;width:14px;height:14px}input[role=switch]:active{background:var(--pressed)}input[role=switch]:checked:active{background:var(--accent)}
 .footer{display:flex;align-items:center;gap:8px;padding:8px 16px;border-top:1px solid var(--divider);background:var(--surface-alt)}.dirty{font-size:12px;color:var(--text-2);flex:1}.dirty.unsaved{color:var(--warn)}.footer .btn{height:28px;white-space:nowrap}
 .plan{padding:12px;border:1px solid var(--stroke);background:var(--surface);border-radius:6px;margin:8px 0}.plan small{display:block;color:var(--text-2);font-size:12px;margin-top:4px}.log{border-bottom:1px solid var(--divider);padding:8px 0;overflow-wrap:anywhere}.log time{font-size:11px;color:var(--text-3);margin-right:8px}.log.success{color:var(--ok)}.log.warning{color:var(--warn)}.log.error{color:var(--err)}
 textarea{width:100%;background:var(--control);border:1px solid var(--stroke);border-bottom-color:var(--stroke-strong);border-radius:4px;padding:8px;min-height:232px;resize:vertical}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-.launcher{display:none;height:32px;border:1px solid transparent;border-radius:16px;padding:0 16px;pointer-events:auto}.collapsed .shell{display:none}.collapsed .launcher{display:block}.notice{padding:8px 12px;background:var(--surface);border-left:3px solid var(--accent);font-size:12px;color:var(--text-2);margin-bottom:8px}.error{color:var(--err);font-size:12px;min-height:20px}.field-error{color:var(--err);font-size:12px}[aria-invalid=true],[aria-invalid=true]:focus{border-color:var(--err)}
-.budget-card{display:flex;justify-content:space-between;gap:8px;padding:8px;background:var(--surface-alt);border-radius:4px;margin:8px 0}.income-table{width:100%;border-collapse:collapse;font-size:12px}.income-table th,.income-table td{padding:4px;text-align:right;border-bottom:1px solid var(--divider)}.income-table th:first-child,.income-table td:first-child{text-align:left}.table-scroll{overflow-x:auto}.update-summary ul{padding-left:16px;margin:8px 0}.update-summary li{margin:4px 0}
+.launcher{display:none;height:32px;border:1px solid transparent;border-radius:16px;padding:0 16px;pointer-events:auto}.collapsed .shell{display:none}.collapsed .launcher{display:block}.error{color:var(--err);font-size:12px;min-height:20px}.field-error{color:var(--err);font-size:12px}[aria-invalid=true],[aria-invalid=true]:focus{border-color:var(--err)}
+.income-table{width:100%;border-collapse:collapse;font-size:12px}.income-table th,.income-table td{padding:4px;text-align:right;border-bottom:1px solid var(--divider)}.income-table th:first-child,.income-table td:first-child{text-align:left}.table-scroll{overflow-x:auto}.update-summary ul{padding-left:16px;margin:8px 0}.update-summary li{margin:4px 0}
+.help{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;padding:0;margin-left:4px;flex:none;border:1px solid var(--stroke-strong);border-radius:50%;background:transparent;color:var(--text-3);font-size:11px;line-height:1;vertical-align:middle}
+.tooltip{position:fixed;z-index:1;max-width:280px;overflow:auto;padding:8px 12px;border:1px solid var(--stroke);border-radius:6px;background:var(--surface);box-shadow:var(--shadow);color:var(--text);font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none}
+.stat-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--divider);font-size:12px}.stat-row:last-child{border-bottom:0}.stat-label{color:var(--text-2);flex:none}.stat-value{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:4px;text-align:right;min-width:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.stat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0}.stat-tile{min-width:0;padding:8px;border:1px solid var(--stroke);border-radius:6px;background:var(--surface)}.stat-tile>span,.stat-tile>small{display:block;font-size:11px;color:var(--text-2)}.stat-tile>strong{display:block;font-size:18px;font-weight:600;overflow-wrap:anywhere}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:1px 6px;border:1px solid var(--stroke);border-radius:4px;background:var(--surface-alt);font-size:11px;white-space:nowrap}.chips{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin:8px 0}.tone-neutral{color:var(--text-2)}.tone-ok{color:var(--ok)}.tone-warn{color:var(--warn)}.tone-err{color:var(--err)}.tone-accent{color:var(--accent-text)}
+.info-bar{display:flex;align-items:center;gap:8px;padding:8px;margin:8px 0;border:1px solid var(--stroke);border-radius:6px;background:var(--surface-alt);font-size:12px}.info-bar>span:first-child{font-weight:600;flex:none}.empty-state{padding:8px 0;color:var(--text-2);font-size:12px}.block-title{display:flex;align-items:center;gap:4px;margin:12px 0 4px;font-size:12px;font-weight:600}
+.info-bar:has(>.error:empty){display:none}
+.progress{padding:8px 0;font-size:12px}.progress [role=progressbar]{height:4px;margin-top:4px;border-radius:4px;background:var(--divider);overflow:hidden}.progress [role=progressbar]>span{display:block;height:100%;background:var(--accent)}
+.segmented{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}.segmented button{flex:1;padding:4px;border:1px solid var(--stroke);border-radius:4px;background:var(--control);font-size:12px;white-space:nowrap}.segmented button[aria-pressed=true]{background:var(--accent-soft);color:var(--accent-text);border-color:var(--accent)}.segmented button:hover{background:var(--hover)}
+.trend{display:block;width:100%;height:140px;overflow:visible}.chart-line{fill:none;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}.chart-area{fill:var(--accent-soft)}.chart-dot{fill:var(--surface);stroke:var(--accent);stroke-width:1.5;vector-effect:non-scaling-stroke}.chart-grid{stroke:var(--divider);vector-effect:non-scaling-stroke}.chart-label{fill:var(--text-3);font-size:11px}.chart-range{fill:var(--hover)}.chart-hit{fill:transparent}.chart-guide{stroke:var(--stroke-strong);visibility:hidden;vector-effect:non-scaling-stroke}.chart-hour.tip-active .chart-guide{visibility:visible}.chart-hour:focus-visible{outline:none}.chart-hour:focus-visible .chart-dot{stroke-width:3}
+.formula-table td:last-child{font-family:Consolas,monospace;text-align:left;overflow-wrap:anywhere}.formula-table th:last-child{text-align:left}.quality-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text-3);margin-right:4px}.quality-1{background:var(--text-2)}.quality-2{background:oklch(from var(--accent) l c 250)}.quality-3{background:oklch(from var(--accent) l c 305)}.quality-4{background:var(--warn)}.quality-5{background:var(--err)}
 @media(max-height:600px){.facts .fact-detail{display:none}.reason{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary{padding:8px;margin-bottom:8px}.head{padding:8px 16px}.controls{padding-top:8px}}
 @media(max-width:639px){.shell{width:calc(100vw - 24px)}.main{display:flex;flex-direction:column}.page-tabs{flex-direction:row;flex-shrink:0;border-right:0;border-bottom:1px solid var(--stroke);overflow-x:auto}.page-tabs button{max-width:none}.body{flex:1}.status-label{font-size:12px}.role-name{font-size:12px}.field{grid-template-columns:minmax(0,1fr)}.field-control{justify-self:end}.group-tabs{margin-left:8px;margin-right:8px}.group-tabs button{padding:0 8px}.group-tabs button.active::before{left:8px;right:8px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;scroll-behavior:auto!important}}`;
@@ -6682,6 +6736,12 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         this.root = this.host.attachShadow({ mode: 'open' });
         const light = this.uiState().theme === 'light';
         this.root.innerHTML = `<style>${CSS}</style><div class="wrap"><button class="launcher" type="button">TL挂机助手</button><section class="shell"><header class="head"><div class="head-title"><strong>TL挂机助手</strong><button type="button" class="version" data-action="showUpdates" disabled>v0.3.2</button></div><button type="button" class="icon-button" data-action="theme" aria-label="切换浅色 / 深色主题" title="${light ? '切换深色主题' : '切换浅色主题'}">${light ? '☀' : '☾'}</button><button type="button" class="icon-button" data-action="collapse" aria-label="收起托管面板">─</button></header><div class="controls"><button type="button" class="btn primary run-toggle" data-action="start">开始托管</button><button type="button" class="btn" data-action="stopBattle">停止战斗</button><button type="button" class="btn" data-action="preview">预览计划</button></div><div class="summary"></div>${this.navigationHTML()}<footer class="footer"><span class="dirty">配置已保存</span><button type="button" class="btn subtle" data-action="revert" hidden>撤销</button><button type="button" class="btn" data-action="save">保存策略</button></footer></section></div>`;
+        this.tooltip = document.createElement('div');
+        this.tooltip.id = 'tl-panel-tooltip';
+        this.tooltip.className = 'tooltip';
+        this.tooltip.setAttribute('role', 'tooltip');
+        this.tooltip.hidden = true;
+        this.root.querySelector('.shell').appendChild(this.tooltip);
         this.versionChip = this.root.querySelector('.version');
         const narrow = typeof window !== 'undefined' && window.matchMedia?.('(max-width: 639px)'),
           orientRail = () => {
@@ -6691,6 +6751,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         orientRail();
         narrow?.addEventListener?.('change', orientRail);
         this.root.addEventListener('click', async (e) => {
+          if (e.target.closest('[data-tip]')?.dataset.tip != null) return;
           if (e.target.closest('.master')?.classList.contains('master')) {
             e.stopPropagation();
             return;
@@ -6722,16 +6783,17 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             if (!this.collapsed) this.controller.paint(true);
             return;
           }
-          if (b.dataset.sectionLink) {
-            this.scoreSection = b.dataset.sectionLink;
-            const section = [...this.root.querySelectorAll('details.group')].find((node) => node.dataset.section === this.scoreSection);
-            if (section) {
-              if (!section.open) section.open = true;
-              this.uiState().sections[this.scoreSection] = true;
+          if (b.dataset.range || b.dataset.metric) {
+            const state = this.uiState(), key = b.dataset.range ? 'range' : 'metric', value = b.dataset[key];
+            if (state[key] !== value) {
+              state[key] = value;
               this.savePanelState();
-              this.paintNavigation();
-              section.scrollIntoView({ block: 'start', inline: 'nearest' });
+              this.requestBody();
             }
+            return;
+          }
+          if (action === 'showScore') {
+            this.selectPage('score');
             return;
           }
           if (b.dataset.group || b.dataset.tab) {
@@ -6892,6 +6954,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             this.requestBody();
           }
         });
+        this.bindTooltips();
         this.controller.panel = this;
         document.addEventListener('visibilitychange', () => {
           if (!document.hidden) this.controller.paint(true);
@@ -6907,7 +6970,9 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         try { saved = JSON.parse(localStorage.getItem(PANEL_KEY)); } catch {}
         const pages = groups.flatMap(([, , items]) => items.map(([id]) => id));
         this.panelState = { page: pages.includes(saved?.page) ? saved.page : 'status', last: {}, sections: {}, expanded: saved?.expanded === true,
-          theme: saved?.theme === 'light' ? 'light' : 'dark' };
+          theme: saved?.theme === 'dark' ? 'dark' : 'light',
+          range: ['recent', 'previous', 'today', 'day24'].includes(saved?.range) ? saved.range : 'recent',
+          metric: ['exp', 'net', 'kills'].includes(saved?.metric) ? saved.metric : 'exp' };
         for (const [id, , items] of groups)
           this.panelState.last[id] = items.some(([page]) => page === saved?.last?.[id]) ? saved.last[id] : items[0][0];
         for (const [key, value] of Object.entries(saved?.sections && typeof saved.sections === 'object' ? saved.sections : {}))
@@ -6940,10 +7005,9 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
       }
       navigationHTML() {
         return '<nav class="tabs group-tabs" role="tablist" aria-label="功能分组">' + groups.map(([id, name]) =>
-          `<button type="button" role="tab" data-group="${id}"${id === 'score' ? ' data-tab="score"' : ''} aria-selected="false" tabindex="-1">${name}</button>`).join('') +
-          '</nav><div class="main"><nav class="tabs page-tabs" role="tablist" aria-label="分组页面" aria-orientation="vertical">' + groups.filter(([id]) => id !== 'score').flatMap(([, , items]) => items.map(([id, name]) =>
+          `<button type="button" role="tab" data-group="${id}" aria-selected="false" tabindex="-1">${name}</button>`).join('') +
+          '</nav><div class="main"><nav class="tabs page-tabs" role="tablist" aria-label="分组页面" aria-orientation="vertical">' + groups.flatMap(([, , items]) => items.map(([id, name]) =>
             `<button type="button" role="tab" data-tab="${id}" aria-selected="false" tabindex="-1">${name}</button>`)).join('') +
-          scoreSections.map((name) => `<button type="button" role="tab" data-tab="score" data-section-link="score:${name}" title="${name}" aria-selected="false" tabindex="-1">${name}</button>`).join('') +
           '</nav><div class="body"></div></div>';
       }
       paintNavigation() {
@@ -6959,8 +7023,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             const hidden = !group[2].some(([id]) => id === button.dataset.tab);
             if (button.hidden !== hidden) button.hidden = hidden;
           }
-          select(button, button.dataset.tab === this.section && (!button.dataset.sectionLink ||
-            button.dataset.sectionLink === (this.scoreSection || 'score:' + scoreSections[0])));
+          select(button, button.dataset.tab === this.section);
         });
       }
       confirmAction(button) {
@@ -7002,13 +7065,96 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         if (revert && revert.hidden !== !dirty) revert.hidden = !dirty;
         if (button && button.classList.contains('primary') !== dirty) button.classList.toggle('primary', dirty);
       }
+      help(text) {
+        return text ? '<button type="button" class="help" aria-label="说明" data-tip="' + esc(Array.isArray(text) ? text.join('\n\n') : text) + '">?</button>' : '';
+      }
+      chip(text, tone = 'neutral') {
+        return '<span class="chip tone-' + tone + '">' + esc(text) + '</span>';
+      }
+      statRow(label, value, options = {}) {
+        return '<div class="stat-row"><span class="stat-label">' + esc(label) + this.help(options.help) +
+          '</span><span class="stat-value' + (options.tone ? ' tone-' + options.tone : '') + '">' +
+          (options.html ?? esc(value)) + (options.chip || '') + '</span></div>';
+      }
+      statTile(label, value, sub = '') {
+        return '<div class="stat-tile"><span>' + esc(label) + '</span><strong>' + esc(value) +
+          '</strong>' + (sub ? '<small>' + esc(sub) + '</small>' : '') + '</div>';
+      }
+      infoBar(text, tone = 'neutral') {
+        return '<div class="info-bar tone-' + tone + '"><span aria-hidden="true">!</span><span>' + esc(text) + '</span></div>';
+      }
+      progress(value, max, text) {
+        const percent = Math.max(0, Math.min(100, max > 0 ? value / max * 100 : 0));
+        return '<div class="progress"><span>' + esc(text) + '</span><div role="progressbar" aria-label="战斗数据" aria-valuemin="0" aria-valuemax="' +
+          esc(max) + '" aria-valuenow="' + esc(Math.max(0, Math.min(value, max))) +
+          '"><span style="width:' + percent + '%"></span></div></div>';
+      }
+      bindTooltips() {
+        const anchor = (event) => {
+          const node = event.target.closest?.('[data-tip]');
+          return node?.dataset.tip != null ? node : null;
+        };
+        this.root.addEventListener('mouseenter', (event) => {
+          if (event.target === anchor(event)) this.showTooltip(event.target);
+        }, true);
+        this.root.addEventListener('focus', (event) => {
+          const icon = anchor(event);
+          if (icon) this.showTooltip(icon);
+        }, true);
+        for (const type of ['mouseleave', 'blur'])
+          this.root.addEventListener(type, (event) => {
+            if (event.target === this.tipAnchor) this.hideTooltip();
+          }, true);
+        this.root.addEventListener('click', (event) => {
+          const icon = anchor(event);
+          if (!icon) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (this.tipAnchor === icon && this.tipPinned) this.hideTooltip();
+          else { this.showTooltip(icon); this.tipPinned = true; }
+        });
+        this.root.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape') this.hideTooltip();
+        });
+        this.root.addEventListener('scroll', (event) => {
+          if (event.target.closest?.('.body')) this.hideTooltip();
+        }, true);
+      }
+      showTooltip(icon) {
+        if (!this.tooltip) return;
+        this.hideTooltip();
+        const tip = this.tooltip, panel = this.root.querySelector('.shell').getBoundingClientRect(),
+          rect = icon.getBoundingClientRect(), gap = 8;
+        this.tipAnchor = icon;
+        tip.textContent = icon.dataset.tip;
+        tip.hidden = false;
+        tip.style.maxWidth = Math.max(0, Math.min(280, panel.width - gap * 2)) + 'px';
+        tip.style.maxHeight = Math.max(0, panel.height - gap * 2) + 'px';
+        const size = tip.getBoundingClientRect(),
+          left = Math.max(panel.left + gap, Math.min(rect.left, panel.right - size.width - gap)),
+          below = rect.bottom + gap, above = rect.top - size.height - gap,
+          top = Math.max(panel.top + gap, Math.min(below + size.height <= panel.bottom - gap ? below : above, panel.bottom - size.height - gap));
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+        icon.setAttribute('aria-describedby', tip.id);
+        icon.classList.toggle('tip-active', true);
+      }
+      hideTooltip() {
+        if (this.tipAnchor) {
+          this.tipAnchor.removeAttribute('aria-describedby');
+          this.tipAnchor.classList.toggle('tip-active', false);
+          this.tipAnchor = null;
+        }
+        this.tipPinned = false;
+        if (this.tooltip && !this.tooltip.hidden) this.tooltip.hidden = true;
+      }
       field(label, path, options = {}) {
         const value = pathGet(this.pending, path), id = 'tl-field-' + path.replaceAll('.', '-'),
           dependency = typeof options.dependsOn === 'string' ? { path: options.dependsOn, value: true } : options.dependsOn,
           disabled = dependency && pathGet(this.pending, dependency.path) !== dependency.value,
           message = disabled ? '' : this.validationMessage(path, value, options),
-          described = [options.note ? id + '-note' : '', id + '-error'].filter(Boolean).join(' '),
-          attrs = `data-path="${path}"${disabled ? ' disabled' : ''}${dependency ? ` data-depends-on="${dependency.path}" data-depends-value="${esc(JSON.stringify(dependency.value))}"` : ''}`;
+          described = id + '-error',
+          attrs = `data-path="${path}" id="${id}"${disabled ? ' disabled' : ''}${dependency ? ` data-depends-on="${dependency.path}" data-depends-value="${esc(JSON.stringify(dependency.value))}"` : ''}`;
         let control;
         if (typeof value === 'boolean')
           control = `<input type="checkbox" role="switch" ${attrs} ${value ? 'checked' : ''}${path.endsWith('.enabled') || label.includes('总开关') ? ' data-master="true"' : ''} aria-label="${esc(label)}" aria-describedby="${described}">`;
@@ -7016,7 +7162,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           control = `<select class="control-select" ${attrs} aria-label="${esc(label)}" aria-describedby="${described}" title="${esc(options.choices.find(([v]) => String(v) === String(value))?.[1] || '')}">${options.choices.map(([v, t]) => `<option value="${esc(v)}" ${String(value) === String(v) ? 'selected' : ''} title="${esc(t)}">${esc(t)}</option>`).join('')}</select>`;
         else
           control = `<input type="${options.type === 'text' || Array.isArray(value) ? 'text' : 'number'}" class="control-input" ${attrs} value="${esc(Array.isArray(value) ? value.join(',') : value)}" min="${options.min ?? 0}" ${options.max != null ? 'max="' + options.max + '"' : ''} ${options.step != null ? 'step="' + options.step + '"' : ''} aria-label="${esc(label)}" aria-describedby="${described}" aria-invalid="${!!message}">`;
-        return `<label class="field${dependency ? ' dependent' : ''}${disabled ? ' disabled' : ''}"><span class="field-label">${esc(label)}</span><span class="field-control">${control}${options.unit ? `<span class="unit">${esc(options.unit)}</span>` : ''}</span>${options.note ? `<span class="note" id="${id}-note">${esc(options.note)}</span>` : ''}${options.immediate ? '<span class="note"><span class="instant">即时生效</span></span>' : ''}<span class="field-error" id="${id}-error" aria-live="polite"${message ? '' : ' hidden'}>${esc(message)}</span></label>`;
+        return `<label class="field${dependency ? ' dependent' : ''}${disabled ? ' disabled' : ''}" for="${id}"><span class="field-label"><span>${esc(label)}</span>${this.help(options.help)}</span><span class="field-control">${control}${options.unit ? `<span class="unit">${esc(options.unit)}</span>` : ''}</span>${options.immediate ? '<span class="instant">即时生效</span>' : ''}<span class="field-error" id="${id}-error" aria-live="polite"${message ? '' : ' hidden'}>${esc(message)}</span></label>`;
       }
       validationMessage(path, value, options = {}) {
         if (path === 'welfare.numbers') return TLPolicy.welfareNumbers(value) ? '' : '需要 3 个 1～25 的不同数字';
@@ -7058,29 +7204,24 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           });
         });
       }
-      sectionHTML(title, content, first = false, id = title) {
-        const key = this.section + ':' + id, open = this.uiState().sections[key] ?? first,
+      sectionHTML(title, content, first = false, options = {}) {
+        if (typeof options === 'string') options = { id: options };
+        const key = this.section + ':' + (options.id || title), open = this.uiState().sections[key] ?? first,
           firstField = content.match(/^<label class="field[^>]*>[\s\S]*?<\/label>/)?.[0],
           master = firstField?.match(/<input\b[^>]*data-master="true"[^>]*>/)?.[0];
-        let summary = `<span class="section-title">${esc(title)}</span>`;
+        let summary = '<span class="section-title">' + esc(title) + this.help(options.help) + '</span>' + (options.extra || '');
         if (master) {
           const enabled = /\schecked(?:\s|>)/.test(master),
-            note = firstField.match(/<span class="note"[^>]*>[\s\S]*?<\/span>/)?.[0] || '';
-          const switchHTML = master.replace(/ aria-describedby="[^"]*"/, note ? ' aria-describedby="' + note.match(/id="([^"]*)"/)[1] + '"' : '');
-          summary += `<span class="section-state">${enabled ? '已开启' : '已关闭'}</span><label class="master">${switchHTML}</label>`;
-          content = note + content.slice(firstField.length);
-          if (!enabled) content = content.replace(/<label class="field([^\"]*)"([\s\S]*?)<\/label>/g, (_, classes, rest) =>
+            help = firstField.match(/<button\b[^>]*class="help"[^>]*>[\s\S]*?<\/button>/)?.[0] || '';
+          summary += help + '<span class="section-state">' + (enabled ? '已开启' : '已关闭') +
+            '</span><label class="master">' + master.replace(/ aria-describedby="[^"]*"/, '') + '</label>';
+          content = content.slice(firstField.length);
+          if (!enabled) content = content.replace(/<label class="field([^"]*)"([\s\S]*?)<\/label>/g, (_, classes, rest) =>
             '<label class="field' + (classes.includes(' disabled') ? classes : classes + ' disabled') + '"' +
             rest.replace(/<(input|select)\b([^>]*)>/g, (tag, name, attrs) => /\sdisabled(?:\s|$)/.test(attrs) ? tag : '<' + name + attrs + ' disabled>') + '</label>');
         }
-        return `<details class="group" data-section="${esc(key)}" data-default-open="${first}"${open ? ' open' : ''}><summary class="group-summary">${summary}</summary><div class="section-content">${this.discloseHints(content)}</div></details>`;
-      }
-      discloseHints(html) {
-        return html.replace(/<details class="more">[\s\S]*?<\/details>|<div class="hint(?: [^\"]*)?">[\s\S]*?<\/div>/g, (hint) => {
-          if (hint.startsWith('<details')) return hint;
-          const text = hint.replace(/<[^>]*>/g, '').replace(/&(?:amp|lt|gt|quot|#39);/g, 'x');
-          return text.length > 120 ? '<details class="more"><summary>说明</summary>' + hint + '</details>' : hint;
-        });
+        return '<details class="group" data-section="' + esc(key) + '" data-default-open="' + first + '"' + (open ? ' open' : '') +
+          '><summary class="group-summary">' + summary + '</summary><div class="section-content">' + content + '</div></details>';
       }
       liveContentKey(html) {
         return html.replace(/(<details class="group"[^>]*?) open(?=>)/g, '$1');
@@ -7089,7 +7230,10 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         const element = this.root.querySelector(selector), key = this.liveContentKey(html);
         this.fragmentKeys ||= {};
         if (element && this.fragmentKeys[selector] !== key) {
-          element.innerHTML = html;
+          if (this.liveContentKey(element.innerHTML || '') !== key) {
+            if (this.tipAnchor?.closest(selector) === element) this.hideTooltip();
+            element.innerHTML = html;
+          }
           this.fragmentKeys[selector] = key;
         }
       }
@@ -7109,18 +7253,19 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         this.paintDatabase();
         this.paintLogs();
       }
-      databaseUsageText() {
-        const usage = this.databaseUsage || { count: 0, bytes: 0 };
-        return '已用空间：约 ' + (usage.bytes / 1024).toFixed(1) + ' KB（' + usage.count + ' 条日志）';
+      databaseHTML() {
+        const usage = this.databaseUsage || { count: 0, bytes: 0 }, text = this.controller.logStorageStatus(),
+          failed = text.startsWith('打开失败'), state = failed ? '打开失败' : text,
+          tone = { '可用': 'ok', '未启用': 'neutral', '浏览器不支持': 'warn', '打开失败': 'err' }[state] || 'neutral';
+        return this.statRow('状态', '', { html: this.chip(state, tone), help: failed ? text : '' }) +
+          this.statRow('已用空间', (usage.bytes / 1024).toFixed(1) + ' KB') + this.statRow('日志条数', usage.count + ' 条');
       }
       paintDatabase() {
-        const status = this.root.querySelector('.database-status'), usage = this.root.querySelector('.database-usage');
-        if (status) status.textContent = this.controller.logStorageStatus();
-        if (usage) usage.textContent = this.databaseUsageText();
+        if (this.root.querySelector('.database-data')) this.paintFragment('.database-data', this.databaseHTML());
       }
-      logUsageText() {
+      logUsageHTML() {
         const usage = this.controller.logUsage();
-        return '日志共 ' + usage.count + ' 条，约 ' + (usage.bytes / 1024).toFixed(1) + ' KB（保存最近 ' + this.controller.prefs.logs.keepDays + ' 天）';
+        return this.chip(usage.count + ' 条') + ' ' + this.chip((usage.bytes / 1024).toFixed(1) + ' KB');
       }
       paintLogs() {
         const list = this.root.querySelector('.live-logs');
@@ -7136,15 +7281,19 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             list.innerHTML = this.logsHTML(entries);
           }
         }
-        this.root.querySelector('.log-usage').textContent = this.logUsageText();
+        this.paintFragment('.log-usage', this.logUsageHTML());
       }
-      networkText(status) {
-        return '服务器回应：等待上限 ' + (status.network?.timeoutMs ?? this.controller.prefs.requestTimeoutMs) / 1000 +
-          ' 秒 · 10 分钟内迟到 ' + (status.network?.lateAnswers ?? 0) + ' 次';
+      runtimeHTML(status) {
+        const perf = status.perf || { lastMs: 0, avgMs: 0, maxMs: 0 };
+        return this.statRow('服务器等待上限', (status.network?.timeoutMs ?? this.controller.prefs.requestTimeoutMs) / 1000 + ' 秒') +
+          this.statRow('10 分钟内迟到回应', (status.network?.lateAnswers ?? 0) + ' 次') +
+          this.statRow('策略计算耗时', '', { html: '<span>最近 ' + Math.round(perf.lastMs) +
+            '</span><span>· 平均 ' + Math.round(perf.avgMs) + '</span><span>· 最长 ' + Math.round(perf.maxMs) +
+            ' 毫秒</span>', chip: perf.lastMs > 200 ? this.chip('偏慢', 'warn') : '' });
       }
       renderBody(status = this.controller.status(), s = this.controller.bridge.state()) {
         const f = (l, p, o) => this.field(l, p, o);
-        const g = (title, content, first = false) => this.sectionHTML(title, content, first);
+        const g = (title, content, first = false, options = {}) => this.sectionHTML(title, content, first, options);
         this.bodyDirty = false;
         let html = '';
         if (this.section === 'stats') {
@@ -7152,24 +7301,29 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           this.statsKey = this.liveContentKey(html);
           this.statsPaintAt = Date.now();
         }
-        if (this.section === 'score') {
+        if (['score', 'scoreStatus', 'scoreStats', 'scoreFormula'].includes(this.section)) {
           html = this.scoreHTML(status, TLPolicy.scoringDetail(s, this.pending));
           this.scoreKey = this.liveContentKey(html);
           this.scorePaintAt = Date.now();
         }
         if (this.section === 'status') {
           this.statusBudgetsKey = this.statusBudgetsHTML(status);
-          html = '<div class="notice">先在游戏里完成登录，然后开始托管。人物升级按目标等级与保留经验执行；技能升级和冶炼各自使用每日额度。</div><div class="hint network-status">' + esc(this.networkText(status)) + '</div>' +
-            g('已保存的资源策略', '<div class="status-budgets">' + this.statusBudgetsKey + '</div><div class="hint">默认保留强化、镶宝、星级、鉴定装备和套装部件；自动回收品质1的普通装备。宝石默认目标3级，强化默认目标+3。</div>', true) +
-            g('计划预览', '<div class="actions"><button class="btn" type="button" data-action="preview">预览下一步计划</button><button class="btn" type="button" data-action="diagnostics">导出当前诊断</button></div>' +
-              (this.previewPlans.length ? this.previewPlans.map((a) => `<div class="plan">${esc(a.label)}<small>预计金币 ${a.coinCost} · 经验 ${a.expCost}${a.requiresTown ? ' · 在对应城镇处理' : ''}</small></div>`).join('') : '<div class="hint">点击预览可查看当前角色满足条件的动作。</div>'));
+          html = '<div class="login-status">' + (!s?.role?.id ? this.infoBar('请先在游戏里登录角色') : '') + '</div>' +
+            g('今日预算', '<div class="status-budgets">' + this.statusBudgetsKey + '</div>', true, { help: [HELP.intro, HELP.budgetStatus] }) +
+            g('运行状况', '<div class="runtime-status">' + this.runtimeHTML(status) + '</div>') +
+            g('计划预览', '<div class="actions"><button class="btn" type="button" data-action="preview">预览下一步计划</button><button class="btn" type="button" data-action="diagnostics">导出当前诊断</button></div><div class="plan-list">' +
+              (this.previewPlans.length ? this.previewPlans.map((action) => '<div class="plan"><strong>' + esc(action.label) + '</strong>' +
+                this.statRow('预计金币', action.coinCost) + this.statRow('经验', action.expCost) +
+                (action.requiresTown ? this.chip('在对应城镇处理') : '') + '</div>').join('') :
+                '<div class="empty-state">点击预览可查看当前角色满足条件的动作。</div>') + '</div>');
+
         }
         if (this.section === 'battle') {
           html =
             g('挂机与恢复',
             f('自动开始战斗', 'battle.enabled') +
             f('挂机地图', 'battle.mapId', { choices: TLPolicy.mapChoices(s?.maps) }) +
-            f('选图等级差', 'battle.levelOffset', { unit: '级', note: '比角色低多少级选图', dependsOn: { path: 'battle.mapId', value: 0 } }) +
+            f('选图等级差', 'battle.levelOffset', { unit: '级', help: '比角色低多少级选图', dependsOn: { path: 'battle.mapId', value: 0 } }) +
             f('阵亡后返城重新选择', 'battle.recoverDeath') +
             f('每小时阵亡上限', 'battle.maxDeathsPerHour', { unit: '次', dependsOn: 'battle.recoverDeath' }), true) +
             g('日常活动',
@@ -7180,30 +7334,30 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             f('伪宋军每日最多进入', 'activities.campRuns', { max: 5, unit: '次', dependsOn: 'activities.camp' }) +
             f('熊林', 'activities.bear') +
             f('熊林每日最多进入', 'activities.bearRuns', { unit: '次', dependsOn: 'activities.bear' }) +
-            f('每日领取天灵丹', 'activities.tianlingClaim', { note: '需回洛阳' }) +
-            f('自动使用天灵丹', 'activities.tianlingUse', { note: '没有双倍经验时使用' }) +
-            f('自动在线抽奖', 'activities.lotteryDraw', { note: '需回苏州' }) +
-            f('攒够多少次抽一次', 'activities.lotteryBatch', { unit: '次', note: '当天次数发完时也会抽', dependsOn: 'activities.lotteryDraw' }) +
-            '<div class="hint">珍珑需15级，伪宋军与熊林需30级。令牌、每日次数会结合游戏返回的资格数据核对。</div>') +
+            f('每日领取天灵丹', 'activities.tianlingClaim', { help: '需回洛阳' }) +
+            f('自动使用天灵丹', 'activities.tianlingUse', { help: '没有双倍经验时使用' }) +
+            f('自动在线抽奖', 'activities.lotteryDraw', { help: '需回苏州' }) +
+            f('攒够多少次抽一次', 'activities.lotteryBatch', { unit: '次', help: '当天次数发完时也会抽', dependsOn: 'activities.lotteryDraw' }) +
+            '', false, { help: HELP.activities }) +
             g('快活叁福彩',
-            f('自动投注', 'welfare.enabled', { note: '需回苏州' }) +
+            f('自动投注', 'welfare.enabled', { help: '需回苏州' }) +
             f('币种', 'welfare.currency', { dependsOn: 'welfare.enabled', choices: [['GOLD', '金币 · 10万/倍'], ['YUANBAO', '元宝 · 100/倍（奖金为赠送元宝）']] }) +
-            f('倍数', 'welfare.multiplier', { min: 1, max: 5, step: 1, note: '1～5', dependsOn: 'welfare.enabled' }) +
+            f('倍数', 'welfare.multiplier', { min: 1, max: 5, step: 1, help: '1～5', dependsOn: 'welfare.enabled' }) +
             f('每期投注', 'welfare.betsPerDraw', { min: 1, max: 10, step: 1, unit: '注', dependsOn: 'welfare.enabled' }) +
-            f('每日投注上限', 'welfare.dailyCost', { step: 1, note: '所选币种，0 为不限', dependsOn: 'welfare.enabled' }) +
+            f('每日投注上限', 'welfare.dailyCost', { step: 1, help: '所选币种，0 为不限', dependsOn: 'welfare.enabled' }) +
             f('选号', 'welfare.pick', { dependsOn: 'welfare.enabled', choices: [['random', '每注随机'], ['fixed', '固定号码']] }) +
-            f('固定号码', 'welfare.numbers', { type: 'text', note: '3 个 1～25 的不同数字，如 3,8,15', dependsOn: { path: 'welfare.pick', value: 'fixed' } }) +
-            '<div class="welfare-status"><div class="hint">' + this.welfareHTML(s, status.ledger) + '</div></div>') +
+            f('固定号码', 'welfare.numbers', { type: 'text', help: '3 个 1～25 的不同数字，如 3,8,15', dependsOn: { path: 'welfare.pick', value: 'fixed' } }) +
+            '<div class="welfare-status">' + this.welfareHTML(s, status.ledger) + '</div>') +
             g('比武天梯',
-            f('自动比武', 'arena.enabled', { note: '总开关' }) +
+            f('自动比武', 'arena.enabled', { help: '总开关' }) +
             f('每日点赞', 'arena.like', { dependsOn: 'arena.enabled' }) +
-            f('领取名次奖励', 'arena.claim', { note: '需回洛阳', dependsOn: 'arena.enabled' }) +
-            f('自动挑战', 'arena.challenge', { note: '需回洛阳', dependsOn: 'arena.enabled' }) +
-            f('每日挑战上限', 'arena.maxPerDay', { unit: '次', note: '0 不限', dependsOn: 'arena.challenge' }) +
-            f('对手战力上限', 'arena.maxPowerRatio', { unit: '倍', note: '只挑战战力不超过自己 × 此倍数的对手', dependsOn: 'arena.challenge' }) +
+            f('领取名次奖励', 'arena.claim', { help: '需回洛阳', dependsOn: 'arena.enabled' }) +
+            f('自动挑战', 'arena.challenge', { help: '需回洛阳', dependsOn: 'arena.enabled' }) +
+            f('每日挑战上限', 'arena.maxPerDay', { unit: '次', help: '0 不限', dependsOn: 'arena.challenge' }) +
+            f('对手战力上限', 'arena.maxPowerRatio', { unit: '倍', help: '只挑战战力不超过自己 × 此倍数的对手', dependsOn: 'arena.challenge' }) +
             f('比武榜刷新间隔', 'arena.refreshMinutes', { unit: '分钟', dependsOn: 'arena.enabled' }) +
-            f('结算前冲榜时长', 'arena.rushMinutes', { unit: '分钟', note: '0 关闭', dependsOn: 'arena.challenge' }) +
-            '<div class="hint">比武 30 级开放。挑战和领奖需要回洛阳找比武校尉，会中断挂机。点赞不中断。每天 0 点（东八区）结算前的这段时间，托管回洛阳驻守并连续挑战：榜单每 30 秒刷新一次，不受每日挑战次数上限限制，期间不进副本。</div>');
+            f('结算前冲榜时长', 'arena.rushMinutes', { unit: '分钟', help: '0 关闭', dependsOn: 'arena.challenge' }) +
+            '<div class="arena-status">' + this.arenaHTML(status.arena) + '</div>', false, { help: HELP.arena });
         }
         if (this.section === 'growth')
           html =
@@ -7213,69 +7367,62 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             f('自动升级技能', 'growth.skills') +
             f('技能最高等级', 'growth.maxSkillLevel', { unit: '级', dependsOn: 'growth.skills' }) +
             f('技能优先于人物升级', 'growth.skillBeforeLevel', { dependsOn: 'growth.skills' }) +
-            f('优先技能模板ID', 'growth.skillPriority', { note: '逗号分隔', dependsOn: 'growth.skills' }), true) +
+            f('优先技能模板ID', 'growth.skillPriority', { help: '逗号分隔', dependsOn: 'growth.skills' }), true) +
             g('装备选择',
             f('按评分自动穿戴', 'gear.enabled') +
             f('最低评分增益', 'gear.minGainPercent', { step: 0.1, unit: '%' }) +
             f('允许穿戴后绑定', 'gear.allowBinding') +
-            f('从仓库选择更好的装备', 'gear.fromWarehouse', { note: '自动穿戴时取出' }) +
-            f('换装后用实测击杀核对', 'gear.fieldCheck', { note: '变差自动换回' }) +
+            f('从仓库选择更好的装备', 'gear.fromWarehouse', { help: '自动穿戴时取出' }) +
+            f('换装后用实测击杀核对', 'gear.fieldCheck', { help: ['变差自动换回', HELP.gear] }) +
             f('换装后最少战斗时长', 'gear.fieldMinutes', { min: 10, max: 180, step: 1, unit: '分钟', dependsOn: 'gear.fieldCheck' }) +
-            f('换回的击杀降幅', 'gear.fieldDropPercent', { min: 1, max: 50, step: 0.1, unit: '%', note: '每小时击杀下降超过此值才换回', dependsOn: 'gear.fieldCheck' }) +
-            '<div class="hint">比较同一张图上换装前后的每小时击杀；只有下降超过设定值且统计上可信（约 2 个标准差）才换回，换装后出现阵亡也会换回。核对期间不换其他装备。被换下的装备留在背包，不会自动出售。</div>' +
+            f('换回的击杀降幅', 'gear.fieldDropPercent', { min: 1, max: 50, step: 0.1, unit: '%', help: '每小时击杀下降超过此值才换回', dependsOn: 'gear.fieldCheck' }) +
             '<div class="gear-check-status">' + this.gearCheckHTML(status.gear) + '</div>' +
             '<div class="actions"><button class="btn" type="button" data-action="clearGearRejected">清空换回名单</button></div>' +
-            '<div class="hint">评分方式、权重和计算公式在“评分”页。</div>') +
+            '<div class="actions"><button class="btn subtle" type="button" data-action="showScore">打开评分设置</button>' + this.help(HELP.scoreLink) + '</div>') +
             g('暗器养成',
-            f('暗器养成', 'hidden.enabled', { note: '总开关' }) +
-            f('自动领取暗器', 'hidden.claim', { note: '50 级，回洛阳找薛飞', dependsOn: 'hidden.enabled' }) +
-            f('初始属攻', 'hidden.claimElement', { dependsOn: 'hidden.claim', note: '领取时使用', choices: [
+            f('暗器养成', 'hidden.enabled', { help: '总开关' }) +
+            f('自动领取暗器', 'hidden.claim', { help: '50 级，回洛阳找薛飞', dependsOn: 'hidden.enabled' }) +
+            f('初始属攻', 'hidden.claimElement', { dependsOn: 'hidden.claim', help: ['领取时使用', HELP.hiddenClaim], choices: [
               ['auto', '自动（当前最高的属性攻击）'], ['ice', '冰攻'], ['fire', '火攻'],
               ['poison', '毒攻'], ['holy', '玄攻'],
             ] }) +
-            '<div class="hint">领取前请确认属攻；领错后转换要 5 砂。</div>' +
-            f('自动洗炼属性', 'hidden.wash', { note: '5 砂/次', dependsOn: 'hidden.enabled' }) +
-            f('自动洗炼品质', 'hidden.washQuality', { note: '1 玉/次', dependsOn: 'hidden.enabled' }) +
+            f('自动洗炼属性', 'hidden.wash', { help: '5 砂/次', dependsOn: 'hidden.enabled' }) +
+            f('自动洗炼品质', 'hidden.washQuality', { help: '1 玉/次', dependsOn: 'hidden.enabled' }) +
             f('领取暂存奖励', 'hidden.inbox', { dependsOn: 'hidden.enabled' }) +
             f('用人物经验喂养暗器', 'hidden.feed', { dependsOn: 'hidden.enabled' }) +
             f('暗器目标等级', 'hidden.maxLevel', { unit: '级', dependsOn: 'hidden.feed' }) +
             f('喂养后至少保留经验', 'hidden.keepExp', { dependsOn: 'hidden.feed' }) +
             f('暗器状态刷新间隔', 'hidden.refreshMinutes', { unit: '分钟', dependsOn: 'hidden.enabled' }) +
-            '<div class="hint">洗炼和喂养需要回洛阳找薛飞，会中断挂机。无相浮屠（300 万金币/轮）不会自动进入；手动进塔时托管不干预。</div>');
+            '<div class="hidden-status">' + this.hiddenHTML(status.hidden) + '</div>', false, { help: HELP.hidden });
         if (this.section === 'pets')
           html = g('珍兽',
-            f('珍兽托管', 'pets.enabled', { note: '总开关' }) +
-            f('自动出战最强珍兽', 'pets.summon', { note: '没有出战珍兽时使用' }) +
+            f('珍兽托管', 'pets.enabled', { help: '总开关' }) +
+            f('自动出战最强珍兽', 'pets.summon', { help: '没有出战珍兽时使用' }) +
             f('自动领取珍兽掉落', 'pets.claim') +
             f('自动孵蛋并筛选', 'pets.hatch') +
-            f('保留的最低资质均值', 'pets.keepMinAverage', { step: 0.5, note: '宝宝满值 120', dependsOn: 'pets.hatch' }) +
+            f('保留的最低资质均值', 'pets.keepMinAverage', { step: 0.5, help: '宝宝满值 120', dependsOn: 'pets.hatch' }) +
             f('也孵化变异珍兽蛋', 'pets.hatchMutant', { dependsOn: 'pets.hatch' }) +
             f('用人物经验喂养出战珍兽', 'pets.feed') +
             f('喂养后至少保留经验', 'pets.feedKeepExp', { dependsOn: 'pets.feed' }) +
             f('珍兽状态刷新间隔', 'pets.refreshMinutes', { unit: '分钟' }) +
-            '<div class="hint">孵蛋、出战、喂养、领取都要先停止战斗（不用回城）。放生不可恢复：只放生脚本自己刚孵出的、1 级、未锁定、未出战、资质均值低于设定值的普通宝宝；达标的自动锁定。变异和二代珍兽不会被放生。</div>' +
-            (status.pets?.list?.length ? status.pets.list.map((entry) => '<div>' +
-              esc(entry.pet.name) + ' · ' + ({ BABY: '宝宝', SECOND: '二代', MUTANT: '变异' }[entry.pet.form] || '') +
-              ' · Lv.' + entry.pet.level + ' · 资质 ' + esc(entry.average) + ' · ' + esc(entry.quality) +
-              ' · 战力 ' + esc(entry.combatPower) + (status.pets.active?.pet.id === entry.pet.id ? ' · 出战' : '') +
-              (entry.pet.locked ? ' · 锁定' : '') + '</div>').join('') : '尚未读取珍兽数据'), true);
+            '<div class="pets-status">' + this.petsHTML(status.pets) + '</div>', true, { help: HELP.pets });
         if (this.section === 'craft')
           html =
             g('一键放入',
-            f('显示“一键放入”按钮', 'fill.enabled', { note: '在游戏窗口显示' }) +
+            f('显示“一键放入”按钮', 'fill.enabled', { help: '在游戏窗口显示' }) +
             f('完成后补回同种符和材料', 'fill.refill', { dependsOn: 'fill.enabled' }) +
-            '<div class="hint">宝石、铁匠、裁缝窗口和云飘飘珍兽面板的标题栏出现“一键放入”：按当前功能页把最合适的装备、宝石、符和材料放进槽位，执行仍需自己点。镶嵌、打孔、合成、摘除、雕琢成功后，自动从背包补回刚用掉的同种符、打孔材料和宝石（合成、雕琢），直到用完。</div>', true) +
+            '', true, { help: HELP.fill }) +
             g('宝石策略',
             f('启用宝石托管', 'gems.enabled') +
             f('自动打孔', 'gems.drill') +
             f('每件装备目标孔数', 'gems.maxHoles', { max: 3, unit: '孔', dependsOn: 'gems.drill' }) +
             f('自动镶嵌', 'gems.inlay') +
-            f('自动合成', 'gems.synth', { note: '每次5颗' }) +
+            f('自动合成', 'gems.synth', { help: '每次5颗' }) +
             f('宝石目标等级', 'gems.maxLevel', { max: 6, unit: '级' }) +
             f('最低合成成功率', 'gems.minSynthSuccess', { max: 100, unit: '%', dependsOn: 'gems.synth' }) +
             f('智慧/魅力宝石雕琢', 'gems.polish') +
             f('摘除旧宝石后替换', 'gems.replace', { dependsOn: 'gems.inlay' }) +
-            f('每日宝石操作上限', 'gems.maxPerDay', { unit: '次', note: '0 不限' })) +
+            f('每日宝石操作上限', 'gems.maxPerDay', { unit: '次', help: '0 不限' })) +
             g('铁匠与神器',
             f('启用铁匠托管', 'smithy.enabled') +
             f('自动鉴定50级以上武器', 'smithy.appraisal') +
@@ -7284,25 +7431,25 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             f('最低强化成功率', 'smithy.minEnhanceSuccess', { max: 100, unit: '%', dependsOn: 'smithy.enhance' }) +
             f('神器冶炼', 'smithy.smelt') +
             f('允许投入当前穿戴武器', 'smithy.allowSmeltEquipped', { dependsOn: 'smithy.smelt' }) +
-            f('攒够多少经验投入一次', 'smithy.investChunk', { note: '挂机中直接投入，不回城', dependsOn: 'smithy.smelt' }) +
+            f('攒够多少经验投入一次', 'smithy.investChunk', { help: '挂机中直接投入，不回城', dependsOn: 'smithy.smelt' }) +
             f('神节与神符匹配修复', 'smithy.repair') +
             f('完整神节打造神器', 'smithy.forge') +
-            f('目标神器ID', 'smithy.artifactIds', { note: '留空自动评分', dependsOn: 'smithy.forge' }) +
-            f('每日铁匠操作上限', 'smithy.maxPerDay', { unit: '次', note: '0 不限' })) +
+            f('目标神器ID', 'smithy.artifactIds', { help: '留空自动评分', dependsOn: 'smithy.forge' }) +
+            f('每日铁匠操作上限', 'smithy.maxPerDay', { unit: '次', help: '0 不限' })) +
             g('裁缝与御赐套装',
             f('启用装备打造', 'craft.enabled') +
             f('棉布/秘银打造', 'craft.tailor') +
             f('万灵石兑换套装', 'craft.exchange') +
-            f('目标装备ID', 'craft.targetIds', { note: '留空自动评分' }) +
+            f('目标装备ID', 'craft.targetIds', { help: '留空自动评分' }) +
             f('最低装备评分增益', 'craft.minGainPercent', { step: 0.1, unit: '%' }) +
-            f('每日打造/兑换上限', 'craft.maxPerDay', { unit: '次', note: '0 不限' }) +
-            '<div class="hint">打造按角色已持有材料处理，目标以当前下发的模板与神器预览为准。</div>');
+            f('每日打造/兑换上限', 'craft.maxPerDay', { unit: '次', help: '0 不限' }) +
+            '', false, { help: HELP.tailor });
         if (this.section === 'economy')
           html =
             g('装备回收',
             f('自动出售普通装备', 'sell.enabled') +
             f('出售最高品质', 'sell.maxQuality', {
-              note: '≤此品质',
+              help: '≤此品质',
               choices: this.pending.sell.maxQuality === 0
                 ? [[0, '不按品质出售（0）'], ...qualityChoices]
                 : qualityChoices,
@@ -7311,22 +7458,21 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             f('保留尚未达到等级的装备', 'sell.keepFuture') +
             f('保留各部位最佳备用装', 'sell.keepBestBackup') +
             f('保留托管新打造装备', 'sell.keepCrafted') +
-            f('保留已鉴定装备', 'sell.keepAppraised', { note: '不勾选时只保留双完美武器' }) +
-            '<div class="hint">不勾选时，资质不是外攻、内攻双完美（都高于 1500）的已鉴定武器按其余规则出售；品质上限、强化、套装等保护照常生效。</div>' +
-            f('攒够几件再出售', 'sell.batchMin', { min: 1, max: 20, unit: '件', note: '1 = 有就卖' }) +
-            f('永不出售的模板ID', 'sell.keepTemplateIds', { note: '可填预览里的模板ID，逗号分隔' }) +
+            f('保留已鉴定装备', 'sell.keepAppraised', { help: ['不勾选时只保留双完美武器', HELP.sellAppraised] }) +
+            f('攒够几件再出售', 'sell.batchMin', { min: 1, max: 20, unit: '件', help: '1 = 有就卖' }) +
+            f('永不出售的模板ID', 'sell.keepTemplateIds', { help: '可填预览里的模板ID，逗号分隔' }) +
             f('明确允许出售的材料ID', 'sell.materialIds') +
-            f('每日出售操作上限', 'sell.maxPerDay', { unit: '次', note: '0 不限' }) +
+            f('每日出售操作上限', 'sell.maxPerDay', { unit: '次', help: '0 不限' }) +
             '<div class="sell-preview">' + this.sellPreview(s) + '</div>' +
-            '<div class="hint">穿戴、强化、镶宝和星级装备始终保留。材料仅按填写的模板ID处理。</div>', true) +
+            '', true, { help: HELP.sell }) +
             g('自动存入仓库',
             f('自动将装备存入仓库', 'warehouse.enabled') +
             f('存仓最低品质', 'warehouse.minQuality', {
-              choices: qualityChoices, note: '≥此品质', dependsOn: 'warehouse.enabled',
+              choices: qualityChoices, help: '≥此品质', dependsOn: 'warehouse.enabled',
             }) +
-            f('套装装备一律存仓', 'warehouse.sets', { note: '无视品质', dependsOn: 'warehouse.enabled' }) +
+            f('套装装备一律存仓', 'warehouse.sets', { help: '无视品质', dependsOn: 'warehouse.enabled' }) +
             f('自动存入双完美资质装备', 'warehouse.perfect', { dependsOn: 'warehouse.enabled' }) +
-            '<div class="hint">只处理背包中未穿戴的装备；可穿戴的更优装备会先穿戴。仓库装备格满 200 时暂停存仓。符合存仓条件的装备不会被自动出售。</div>') +
+            '', false, { help: HELP.warehouse }) +
             g('金币补药',
             f('金币购买等级适用药品', 'shop.enabled') +
             f('少于此数量时补充', 'shop.minimumStock', { unit: '个' }) +
@@ -7349,53 +7495,52 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             }) +
             f('指定生命药模板ID', 'potions.hpPriority') +
             f('指定内力药模板ID', 'potions.mpPriority') +
-            '<div class="hint">回血量长期等于掉血量，阈值高低不改变吃药数量，只决定安全余量。智能顺序按实测的每秒掉血和耗蓝，选回复速度够用、每金币回复最多的药，并改买这种药；血量低于 35% 或阵亡后一段时间内改用最强的药。</div>' +
-            '<div class="hint">游戏自动回复每次只用一颗药且有冷却。智能选择会按“最大值×(100%−阈值)”算出触发时的缺口，优先用刚好补满缺口的最小药，补不满的低级药排在后面兜底。填写指定模板ID时按填写顺序。</div>');
+            '', false, { help: [HELP.potions, HELP.potionOrder] });
         if (this.section === 'budget')
           html =
-            g('资源预算', '<div class="hint">按本机日期统计。人物升级按目标等级和保留经验执行。技能升级、冶炼各有每日额度。</div>' +
+            g('资源预算',
             f('保留金币', 'budget.moneyReserve', { unit: '金币' }) +
             f('每日金币支出额度', 'budget.moneyPerDay', { unit: '金币' }) +
             f('保留经验', 'budget.expReserve') +
             f('每日技能经验额度', 'budget.skillExpPerDay') +
             f('每日冶炼经验额度', 'budget.smeltExpPerDay') +
-            '<div class="hint">三项每日额度及各功能的每日操作上限填 0 均表示不限（仍受保留金币、保留经验约束）。保存不会清零已用额度。托管暂停时，保存后需点击“开始托管”。</div><div class="hint legacy-experience-note"></div>', true);
+            '<div class="legacy-experience"></div>', true, { help: [HELP.budget, HELP.limits] });
         if (this.section === 'settings')
           html =
             g('恢复与调度',
             f('页面刷新后恢复托管', 'resumeAfterReload') +
-            f('托管时持有 Web Lock', 'keepAwake', { note: '防标签页睡眠' }) +
+            f('托管时持有 Web Lock', 'keepAwake', { help: '防标签页睡眠' }) +
             f('连接恢复后继续托管', 'reconnect.enabled') +
             f('长时间断线时刷新页面', 'reconnect.autoReload') +
             f('断线多久后刷新', 'reconnect.reloadAfterSeconds', { unit: '秒', dependsOn: 'reconnect.autoReload' }) +
             f('每小时最多自动刷新', 'reconnect.maxReloadsPerHour', { unit: '次', dependsOn: 'reconnect.autoReload' }) +
             f('策略检查间隔', 'tickMs', { min: 700, unit: '毫秒' }) +
             f('动作响应超时', 'requestTimeoutMs', { min: 6000, unit: '毫秒' }), true) +
-            g('配置', '<label for="tl-config-json">高级配置JSON</label><div class="hint">修改后先载入，再保存。模板ID与评分权重均保存在本机配置中。</div><textarea id="tl-config-json" spellcheck="false" aria-label="高级配置JSON">' +
+            g('配置', '<label for="tl-config-json">高级配置JSON</label>' + this.help(HELP.json) + '<textarea id="tl-config-json" spellcheck="false" aria-label="高级配置JSON">' +
             esc(JSON.stringify(this.pending, null, 2)) +
-            '</textarea><input class="config-file" type="file" accept=".json" hidden><div class="error"></div><div class="actions"><button type="button" class="btn" data-action="applyJson">载入JSON配置</button><button type="button" class="btn" data-action="importConfig">导入配置文件</button><button type="button" class="btn" data-action="export">导出配置</button><button type="button" class="btn" data-action="defaults">载入默认策略</button><button type="button" class="btn" data-action="diagnostics">导出诊断</button></div>') +
+            '</textarea><input class="config-file" type="file" accept=".json" hidden><div class="info-bar tone-err" role="alert"><span aria-hidden="true">!</span><span class="error"></span></div><div class="actions"><button type="button" class="btn" data-action="applyJson">载入JSON配置</button><button type="button" class="btn" data-action="importConfig">导入配置文件</button><button type="button" class="btn" data-action="export">导出配置</button><button type="button" class="btn" data-action="defaults">载入默认策略</button><button type="button" class="btn" data-action="diagnostics">导出诊断</button></div>') +
             g('浏览器数据库', f('使用浏览器数据库保存日志', 'storage.indexedDB') +
-            '<div class="database-status">' + esc(this.controller.logStorageStatus()) + '</div><div class="hint database-usage">' + this.databaseUsageText() +
-            '</div><button type="button" class="btn" data-action="clearDatabase">清理数据库</button>');
+            '<div class="database-data">' + this.databaseHTML() + '</div><button type="button" class="btn" data-action="clearDatabase">清理数据库</button>');
         if (this.section === 'logs') {
           this.logKey = null;
           html = g('日志', f('显示等级', 'logs.level', { immediate: true, choices: [['all', '全部'], ['notice', '成功和警告'], ['warning', '仅警告']] }) +
-            '<div class="hint log-usage">' + this.logUsageText() + '</div><div class="actions"><button type="button" class="btn" data-action="exportLogs">导出日志</button><button type="button" class="btn" data-action="clearLogs">清空日志</button></div>' +
+            '<div class="actions"><button type="button" class="btn" data-action="exportLogs">导出日志</button><button type="button" class="btn" data-action="clearLogs">清空日志</button></div>' +
             f('保存日志天数', 'logs.keepDays', { min: 1, max: 90, step: 1, unit: '天' }) +
             f('面板显示条数', 'logs.showCount', { min: 20, max: 500, step: 1, unit: '条' }) +
-            '<div class="error"></div><div class="live-logs"></div>', true);
+            '<div class="info-bar tone-err" role="alert"><span aria-hidden="true">!</span><span class="error"></span></div><div class="live-logs"></div>', true, { extra: '<span class="log-usage">' + this.logUsageHTML() + '</span>' });
         }
         if (this.section === 'updates') {
           const u = status.updates || { currentVersion: status.version, error: '', notes: null };
           this.updateKey = JSON.stringify(u);
           html =
             g('版本与更新',
-            f('开启自动更新', 'updates.checkDaily') +
+            f('开启自动更新', 'updates.checkDaily', { help: HELP.updates }) +
             f('发现新版本时提醒', 'updates.remind') +
             f('新版本自动刷新启用', 'updates.autoApply'), true) +
             this.updateHTML(u);
         }
         for (const button of this.confirmations?.keys() || []) this.resetConfirmation(button);
+        this.hideTooltip();
         this.root.querySelector('.body').innerHTML = html;
         this.fragmentKeys = {};
         this.syncFields();
@@ -7413,10 +7558,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             ['当日冶炼经验预算', usage(status.experienceBudgets?.smelt.used, status.budget.smeltExpPerDay)],
           ];
         if (status.ledger) rows.push(['今日经验总投入', fmt(status.ledger.exp)]);
-        const perf = status.perf || { lastMs: 0, avgMs: 0, maxMs: 0 };
-        return rows.map(([label, value]) => `<div class="budget-card"><span>${label}</span><span>${value}</span></div>`).join('') +
-          '<div class="hint">策略计算耗时：最近 ' + Math.round(perf.lastMs) + ' 毫秒 · 平均 ' + Math.round(perf.avgMs) +
-          ' 毫秒 · 10 分钟内最长 ' + Math.round(perf.maxMs) + ' 毫秒</div>';
+        return rows.map(([label, value]) => this.statRow(label, value)).join('');
       }
       logsHTML(logs) {
         return logs.length
@@ -7426,110 +7568,192 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
                   `<div class="log ${esc(l.level)}"><time>${esc(l.time)}</time>${esc(l.text)}</div>`,
               )
               .join('')
-          : '<div class="hint">暂无动作记录。</div>';
+          : '<div class="empty-state">暂无动作记录。</div>';
       }
       sellPreview(s) {
-        if (!s?.role || !TLPolicy.num(s.role.id)) return '<div class="hint">登录角色后显示预览</div>';
+        if (!s?.role || !TLPolicy.num(s.role.id)) return this.infoBar('登录角色后显示预览');
         const P = TLPolicy, p = P.config(this.pending),
           plan = P.sellPlan(this.controller.gearState?.(s) || s, p, this.controller.ledger),
-          setIds = P.setTemplateIds(s), colors = ['', '白', '蓝', '紫', '橙', '红'],
-          reasons = new Map(), count = plan.sell.length;
+          colors = ['', '白', '蓝', '紫', '橙', '红'], reasons = new Map(), count = plan.sell.length;
         for (const { reason } of plan.keep) reasons.set(reason, (reasons.get(reason) || 0) + 1);
-        return '<div class="hint">预览：会卖 ' + count + ' 件，留 ' + plan.keep.length + ' 件。' +
-          (s.batchSell !== false && count > 0 && count < p.sell.batchMin
-            ? '<br>还差 ' + (p.sell.batchMin - count) + ' 件才会出售（攒够 ' + p.sell.batchMin + ' 件一次卖）' : '') +
-          (reasons.size ? '<br>留下的原因：' + [...reasons].map(([reason, n]) => esc(reason) + ' ' + n + ' 件').join('、') : '') +
-          '</div>' + (count ? '<ul>' + plan.sell.slice(0, 15).map((eq) => {
-            const t = eq.equipTmpl, tid = P.num(eq.tmplId || t.id);
-            return '<li>' + esc(t.name || '装备') + '（' + esc(colors[P.equipQuality(eq)] || '未知品质') +
-              ' · Lv.' + P.num(t.reqLevel) + (setIds.has(tid) ? ' · 套装' : '') +
-              ' · ' + (p.gear.scoring === 'combat' ? '实战评分 ' : '战斗力 ') + Math.round(P.equipmentScore(eq, s, p)) +
-              ' · 模板ID ' + tid + '）</li>';
-          }).join('') + '</ul>' + (count > 15 ? '<div class="hint">…还有 ' + (count - 15) + ' 件</div>' : '') : '');
+        const rows = plan.sell.slice(0, 15).map((eq) => {
+          const t = eq.equipTmpl, quality = P.equipQuality(eq);
+          return [t.name || '装备', { html: '<span class="quality-dot quality-' + quality + '" aria-hidden="true"></span>' +
+            esc(colors[quality] || '未知品质') }, P.num(t.reqLevel), Math.round(P.equipmentScore(eq, s, p)), P.num(eq.tmplId || t.id)];
+        });
+        if (count > 15) rows.push(['…还有 ' + (count - 15) + ' 件', '', '', '', '']);
+        return '<div class="block-title">出售预览</div><div class="stat-grid">' + this.statTile('会卖', count + ' 件') +
+          this.statTile('保留', plan.keep.length + ' 件') +
+          (s.batchSell !== false && count > 0 && count < p.sell.batchMin ? this.statTile('还差', p.sell.batchMin - count + ' 件') : '') +
+          '</div><div class="chips">' + [...reasons].map(([reason, n]) => this.chip(reason + ' ' + n)).join('') + '</div>' +
+          this.scoreTableHTML(['名称', '品质', '等级', '评分', '模板ID'], rows);
       }
       gearCheckHTML(gear) {
-        const check = gear?.check, fmt = (n) => n == null ? '—' : n.toFixed(1);
-        return '<div class="hint">' + (check ? '正在核对「' + esc(check.itemName) + '」· ' + esc(check.mapName) +
-          ' · 战斗 ' + fmt(check.afterMinutes) + ' / ' + check.needMinutes + ' 分钟 · 每小时击杀 ' +
-          fmt(check.beforeRate) + ' → ' + fmt(check.afterRate) + (check.state === 'worse' ? ' · 等待换回' : '') :
-          '没有正在核对的换装') + '</div>' + this.sectionHTML('最近核对结果',
-          (gear?.results?.length ? '<ul>' + gear.results.map((r) => '<li>' + esc(r.text) + '</li>').join('') + '</ul>' :
-            '<div class="hint">暂无核对结果</div>'));
+        const check = gear?.check, fmt = (n) => n == null ? '—' : Number(n).toFixed(1),
+          maps = this.controller?.bridge?.state?.()?.maps || [],
+          outcome = (result) => result.state === 'ok' ? this.chip('保留', 'ok') :
+            result.state === 'worse' ? (/已换回|已脱下/.test(result.text || '') ? this.chip('已换回', 'warn') : this.chip('保留', 'ok')) :
+            this.chip(result.state === 'stale' ? '已过期' : '数据不足');
+        const running = check ? this.statRow('装备', check.itemName) + this.statRow('地图', check.mapName) +
+          this.progress(check.afterMinutes || 0, check.needMinutes, '战斗数据 ' + fmt(check.afterMinutes) + ' / ' + check.needMinutes + ' 分钟') +
+          this.statRow('每小时击杀', '前 ' + fmt(check.beforeRate) + ' → 后 ' + fmt(check.afterRate)) +
+          this.statRow('变化', check.change == null ? '—' : fmt(check.change) + '%', {
+            tone: check.change > 0 ? 'ok' : check.change < 0 ? 'warn' : 'neutral',
+            chip: check.state === 'worse' ? this.chip('等待换回', 'warn') : '',
+          }) : this.chip('没有正在核对的换装');
+        return '<div class="block-title">换装核对</div>' + running + '<div class="block-title">最近核对结果</div>' +
+          this.scoreTableHTML(['装备', '地图', '每小时击杀 前→后', '变化', '结果'], (gear?.results || []).map((r) => [
+            r.itemName || '—', maps.find((m) => Number(m.id) === r.mapId)?.name || r.mapId || '—',
+            fmt(r.beforeRate) + ' → ' + fmt(r.afterRate), r.change == null ? '—' : fmt(r.change) + '%', { html: outcome(r) },
+          ]));
       }
       welfareHTML(s, ledger, now = Date.now()) {
         const P = TLPolicy, state = s?.welfare, used = ledger?.welfare || {},
-          status = P.welfareStatus(s, P.config(this.pending), ledger, now),
-          fmt = (n) => P.num(n).toLocaleString('zh-CN');
-        const lines = [state ? '第 ' + state.period + ' 期 · ' +
-          (state.accepting && status.serverNow < state.closeAt ? '接受投注' : '停止接受投注') + ' · 规则 ' +
-          (typeof state.rulesVersion === 'string' && state.rulesVersion.trim() ? state.rulesVersion : '未读取') : '未读取期次',
-          '今日投注 ' + fmt(used.bets) + ' 注 · 金币支出 ' + fmt(used.gold) + ' · 元宝支出 ' + fmt(used.yuanbao)];
-        if (status.reason) lines.push(status.reason);
+          status = P.welfareStatus(s, P.config(this.pending), ledger, now), fmt = (n) => P.num(n).toLocaleString('zh-CN'),
+          open = state?.accepting && status.serverNow < state.closeAt,
+          seconds = state ? Math.max(0, Math.ceil(((open ? state.closeAt : state.drawAt) - status.serverNow) / 1000)) : 0,
+          last = P.array(s?.welfareHistory?.list).find((bet) => bet.hits != null),
+          numbers = P.array(last?.drawNumbers || last?.winningNumbers || last?.numbers).join(', ') || '—',
+          reason = status.reason === '自动投注已关闭' ? '已关闭' : status.reason || '运行中';
+        let html = this.statRow('当前期次', '', { html: state ? '<span>第 ' + esc(state.period) + ' 期</span><span>' +
+          Math.floor(seconds / 60) + ' 分 ' + seconds % 60 + ' 秒</span>' + this.chip(open ? '接受投注' : '停止接受投注', open ? 'ok' : 'neutral') : this.chip('未读取') });
+        if (state) html += this.statRow('规则版本', state.rulesVersion || '未读取');
+        html += this.statRow('今日投注', fmt(used.bets) + ' 注') + this.statRow('今日金币支出', fmt(used.gold)) +
+          this.statRow('今日元宝支出', fmt(used.yuanbao)) + this.statRow('自动投注', '', {
+            html: this.chip(reason, reason === '运行中' ? 'ok' : reason === '已关闭' ? 'neutral' : 'warn'),
+          }) + this.statRow('最近开奖结果', last ? numbers : '—', {
+            chip: last ? this.chip(P.num(last.prize) > 0 ? '中奖' : '未中奖', P.num(last.prize) > 0 ? 'ok' : 'neutral') : '',
+          });
         if (s?.welfareHistory) {
           const list = P.array(s.welfareHistory.list),
-            total = (currency, field) => list.filter((bet) => bet.currency === currency &&
-              (field !== 'prize' || bet.hits != null)).reduce((sum, bet) => sum + P.num(bet[field]), 0);
-          lines.push('游戏返回的最近投注：' + list.length + ' 注 · 总投注额 ' + fmt(total('GOLD', 'cost')) +
-            ' 金币 / ' + fmt(total('YUANBAO', 'cost')) + ' 元宝 · 已开奖总奖金 ' + fmt(total('GOLD', 'prize')) +
-            ' 金币 / ' + fmt(total('YUANBAO', 'prize')) + ' 赠送元宝 · 未开奖 ' + list.filter((bet) => bet.hits == null).length + ' 注');
-        } else lines.push('游戏返回的最近投注：未读取');
-        return lines.map(esc).join('<br>');
+            total = (currency, field) => list.filter((bet) => bet.currency === currency && (field !== 'prize' || bet.hits != null))
+              .reduce((sum, bet) => sum + P.num(bet[field]), 0);
+          html += '<div class="block-title">游戏返回的最近投注</div>' +
+            this.statRow('投注', list.length + ' 注') + this.statRow('总投注额', '', { html: '<span>' + fmt(total('GOLD', 'cost')) +
+              ' 金币</span><span>/ ' + fmt(total('YUANBAO', 'cost')) + ' 元宝</span>' }) +
+            this.statRow('已开奖总奖金', '', { html: '<span>' + fmt(total('GOLD', 'prize')) + ' 金币</span><span>/ ' +
+              fmt(total('YUANBAO', 'prize')) + ' 赠送元宝</span>' }) +
+            this.statRow('未开奖', list.filter((bet) => bet.hits == null).length + ' 注');
+        }
+        return html;
+      }
+      arenaHTML(arena) {
+        return arena ? this.statRow('当前名次', '第 ' + arena.rank + ' 名') +
+          this.statRow('今日挑战', arena.attempts + ' / ' + (this.controller.prefs.arena.maxPerDay || '不限')) +
+          this.statRow('今日点赞', '', { html: this.chip(arena.liked ? '已点赞' : '未点赞', arena.liked ? 'ok' : 'neutral') }) : '';
+      }
+      hiddenHTML(hidden) {
+        return hidden ? this.statRow('等级', hidden.level) + this.statRow('品质', hidden.quality + '%') +
+          this.statRow('砂 / 玉 / 印', hidden.sand + ' / ' + hidden.jade + ' / ' + hidden.seals) : '';
+      }
+      petsHTML(pets) {
+        if (!pets || ![pets.count, pets.capacity, pets.active, pets.eggs].some((v) => v != null))
+          return this.infoBar('尚未读取珍兽数据');
+        return this.statRow('珍兽栏', (pets.count ?? '?') + ' / ' + (pets.capacity ?? '?')) +
+          this.statRow('出战', pets.active ? pets.active.pet.name + ' Lv.' + pets.active.pet.level : '未出战') +
+          (pets.eggs != null ? this.statRow('珍兽蛋', pets.eggs) : '') +
+          this.scoreTableHTML(['名称', '类型', '等级', '资质', '品质', '战力', '状态'], (pets.list || []).map((entry) => [
+            entry.pet.name, { BABY: '宝宝', SECOND: '二代', MUTANT: '变异' }[entry.pet.form] || '—',
+            entry.pet.level, entry.average, entry.quality, entry.combatPower,
+            { html: (pets.active?.pet.id === entry.pet.id ? this.chip('出战', 'ok') : '') + (entry.pet.locked ? this.chip('锁定') : '') },
+          ]));
       }
       updateHTML(u) {
-        const sections = Array.isArray(u.notes?.sections) ? u.notes.sections : [];
-        return `<div class="update-summary"><div class="notice">当前运行 v${esc(u.currentVersion)}${u.latestVersion ? ' · GitHub 最新版本 v' + esc(u.latestVersion) : ''}${u.newer ? '<br>发现新版本。' : ''}</div>${u.newer && u.apply?.exhausted ? '<div class="hint">已自动刷新 5 次仍是旧版本，请点“安装新版本”。</div>' : ''}${u.notes ? this.sectionHTML(u.notes.title, sections.map((s) => `<div class="hint"><strong>${esc(s.title)}</strong></div><ul>${s.items.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>`).join(''), false, 'release-notes') : u.newer ? '<div class="hint">更新内容暂未读取，可在发布页查看。</div>' : ''}${this.discloseHints(`<div class="hint">${u.busy ? '正在读取公开版本信息' : u.error ? esc(u.error) : u.checkedAt ? '最近检查：' + esc(new Date(u.checkedAt).toLocaleString()) : '尚未检查公开版本'}${u.nextCheckAt ? '<br>下次可检查：' + esc(new Date(u.nextCheckAt).toLocaleString()) : ''}<br>自动检查：打开或刷新页面时一次，之后每小时一次；手动检查间隔至少 60 秒。</div>`)}<div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开发布页</button>${u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : ''}</div>${this.sectionHTML('选择自动更新', '<div class="hint">在油猴管理面板打开本脚本的设置，启用“检查更新”。新版本由 Tampermonkey 自动安装；本页的开关控制版本检查和提醒。新版安装后需刷新游戏。</div>')}</div>`;
+        const sections = Array.isArray(u.notes?.sections) ? u.notes.sections : [],
+          date = (value) => value ? new Date(value).toLocaleString() : '—';
+        return '<div class="update-summary">' +
+          this.statRow('当前版本', 'v' + u.currentVersion) + this.statRow('最新版本', u.latestVersion ? 'v' + u.latestVersion : '—', {
+            chip: u.latestVersion ? this.chip(u.newer ? '可更新' : '已是最新', u.newer ? 'accent' : 'ok') : '',
+          }) + this.statRow('最近检查', date(u.checkedAt)) + this.statRow('下次检查', date(u.nextCheckAt)) +
+          (u.busy ? this.infoBar('正在读取公开版本信息') : u.error ? this.infoBar(u.error, 'err') :
+            !u.checkedAt ? this.chip('尚未检查公开版本') : '') +
+          (u.newer && u.apply?.exhausted ? this.infoBar('已自动刷新 5 次仍是旧版本，请点“安装新版本”。', 'warn') : '') +
+          (u.notes ? this.sectionHTML(u.notes.title, sections.map((section) => '<div class="block-title">' + esc(section.title) +
+            '</div><ul class="release-notes">' + section.items.map((text) => '<li>' + esc(text) + '</li>').join('') + '</ul>').join(''),
+            false, { id: 'release-notes' }) : u.newer ? this.infoBar('更新内容暂未读取，可在发布页查看。') : '') +
+          '<div class="actions"><button type="button" class="btn" data-action="checkUpdate">检查更新</button><button type="button" class="btn primary" data-action="openUpdate">打开发布页</button>' +
+          (u.newer ? '<button type="button" class="btn" data-action="installUpdate">安装新版本</button><button type="button" class="btn" data-action="dismissUpdate">关闭本版提醒</button>' : '') +
+          '</div>' + this.sectionHTML('自动安装', '', false, { help: HELP.install }) + '</div>';
       }
       scoreHTML(status, detail) {
+        if (this.section === 'scoreStatus') return this.scoreLiveHTML(status, detail);
+        if (this.section === 'scoreStats') return this.scoreAttributesHTML(detail);
+        if (this.section === 'scoreFormula') return this.scoreFormulaHTML(status);
         const f = (l, p, o) => this.field(l, p, o);
         return this.sectionHTML('评分设置',
           f('评分方式', 'gear.scoring', { choices: [['combat', '实战评分（按伤害公式，推荐）'], ['linear', '固定权重（同游戏战力）']] }) +
           f('评分参照怪物', 'gear.targets', { choices: [['pool', '可进入的最高 6 张挂机地图（推荐）'], ['map', '只看最近挂机的地图']] }) +
-          f('自动调整生存权重', 'gear.autoDefense', { note: '按实测战况调整' }) +
-          f('生存权重', 'gear.defenseWeight', { min: 0, max: 1, step: 0.1, note: '自动关闭或数据不足时使用；0 只看输出，1 输出与生存并重' }) +
+          f('自动调整生存权重', 'gear.autoDefense', { help: '按实测战况调整' }) +
+          f('生存权重', 'gear.defenseWeight', { min: 0, max: 1, step: 0.1, help: '自动关闭或数据不足时使用；0 只看输出，1 输出与生存并重' }) +
           f('逛摊淘宝显示装备评分', 'market.showScore') +
           f('背包和仓库图标显示评分', 'market.bagScore') +
           f('逛摊评分类型', 'market.scoreType', { dependsOn: 'market.showScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
           f('背包仓库评分类型', 'market.bagScoreType', { dependsOn: 'market.bagScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
-          f('详情和人物面板显示实战评分', 'market.tipScore', { note: '装备详情及人物面板' }) +
-          f('逛摊按脚本排序', 'market.sort', { immediate: true, choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }), true) +
-          this.scoreLiveHTML(status, detail) + this.scoreFormulaHTML(status);
+          f('详情和人物面板显示实战评分', 'market.tipScore', { help: '装备详情及人物面板' }) +
+          f('逛摊按脚本排序', 'market.sort', { immediate: true, choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }), true);
       }
       scoreTableHTML(headers, rows) {
         return '<div class="table-scroll"><table class="income-table"><thead><tr>' + headers.map((v) => '<th>' + esc(v) + '</th>').join('') +
-          '</tr></thead><tbody>' + rows.map((row) => '<tr>' + row.map((v) => '<td>' + esc(v) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+          '</tr></thead><tbody>' + rows.map((row) => '<tr>' + row.map((v) => '<td>' + (v && typeof v === 'object' && 'html' in v ? v.html : esc(v)) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
       }
       scoreDangerHTML(v) {
-        if (!v) return '';
-        const percent = (n) => (n * 100).toFixed(n * 100 < 10 ? 1 : 0);
-        return '<div class="hint">危险度 ' + v.danger.toFixed(2) + '：掉血占回血能力 ' + percent(v.ratio) +
-          '%（安全线 50%）→ ' + v.sustain.toFixed(2) + '；低血量时间 ' + percent(v.low) + '%（5% 升满）→ ' +
-          v.burst.toFixed(2) + '；阵亡 ' + v.deaths + ' 次 → ' + v.death.toFixed(2) + '</div>';
+        const percent = (n) => (Number(n || 0) * 100).toFixed(1) + '%',
+          rows = [
+            ['药费占收入', v ? percent(v.share) : '—', '0–100%', '—'],
+            ['掉血占回血能力', v ? percent(v.ratio) : '—', '安全线 50%', v ? Number(v.sustain).toFixed(2) : '—'],
+            ['低血量时间', v ? percent(v.low) : '—', '5% 升满', v ? Number(v.burst).toFixed(2) : '—'],
+            ['阵亡次数', v ? v.deaths + ' 次' : '—', '有阵亡时 0.5', v ? Number(v.death).toFixed(2) : '—'],
+            ['战斗数据时长', v ? Number(v.hours).toFixed(1) + ' 小时' : '—', '至少 30 分钟', '—'],
+          ];
+        return '<div class="block-title">危险度' + (v ? this.chip(Number(v.danger).toFixed(2), v.safe ? 'ok' : 'warn') : '') +
+          '</div>' + this.scoreTableHTML(['指标', '当前', '标准', '危险度'], rows);
       }
       scoreLiveHTML(status, detail) {
-        let table, html = '<div class="hint">' + esc(TLPolicy.scoringText(status.scoring)) + '</div>' + this.scoreDangerHTML(status.scoring?.survival);
-        html += '<button class="btn" type="button" data-action="resetScoring">重置评分数据</button><div class="hint">重置只影响自动生存权重用的实测数据和怪物属性缓存，统计页的收益数据不变。重置后战斗满 30 分钟前使用手动权重。</div>';
+        const score = status.scoring || {}, survival = score.survival, pending = !detail && this.pending.gear.scoring === 'combat';
+        let html = '<div class="stat-grid">' + [
+          ['人物实战评分', detail ? Math.round(detail.character) : '—'],
+          ['每次行动输出', detail ? detail.parts.out.toFixed(0) : '—'],
+          ['每次受击', detail ? detail.parts.taken.toFixed(1) : '—'],
+          ['气血', detail ? detail.parts.hp.toFixed(0) : '—'],
+        ].map(([label, value]) => this.statTile(label, value)).join('') + '</div>' +
+          this.statRow('评分参照', '', { html: (score.mapNames || []).length ?
+            score.mapNames.map((name) => this.chip(name)).join('') : this.chip('等待数据') }) +
+          this.statRow('生存权重', score.weight ?? this.pending.gear.defenseWeight, {
+            chip: this.chip(score.auto ? '自动' : '手动') +
+              (survival ? this.chip(survival.safe ? '安全' : '有风险', survival.safe ? 'ok' : 'warn') : this.chip('等待数据')),
+          }) + this.scoreDangerHTML(survival);
+        if (pending) html += this.infoBar('实战评分等待战斗数据');
+        if (score.autoDefense && !score.auto)
+          html += this.infoBar(score.survivalReason === 'potions' ? '未读到生命药数据，用手动值；开始托管后自动读取' : '数据不足，用手动值');
+        html += '<div class="actions"><button class="btn" type="button" data-action="resetScoring">重置评分数据</button>' + this.help(HELP.reset) + '</div>';
         if (status.scoring?.since != null) {
           const d = new Date(status.scoring.since), pad = n => String(n).padStart(2, '0');
-          html += '<div class="hint">评分数据自 ' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ' 起统计</div>';
+          html += this.statRow('评分数据自', pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()));
         }
         if (detail) {
-          html += '<div class="hint">人物实战评分 ' + Math.round(detail.character) + ' · 每次行动输出 ' + detail.parts.out.toFixed(0) + ' · 每次受击 ' + detail.parts.taken.toFixed(1) + ' · 气血 ' + detail.parts.hp.toFixed(0) + '</div>';
           const names = Object.fromEntries(TLPolicy.SCORE_ATTRIBUTES);
           if (Object.keys(detail.buffMult || {}).length)
-            html += '<div class="hint">技能倍数增益：' + Object.entries(detail.buffMult).map(([key, value]) =>
-              esc(names[key] || key) + ' × ' + value.toFixed(3)).join('、') + '</div>';
+            html += '<div class="block-title">技能倍数增益</div>' + Object.entries(detail.buffMult).map(([key, value]) =>
+              this.statRow(names[key] || key, '× ' + value.toFixed(3))).join('');
           if (detail.parts.artifact)
-            html += '<div class="hint">神器技能：' + esc(detail.parts.artifact.skillName) + ' · 覆盖率 ' +
-              (detail.parts.artifact.uptime * 100).toFixed(1) + '%</div>';
-          table = this.scoreTableHTML(['属性', '当前值', '+1 点', '+100 点'], detail.rows.map((r) => [r.name, Math.round(r.current), r.one.toFixed(2), r.hundred.toFixed(1)]));
-          table += '<div class="hint">点数指装备上的点数，已计入被动技能的加成。详细说明见“计算公式”。</div>';
-        } else if (this.pending.gear.scoring === 'combat') table = '<div class="hint">实战评分等待怪物数据</div>';
-        else table = this.scoreTableHTML(['属性', '每点分数'], Object.entries(this.pending.gear.weights).map(([k, v]) => [Object.fromEntries(TLPolicy.SCORE_ATTRIBUTES)[k] || (k === 'mp' ? '真气' : k), v])) + '<div class="hint">固定权重与游戏战力相同，可在高级JSON配置中调整。</div>';
-        return this.sectionHTML('当前状态', html) + this.sectionHTML('每点属性的分数', table);
+            html += this.statRow('神器技能', detail.parts.artifact.skillName) +
+              this.statRow('覆盖率', (detail.parts.artifact.uptime * 100).toFixed(1) + '%');
+        }
+        return this.sectionHTML('当前状态', html, true);
+      }
+      scoreAttributesHTML(detail) {
+        const table = detail ? this.scoreTableHTML(['属性', '当前值', '+1 点', '+100 点'], detail.rows.map((r) =>
+          [r.name, Math.round(r.current), r.one.toFixed(2), r.hundred.toFixed(1)])) :
+          this.pending.gear.scoring === 'combat' ? this.infoBar('实战评分等待战斗数据') :
+            this.scoreTableHTML(['属性', '每点分数'], Object.entries(this.pending.gear.weights).map(([k, v]) =>
+              [Object.fromEntries(TLPolicy.SCORE_ATTRIBUTES)[k] || (k === 'mp' ? '真气' : k), v]));
+        return this.sectionHTML('属性分数', table, true, {
+          help: [HELP.points, HELP.attributes, ...(this.pending.gear.scoring === 'linear' ? [HELP.linear] : [])],
+        });
       }
       scoreFormulaHTML(status) {
-        const p = TLPolicy, percent = (v) => Math.round(v * 100) + '%';
-        return this.sectionHTML('计算公式', '<div class="hint">' + [
+        const p = TLPolicy, percent = (v) => Math.round(v * 100) + '%',
+          lines = [
           '实战值 = 每次行动输出 ×（气血 ÷ 每次受击伤害）^ 生存权重',
           `分数 = ${p.SCORE_UNIT} × ln（实战值之比）；每 100 分约等于 1%`,
           `单件装备分数 = ${p.SCORE_UNIT} × ln（穿上它的实战值 ÷ 该部位空着的实战值）`,
@@ -7548,42 +7772,107 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           '自动生存权重 = 生命药费 ÷（击杀金币 + 出售收入）+ 危险度',
           `危险度 = max（（掉血占回血能力 − ${percent(p.SUSTAIN_LINE)}）÷ ${percent(1 - p.SUSTAIN_LINE)}，低血量时间占比 ÷ ${percent(p.LOW_HP_SHARE)}，有阵亡时 0.5）`,
           `低血量 = 气血低于 ${percent(p.HP_LINE)}；回血能力 = 最强可用生命药回复量 ÷ 3 秒`
-        ].map(esc).join('<br>') + '</div><div class="hint">评分参照的怪物越多，换地图时分数越稳定；怪物属性每天向服务器读取一次。战斗数据不足 30 分钟时生存权重用手动值。</div>' +
-          '<div class="hint">自动生存权重按门槛计算：安全时只等于生命药费占金币收入的比例（接近 0，防御和抗性几乎不加分）。实战评分每 100 分约等于整体实战能力的 1%；人物面板的实战评分是全身装备的合计贡献，换一件装备后它的变化等于两件装备的分数差。</div>' +
-          '<div class="hint">分数按当前属性和参照怪物实时计算，每 100 分约等于整体实战能力的 1%。点数指装备上的点数，已计入被动技能的加成。抗性只在低于怪物对应元素攻击时有用，超出的部分不加分，所以抗性的“+100 点”远小于“+1 点”的 100 倍。</div>');
+        ],
+          labels = ['实战值', '分数', '单件装备分数', '人物实战评分', '每次伤害', '主伤害', '元素伤害', '命中与会心率',
+            '会心伤害倍率', '会心起点', '会心上限', '技能减益', '技能倍数', '技能轮转', '神器技能', '自动生存权重', '危险度', '低血量'];
+        return this.sectionHTML('计算公式', '<div class="formula-table">' +
+          this.scoreTableHTML(['项目', '公式'], lines.map((line, index) => [labels[index], line])) + '</div>', true,
+          { help: [HELP.reference, HELP.defense] });
       }
-      statsHTML(stats, maps, status = this.controller.status()) {
-        if (!stats) return this.sectionHTML('收益统计', '<div class="hint">等待角色数据</div>', true);
-        const fmt = TLRuntime.statsNumber, duration = TLRuntime.statsDuration;
-        const rate = (n, time) => fmt(time ? n * 3600000 / time : 0);
-        const card = (title, b, first = false) => {
-          const net = b.gold + b.sell - b.potion;
-          const rows = [['经验', fmt(b.exp) + ' · ' + rate(b.exp, b.wall) + '/时'],
-            ['击杀金币', fmt(b.gold)], ['出售收入', fmt(b.sell)], ['药费', fmt(b.potion)],
-            ['净金币', fmt(net) + ' · ' + rate(net, b.wall) + '/时'],
-            ['战斗占比', (b.wall ? b.battle / b.wall * 100 : 0).toFixed(1) + '%'],
-            ['击杀', fmt(b.kills)], ['阵亡', fmt(b.deaths)], ['低血量', duration(b.low)], ['用药', '生命 ' + fmt(b.hpPotions) + ' · 内力 ' + fmt(b.mpPotions)]];
-          return this.sectionHTML(title, rows.map(([label, value]) => `<div class="budget-card"><span>${label}</span><span>${value}</span></div>`).join(''), first);
-        };
-        const rows = stats.summary.maps.map((b) => {
-          const name = (maps || []).find((m) => Number(m.id) === b.mapId)?.name || b.mapId;
-          return '<tr>' + [esc(name), duration(b.battle), rate(b.exp, b.battle), rate(b.expBase, b.battle),
-            rate(b.gold + b.sell, b.battle), rate(b.potion, b.battle), rate(b.gold + b.sell - b.potion, b.battle), fmt(b.deaths)]
-            .map((v) => '<td>' + v + '</td>').join('') + '</tr>';
-        }).join('');
-        const r = stats.rates;
-        return card('近 1 小时', stats.summary.recent, true) + card('今日', stats.summary.today) + card('上一小时', stats.summary.previous) +
-          this.sectionHTML('按地图（近 72 小时）', '<div class="table-scroll"><table class="income-table"><thead><tr>' +
-          ['地图', '战斗时长', '经验/时', '单倍经验/时', '金币/时', '药费/时', '净金币/时', '阵亡'].map((v) => '<th>' + v + '</th>').join('') +
-          '</tr></thead><tbody>' + rows + '</tbody></table></div>') + this.sectionHTML('当前消耗', '<div class="hint">当前消耗：' +
-          (r.seconds < 60 ? '数据不足' : '每秒掉血 ' + fmt(r.hpLossPerSec) + ' · 每秒耗蓝 ' + fmt(r.mpUsePerSec) + ' · 10 秒最大掉血 ' + Math.round(r.worstLoss10Pct) + '% · 样本 ' + fmt(r.seconds) + ' 秒') +
+      rangeSwitch() {
+        return '<div class="segmented" role="group" aria-label="统计范围">' +
+          [['recent', '近 1 小时'], ['previous', '上一小时'], ['today', '今日'], ['day24', '近 24 小时']].map(([value, label]) =>
+            '<button type="button" data-range="' + value + '" aria-pressed="' + (this.uiState().range === value) + '">' + label + '</button>').join('') + '</div>';
+      }
+      trendHTML(stats) {
+        const metric = this.uiState().metric, fmt = TLRuntime.statsNumber,
+          points = stats.series || [], end = points.at(-1)?.hour,
+          values = points.map((p) => p.wall >= 300000 ? (metric === 'net' ? p.gold + p.sell - p.potion : p[metric]) * 3600000 / p.wall : null),
+          valid = values.filter((value) => value !== null), range = this.uiState().range;
+        const controls = '<div class="segmented" role="group" aria-label="曲线指标">' +
+          [['exp', '经验/时'], ['net', '净金币/时'], ['kills', '击杀/时']].map(([key, label]) =>
+            '<button type="button" data-metric="' + key + '" aria-pressed="' + (metric === key) + '">' + label + '</button>').join('') + '</div>';
+        if (valid.length < 2) return controls + this.infoBar('数据不足，挂机满 2 小时后显示曲线');
+        const width = 360, left = 44, right = 8, top = 12, bottom = 114,
+          step = (width - left - right) / Math.max(1, points.length - 1),
+          low = Math.min(0, ...valid), high = Math.max(1, ...valid),
+          x = (index) => left + index * step, y = (value) => bottom - (value - low) / (high - low) * (bottom - top),
+          date = new Date(end * 3600000).toDateString(),
+          selected = (hour) => range === 'day24' || (range === 'previous' ? hour === end - 1 :
+            range === 'today' ? new Date(hour * 3600000).toDateString() === date :
+              hour === end || ((stats.summary.hour?.wall ?? stats.summary.recent.wall) < 600000 && hour === end - 1));
+        let svg = '<svg class="trend" viewBox="0 0 360 140" role="group" aria-label="近 24 小时收益曲线">';
+        for (let i = 0; i < points.length; i++) {
+          if (selected(points[i].hour)) svg += '<rect class="chart-range" data-hour="' + points[i].hour + '" x="' +
+            Math.max(left, x(i) - step / 2) + '" y="' + top + '" width="' + (i === 0 || i === points.length - 1 ? step / 2 : step) +
+            '" height="' + (bottom - top) + '"></rect>';
+        }
+        for (const value of [high, (high + low) / 2, low]) {
+          svg += '<line class="chart-grid" x1="' + left + '" x2="' + (width - right) + '" y1="' + y(value) + '" y2="' + y(value) + '"></line>' +
+            '<text class="chart-label" x="' + (left - 4) + '" y="' + (y(value) + 4) + '" text-anchor="end">' + esc(fmt(value)) + '</text>';
+        }
+        const segments = [];
+        let segment = [];
+        values.forEach((value, index) => {
+          if (value === null) { if (segment.length) segments.push(segment); segment = []; }
+          else segment.push([x(index), y(value)]);
+        });
+        if (segment.length) segments.push(segment);
+        for (const line of segments) {
+          const coordinates = line.map(([px, py]) => px + ',' + py).join(' ');
+          svg += '<path class="chart-area" d="M ' + line[0][0] + ',' + y(0) + ' L ' + coordinates + ' L ' +
+            line.at(-1)[0] + ',' + y(0) + ' Z"></path><polyline class="chart-line" points="' + coordinates + '"></polyline>';
+        }
+        points.forEach((point, index) => {
+          const hour = new Date(point.hour * 3600000).getHours(), label = String(hour).padStart(2, '0') + ':00';
+          if (hour % 4 === 0) svg += '<text class="chart-label chart-hour-label" x="' + x(index) + '" y="133" text-anchor="middle">' + label + '</text>';
+          if (values[index] === null) return;
+          const tip = label + ' · ' + fmt(values[index]);
+          svg += '<g class="chart-hour" tabindex="0" role="button" aria-label="' + esc(tip) + '" data-hour="' + point.hour + '" data-tip="' + esc(tip) + '">' +
+            '<rect class="chart-hit" x="' + (x(index) - step / 2) + '" y="' + top + '" width="' + step + '" height="' + (bottom - top) + '"></rect>' +
+            '<line class="chart-guide" x1="' + x(index) + '" x2="' + x(index) + '" y1="' + top + '" y2="' + bottom + '"></line>' +
+            '<circle class="chart-dot" cx="' + x(index) + '" cy="' + y(values[index]) + '" r="3"></circle></g>';
+        });
+        return controls + svg + '</svg>';
+      }
+      consumptionHTML(stats, status) {
+        const r = stats.rates || {}, fmt = TLRuntime.statsNumber, sampled = r.seconds >= 60;
+        return this.statRow('每秒掉血', sampled ? fmt(r.hpLossPerSec) : '—') +
+          this.statRow('每秒耗蓝', sampled ? fmt(r.mpUsePerSec) : '—') +
+          this.statRow('10 秒最大掉血', sampled ? Math.round(r.worstLoss10Pct || 0) + '%' : '—') +
+          this.statRow('样本时长', fmt(r.seconds) + ' 秒', { chip: sampled ? '' : this.chip('数据不足') }) +
           ['hp', 'mp'].map((key) => {
             const pick = status.potions?.[key];
-            return pick ? ' · ' + (key === 'hp' ? '生命药 ' : '内力药 ') + esc(pick.name) + '（回复 ' + fmt(pick.perSecond) + '/秒，需要 ' + fmt(pick.need) + '/秒）' : '';
-          }).join('') +
-          (this.controller.prefs.potions.autoThreshold ? ' · 生命阈值 ' + status.threshold + '%' : '') +
-          '</div><button class="btn" type="button" data-action="clearStats">清空统计</button>' +
-          '<div class="hint">经验按击杀前后的差值统计；“单倍经验”把天灵丹双倍时段折半，方便比较地图。每小时数值按在线时间折算，地图表按战斗时间折算。</div>');
+            return this.statRow(key === 'hp' ? '生命药' : '内力药', '', {
+              html: pick ? '<span>' + esc(pick.name) + '</span><span>回复 ' + fmt(pick.perSecond) + '/秒 · 需要 ' + (sampled ? fmt(pick.need) + '/秒' : '—') + '</span>' : '—',
+              chip: sampled && pick ? this.chip(pick.perSecond >= pick.need ? '足够' : '不足', pick.perSecond >= pick.need ? 'ok' : 'warn') : this.chip('等待数据'),
+            });
+          }).join('') + (this.controller.prefs.potions.autoThreshold ? this.statRow('生命阈值', status.threshold + '%') : '');
+      }
+      statsHTML(stats, maps, status = this.controller.status()) {
+        const help = { help: HELP.stats };
+        if (!stats) return this.sectionHTML('收益统计', this.rangeSwitch() + this.infoBar('登录后显示'), true, help);
+        const fmt = TLRuntime.statsNumber, duration = TLRuntime.statsDuration, range = this.uiState().range,
+          rate = (n, time) => fmt(time ? n * 3600000 / time : 0),
+          b = stats.summary[range] || {}, net = (b.gold || 0) + (b.sell || 0) - (b.potion || 0);
+        const tiles = [
+          ['经验', fmt(b.exp), rate(b.exp, b.wall) + '/时'], ['净金币', fmt(net), rate(net, b.wall) + '/时'],
+          ['击杀金币', fmt(b.gold)], ['出售收入', fmt(b.sell)], ['药费', fmt(b.potion)],
+          ['击杀', fmt(b.kills)], ['阵亡', fmt(b.deaths)], ['战斗占比', (b.wall ? b.battle / b.wall * 100 : 0).toFixed(1) + '%'],
+          ['低血量', duration(b.low || 0)], ['用药', '生命 ' + fmt(b.hpPotions) + ' · 内力 ' + fmt(b.mpPotions)],
+        ];
+        const rows = stats.summary.maps.map((bucket) => [
+          (maps || []).find((m) => Number(m.id) === bucket.mapId)?.name || bucket.mapId,
+          duration(bucket.battle), rate(bucket.exp, bucket.battle), rate(bucket.expBase, bucket.battle),
+          rate(bucket.gold + bucket.sell, bucket.battle), rate(bucket.potion, bucket.battle),
+          rate(bucket.gold + bucket.sell - bucket.potion, bucket.battle), fmt(bucket.deaths),
+        ]);
+        return this.sectionHTML('收益统计', this.rangeSwitch() + '<div class="stat-grid">' +
+          tiles.map(([label, value, sub]) => this.statTile(label, value, sub)).join('') + '</div>' + this.trendHTML(stats), true, help) +
+          this.sectionHTML('按地图', this.scoreTableHTML(['地图', '战斗时长', '经验/时', '单倍经验/时', '金币/时', '药费/时', '净金币/时', '阵亡'], rows),
+            false, { extra: this.chip('近 72 小时') }) +
+          this.sectionHTML('当前消耗', this.consumptionHTML(stats, status) +
+            '<button class="btn" type="button" data-action="clearStats">清空统计</button>');
       }
       paintUpdates(u, status) {
         const chip = this.versionChip, newer = !!u?.newer;
@@ -7599,7 +7888,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           }
         }
         for (const [selector, name] of [['[data-group="system"]', '系统'], ['[data-tab="updates"]', '更新']]) {
-          const tab = this.root.querySelector(selector), text = name + (u?.newer ? ' · 新' : '');
+          const tab = this.root.querySelector(selector), text = name + (u?.newer && name === '更新' ? ' · 新' : '');
           if (!tab) continue;
           if (tab.classList.contains('has-update') !== !!u?.newer) tab.classList.toggle('has-update', !!u?.newer);
           if (tab.textContent !== text) tab.textContent = text;
@@ -7646,22 +7935,26 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           this.renderBody(s);
         if (this.section === 'stats' && !this.dirty && Date.now() - this.statsPaintAt >= 5000 &&
           this.statsKey !== this.liveContentKey(this.statsHTML(s.stats, this.controller.bridge.state()?.maps, s))) this.renderBody(s);
-        if (this.section === 'score' && !this.dirty && Date.now() - this.scorePaintAt >= 5000 &&
+        if (['scoreStatus', 'scoreStats'].includes(this.section) && !this.dirty && Date.now() - this.scorePaintAt >= 5000 &&
           this.scoreKey !== this.liveContentKey(this.scoreHTML(s, TLPolicy.scoringDetail(this.controller.bridge.state(), this.pending)))) this.renderBody(s);
         if (this.section === 'battle') {
-          this.paintFragment('.welfare-status', this.discloseHints('<div class="hint">' + this.welfareHTML(this.controller.bridge.state(), s.ledger) + '</div>'));
+          this.paintFragment('.welfare-status', this.welfareHTML(this.controller.bridge.state(), s.ledger));
+          this.paintFragment('.arena-status', this.arenaHTML(s.arena));
         }
         if (this.section === 'growth') {
           this.paintFragment('.gear-check-status', this.gearCheckHTML(s.gear));
+          this.paintFragment('.hidden-status', this.hiddenHTML(s.hidden));
         }
+        if (this.section === 'pets') this.paintFragment('.pets-status', this.petsHTML(s.pets));
         if (this.section === 'economy') {
-          this.paintFragment('.sell-preview', this.discloseHints(this.sellPreview(this.controller.bridge.state())));
+          this.paintFragment('.sell-preview', this.sellPreview(this.controller.bridge.state()));
         }
         if (this.section === 'status') {
-          const network = this.root.querySelector('.network-status'), text = this.networkText(s);
-          if (network && network.textContent !== text) network.textContent = text;
+          this.paintFragment('.runtime-status', this.runtimeHTML(s));
+          this.paintFragment('.login-status', !s.role?.id ? this.infoBar('请先在游戏里登录角色') : '');
           const budgets = this.root.querySelector('.status-budgets'), html = this.statusBudgetsHTML(s);
           if (budgets && html !== this.statusBudgetsKey) {
+            this.hideTooltip();
             budgets.innerHTML = html;
             this.statusBudgetsKey = html;
           }
@@ -7674,8 +7967,8 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         }
         const expanded = this.uiState().expanded;
         const fact = (label, value, detail = false, progress = null) => value == null || value === '' || !expanded ? '' :
-          `<div${detail ? ' class="fact-detail"' : ''}><dt>${label}</dt><dd${progress ? ' class="level-reason" data-code="' + esc(progress.code) + '"' : ''}>${esc(value)}</dd></div>`;
-        let summary = `<div class="status-line"><span class="status-label"><span class="dot ${s.enabled && s.ready ? 'on' : ''}"></span><span>${s.enabled ? '托管运行中' : '已暂停'} · ${s.ready ? '角色在线' : s.connected ? '等待角色' : '等待连接'}</span></span>${s.role ? `<span class="role-name" title="${esc(s.role.nickname)} · Lv.${esc(s.role.level)}">${esc(s.role.nickname)} · Lv.${esc(s.role.level)}</span>` : ''}<button type="button" class="text-button" data-action="summary" aria-expanded="${expanded}">${expanded ? '收起' : '展开'}</button></div><div class="reason">${esc(s.reason)}</div>`;
+          `<div${detail ? ' class="fact-detail"' : ''}><dt>${label}</dt><dd${progress ? ' class="level-reason" data-code="' + esc(progress.code) + '"' : ''}>${progress ? this.infoBar(value) : String(value).split(' · ').map((part) => '<span>' + esc(part) + '</span>').join('<span aria-hidden="true"> · </span>')}</dd></div>`;
+        let summary = `<div class="status-line"><span class="status-label"><span class="dot ${s.enabled && s.ready ? 'on' : ''}"></span><span>${s.enabled ? '托管运行中' : '已暂停'} · ${s.ready ? '角色在线' : s.connected ? '等待角色' : '等待连接'}</span></span>${s.role ? `<span class="role-name" title="${esc(s.role.nickname)} · Lv.${esc(s.role.level)}">${esc(s.role.nickname)} · Lv.${esc(s.role.level)}</span>` : ''}<button type="button" class="text-button" data-action="summary" aria-expanded="${expanded}">${expanded ? '收起' : '展开'}</button></div><div class="reason">${this.infoBar(s.reason)}</div>`;
         if (s.role) {
           const income = s.stats?.summary?.recent;
           if (income?.wall >= 60000) summary += '<div class="figures">' +
@@ -7689,18 +7982,14 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             fact('暗器', s.hidden ? `Lv.${s.hidden.level} · 品质 ${s.hidden.quality}% · 砂 ${s.hidden.sand} · 玉 ${s.hidden.jade} · 印 ${s.hidden.seals}` : null, true) + '</dl>';
         } else summary += '<div class="summary-login">登录后读取当前角色</div>';
         if (summary !== this.summaryHTML) {
+          if (this.tipAnchor?.closest('.summary')) this.hideTooltip();
           this.root.querySelector('.summary').innerHTML = summary;
           this.summaryHTML = summary;
         }
-        const old = this.root.querySelector('.legacy-experience-note');
-        if (old) {
-          old.hidden = !s.ledger?.unclassifiedExp;
-          old.textContent = old.hidden
-            ? ''
-            : '旧版未分类投入 ' +
-              fmt(s.ledger.unclassifiedExp) +
-              '，已占用技能和冶炼预算；人物升级继续按等级目标执行。';
-        }
+        if (this.section === 'budget') this.paintFragment('.legacy-experience', s.ledger?.unclassifiedExp ?
+          this.statRow('旧版未分类投入', fmt(s.ledger.unclassifiedExp), {
+            help: '旧版未分类投入 ' + fmt(s.ledger.unclassifiedExp) + '，已占用技能和冶炼预算；人物升级继续按等级目标执行。',
+          }) : '');
         this.paintDirty();
         this.paintLogs();
         this.paintDatabase();
