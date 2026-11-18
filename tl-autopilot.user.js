@@ -105,6 +105,7 @@
       fill: { enabled: true, refill: true },
       resumeAfterReload: false,
       keepAwake: true,
+      disguise: { enabled: false, hotkey: 'Alt+Z', style: 'baidu', mute: true },
       tickMs: 1000,
       requestTimeoutMs: 10000,
       logs: { level: 'all', keepDays: 7, showCount: 100 },
@@ -249,6 +250,23 @@
       }
       return out;
     }
+    const modifiers = ['Ctrl', 'Alt', 'Shift', 'Meta'];
+    const punctuation = { Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']',
+      Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/' };
+    function canonicalHotkey(value) {
+      if (typeof value !== 'string') return '';
+      const parts = value.split('+'), key = parts.pop().toUpperCase();
+      if (!parts.every(part => modifiers.includes(part)) || new Set(parts).size !== parts.length) return '';
+      if (!/^F(?:[1-9]|1[0-2])$/.test(key) && !(
+        parts.some(part => part !== 'Shift') && (/^[A-Z0-9]$/.test(key) || Object.values(punctuation).includes(key))
+      )) return '';
+      return [...modifiers.filter(part => parts.includes(part)), key].join('+');
+    }
+    function eventHotkey(event) {
+      const key = /^F(?:[1-9]|1[0-2])$/.test(event.key) ? event.key :
+        /^(?:Key[A-Z]|Digit[0-9])$/.test(event.code) ? event.code.slice(-1) : punctuation[event.code];
+      return canonicalHotkey([...modifiers.filter(mod => event[mod.toLowerCase() + 'Key']), key].join('+'));
+    }
     function config(value) {
       if (value?.budget && Object.hasOwn(value.budget, 'expPerDay')) {
         const budget = { ...value.budget };
@@ -258,6 +276,8 @@
       }
       const p = merge(DEFAULTS, value);
       p.version = 2;
+      p.disguise.hotkey = canonicalHotkey(p.disguise.hotkey) || DEFAULTS.disguise.hotkey;
+      if (!['baidu', 'google', 'blank'].includes(p.disguise.style)) p.disguise.style = DEFAULTS.disguise.style;
       if (!['all', 'notice', 'warning'].includes(p.logs.level)) p.logs.level = 'all';
       p.logs.keepDays = Math.max(1, Math.min(90, integer(p.logs.keepDays, 7)));
       p.logs.showCount = Math.max(20, Math.min(500, integer(p.logs.showCount, 100)));
@@ -3115,6 +3135,7 @@
       WAREHOUSE_CAPACITY,
       mapChoices,
       DEFAULTS,
+      eventHotkey,
       WEIGHTS,
       GEM_ATTR,
       NPC,
@@ -5225,7 +5246,7 @@
           document.addEventListener(
             type,
             (e) => {
-              if (e.isTrusted && !e.composedPath().some((el) => el?.id === 'tl-autopilot-host'))
+              if (e.isTrusted && !e.composedPath().some((el) => el?.id === 'tl-autopilot-host' || el?.id === 'tl-disguise-host'))
                 this.manualUntil = Date.now() + 5000;
             },
             true,
@@ -5594,6 +5615,7 @@
       updateConfig(value) {
         const previous = this.prefs;
         this.prefs = P.config(value);
+        if (!this.prefs.disguise.enabled && this.panel?.cover) this.panel.toggleDisguise();
         if (previous.storage.indexedDB !== this.prefs.storage.indexedDB) this.logReady = this.syncLogStorage();
         if (previous.logs.keepDays !== this.prefs.logs.keepDays) this.pruneLogs();
         this.filler?.schedule();
@@ -6975,7 +6997,7 @@
       updates: "自动检查：打开或刷新页面时一次，之后每小时一次；手动检查间隔至少 60 秒。",
     };
     const CSS = `:host([data-theme="dark"]){--bg:#202020;--surface:#2b2b2b;--surface-alt:#1c1c1c;--control:#2f2f2f;--stroke:#3d3d3d;--stroke-strong:#9d9d9d;--divider:#353535;--text:#ffffff;--text-strong:#ffffff;--text-2:#c8c8c8;--text-3:#9a9a9a;--accent:#e2bd6b;--accent-hover:#edcd85;--on-accent:#2b2100;--accent-text:#e9c97e;--accent-soft:rgba(226,189,107,.14);--ok:#6ccb5f;--warn:#ffb454;--err:#ff99a4;--hover:rgba(255,255,255,.06);--pressed:rgba(255,255,255,.035);--shadow:0 16px 40px rgba(0,0,0,.42);color-scheme:dark}
-:host([data-theme="light"]){--bg:#f3f3f3;--surface:#ffffff;--surface-alt:#ebebeb;--control:#ffffff;--stroke:#d6d6d6;--stroke-strong:#868686;--divider:#e6e6e6;--text:#1a1a1a;--text-strong:#000000;--text-2:#5a5a5a;--text-3:#767676;--accent:#c99a1c;--accent-hover:#b98a12;--on-accent:#1f1700;--accent-text:#7d5800;--accent-soft:rgba(201,154,28,.16);--ok:#0f7b0f;--warn:#9a5b00;--err:#c42b1c;--hover:rgba(0,0,0,.045);--pressed:rgba(0,0,0,.025);--shadow:0 16px 40px rgba(0,0,0,.16);color-scheme:light}
+.hud.compact,:host([data-theme="light"]){--bg:#f3f3f3;--surface:#ffffff;--surface-alt:#ebebeb;--control:#ffffff;--stroke:#d6d6d6;--stroke-strong:#868686;--divider:#e6e6e6;--text:#1a1a1a;--text-strong:#000000;--text-2:#5a5a5a;--text-3:#767676;--accent:#c99a1c;--accent-hover:#b98a12;--on-accent:#1f1700;--accent-text:#7d5800;--accent-soft:rgba(201,154,28,.16);--ok:#0f7b0f;--warn:#9a5b00;--err:#c42b1c;--hover:rgba(0,0,0,.045);--pressed:rgba(0,0,0,.025);--shadow:0 16px 40px rgba(0,0,0,.16);color-scheme:light}
 :host{all:initial;font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;color:var(--text);font-size:13px;line-height:1.5;font-variant-numeric:tabular-nums}
 *{box-sizing:border-box}[hidden]{display:none!important}
 ::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-thumb{background:var(--stroke);border-radius:4px}::-webkit-scrollbar-track{background:transparent}
@@ -7024,7 +7046,175 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
 .formula-table td:last-child{font-family:Consolas,monospace;text-align:left;overflow-wrap:anywhere}.formula-table th:last-child{text-align:left}.quality-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text-3);margin-right:4px}.quality-1{background:var(--text-2)}.quality-2{background:oklch(from var(--accent) l c 250)}.quality-3{background:oklch(from var(--accent) l c 305)}.quality-4{background:var(--warn)}.quality-5{background:var(--err)}
 .side,.content{display:flex;flex-direction:column;min-height:0;min-width:0}.side{background:var(--surface-alt)}.search-box{display:flex;padding:8px;gap:4px}.search-box input{min-width:0;width:100%}.page-tabs{flex:1}.group-heading{flex:none;height:24px;font-size:14px;line-height:20px;font-weight:700;color:var(--text-strong);padding:2px 8px}.page-header{display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid var(--divider)}.dirty{text-align:right}.footer{justify-content:flex-end}.searching .active{opacity:.5}label.field:has(select){display:flex;flex-wrap:wrap}label.field:has(select) .field-label{flex:1}label.field:has(select) .field-control{max-width:60%}label.field:has(select) .field-error{width:100%}.search-field>div{min-width:0}.search-field .breadcrumb{display:block;margin:0;height:auto;padding:0;font-size:12px;color:var(--text-2)}.current-status{padding:12px}.current-status .summary{padding:0;border:0}.current-status>.block-title{margin-top:0}.flash{animation:field-flash 600ms ease-out}@keyframes field-flash{from{background:var(--accent-soft)}}.hud-update,mark{background:var(--accent-soft);color:var(--accent-text)}
 @media(max-width:819px){.main{display:flex;flex-direction:column}.side{flex:none}.content{flex:1}.page-tabs{flex-direction:row;overflow-x:auto}.group-heading{white-space:nowrap;align-self:center}.page-tabs button{max-width:none}}
+.hud.compact{left:auto!important;right:12px!important;top:12px!important;height:32px;gap:1px;padding:0 3px;cursor:default;box-shadow:0 1px 4px var(--divider)}
+.hud.compact>:not(.icon-button){display:none!important}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}`;
+    const disguiseSession = 'tl-autopilot-v1:disguise';
+    const disguiseTitles = { baidu: '百度一下，你就知道', google: 'Google', blank: '新标签页' };
+    const disguiseImages = {
+      baidu: ['https://www.baidu.com/img/PCtm_d9c8750bed0b3c7d089fa7d55720d6cf.png', 'https://www.baidu.com/favicon.ico'],
+      google: ['https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png', 'https://www.google.com/favicon.ico'],
+    };
+    const coverCSS = `
+:host{all:initial;color-scheme:light}
+*{box-sizing:border-box}
+.page{position:absolute;inset:0;overflow:auto;overscroll-behavior:contain;background:#fff;color:#222;font:14px Arial,sans-serif}
+.canvas{position:relative;height:100%;min-height:500px}.blank .canvas{min-height:0}
+button,input,textarea{font:inherit;color:inherit}button{border:0;background:none;cursor:pointer}
+nav,aside,footer,.tools,.row,.guide,.ai{display:flex;align-items:center}
+nav,aside{position:absolute;white-space:nowrap;font-size:13px}
+.baidu nav{top:19px;left:24px;right:170px;overflow:hidden;gap:21px;line-height:23px}
+.baidu aside{right:24px;top:18px;gap:32px}.login{border-radius:999px;color:#fff}
+.baidu .login{width:58px;height:29px;background:#4e6ef2}
+.google nav{right:10px;top:8.5px;gap:15px;color:#1f1f1f}
+.google nav svg{margin-left:8px;fill:#444746}.google .login{width:85px;height:40px;background:#0b57d0;font-size:14px;font-weight:500}
+main{position:absolute;left:50%;transform:translateX(-50%);text-align:center;width:min(var(--width),calc(100% - 32px))}
+.baidu main{--width:800px;top:max(64px,calc(37.5% - 144px))}
+.google main{--width:688px;top:max(64px,calc(37.5% - 117px))}
+.blank main{--width:560px;top:50%;transform:translate(-50%,-50%)}
+img,.wordmark{display:block;margin:auto}.wordmark{align-content:center;font-weight:700;font-size:50px;color:#e10600}
+.baidu .wordmark{height:129px;padding-top:44px}.wordmark b{color:#2932e1}
+.google .wordmark{height:92px;font:500 78px/92px Arial,sans-serif;letter-spacing:-5px}
+.google .wordmark span{color:#4285f4}.google .wordmark span:nth-child(2),.google .wordmark span:nth-child(6){color:#ea4335}.google .wordmark span:nth-child(3){color:#fbbc05}.google .wordmark span:nth-child(5){color:#34a853}
+[hidden]{display:none!important}textarea,input{min-width:0;outline:none;border:0;background:white;resize:none;font:16px Arial,sans-serif}
+.baidu form{position:relative;height:99px;margin-top:15px;border:1px solid transparent;border-radius:19px;background:linear-gradient(white,white) padding-box,linear-gradient(160deg,#3377fe,#4c6fff,#8370ff,#ba59ff) border-box;box-shadow:0 10px 40px -8px #4d80ff0d,0 13px 18px -15px #4d80ff1a}
+.baidu textarea{display:block;margin:9px 11px 0 16px;width:calc(100% - 27px);height:28px;padding:0 6px 0 0;color:#000}
+textarea::placeholder{color:#9195a3}.tools{position:absolute;bottom:9px;right:9px;gap:15px}
+.tools button{margin-left:3px;width:108px;height:44px;border-radius:15px;background:linear-gradient(136deg,#286aff,#4e6ef2,#7274f9,#9f66ff);color:white;font-size:17px;font-weight:500}
+.guide{margin:37px auto 0;width:442px;max-width:100%;height:38px;padding:0 11px;justify-content:space-between;background:#f5f6fa;border-radius:22px;font-size:16px}
+.guide b{font-size:15px;width:90px}.guide i{color:#535ef8;font-style:normal}
+footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:center}
+.baidu footer{min-height:40px;gap:0 9px;font-size:12px;color:#bbb}
+.side-tools{position:absolute;right:24px;bottom:44px;width:44px;height:138px;border:1px solid #dbdce0;border-radius:9px;display:grid;align-content:space-evenly;text-align:center;font-size:12px}.side-tools svg{display:block;margin:0 auto 2px}
+.google{color:#16171a}.google svg{width:24px;height:24px;flex:none}
+.google form{margin-top:26px}.row,.blank input{height:52px;width:100%;border:1px solid #dadce0;border-radius:26px;box-shadow:0 3px 10px #1f1f1f14}
+.row{padding:0 8px 0 12px}.row textarea{flex:1;margin-left:12px;height:50px;padding:14px 0 0;line-height:22px}
+.row textarea~svg{margin:0 8px}.row .ai{height:36px;margin-left:8px;padding:0 8px;border-radius:18px;background:#f3f5f6}.ai svg{width:20px;height:20px}
+.actions{margin-top:29px}.actions button{height:36px;margin:0 6px;padding:0 16px;border:1px solid #f8f9fa;border-radius:8px;background:#f8f9fa;color:#3c4043}
+.language{margin-top:43px;font-size:13px;line-height:28px;color:#4e5059}.language span{margin-left:6px;color:#1a0dab}
+.google footer{min-height:50px;justify-content:space-between;padding:0 20px}.google footer span{display:inline-block;padding:0 15px}
+.blank input{padding:0 18px}.blank button{position:absolute;right:6px;top:6px;height:40px;width:40px;color:#666}
+`;
+    function disguisePage(style) {
+      const spans = values => values.map(value => '<span>' + value + '</span>').join('');
+      const google = style === 'google';
+      const input = google ? '<textarea rows="1" aria-label="搜索" autocomplete="off"></textarea>' :
+        '<input type="search" aria-label="搜索" autocomplete="off">';
+      let page;
+      if (style === 'blank') {
+        page = '<main><form>' + input + '<button type="submit" aria-label="搜索">⌕</button></form></main>';
+      } else {
+        const wordmark = google ? spans([...'Google']) : 'Bai<b>du</b>百度';
+        const logo = `<img src="${disguiseImages[style][0]}" width="${google ? 272 : 270}" height="${google ? 92 : 129}" alt="${google ? 'Google' : '百度'}"><strong class="wordmark" hidden>${wordmark}</strong>`;
+        if (google) {
+          page = `<nav>Gmail<span>图片</span><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M6,8c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM12,20c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM6,20c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM6,14c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM12,14c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM16,6c0,1.1 0.9,2 2,2s2,-0.9 2,-2 -0.9,-2 -2,-2 -2,0.9 -2,2zM12,8c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM18,14c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2zM18,20c1.1,0 2,-0.9 2,-2s-0.9,-2 -2,-2 -2,0.9 -2,2 0.9,2 2,2z"></path></svg><button class="login">登录</button></nav>
+<main>${logo}<form><div class="row"><svg focusable="false" aria-hidden="true" viewBox="0 -960 960 960"><path d="M440-440H200v-80H440V-760h80v240H760v80H520v240H440V-440Z"></path></svg>${input}<svg aria-hidden="true" focusable="false" viewBox="0 -960 960 960"><path d="M480-400q-50 0-85-35t-35-85v-240q0-50 35-85t85-35q50 0 85 35t35 85v240q0 50-35 85t-85 35Zm-40 280v-123q-104-14-172-93t-68-184h80q0 83 58.5 141.5T480-320q83 0 141.5-58.5T680-520h80q0 105-68 184t-172 93v123h-80Z" fill="currentColor"></path></svg><svg aria-hidden="true" focusable="false" viewBox="0 -960 960 960"><path d="M480-320q-50 0-85-35t-35-85q0-50 35-85t85-35q50 0 85 35t35 85q0 50-35 85t-85 35Zm240 160q-33 0-56.5-23.5T640-240q0-33 23.5-56.5T720-320q33 0 56.5 23.5T800-240q0 33-23.5 56.5T720-160Zm-440 40q-66 0-113-47t-47-113v-80h80v80q0 33 23.5 56.5T280-200h200v80H280Zm480-320v-160q0-33-23.5-56.5T680-680H280q-33 0-56.5 23.5T200-600v120h-80v-120q0-66 47-113t113-47h80l40-80h160l40 80h80q66 0 113 47t47 113v160h-80Z" fill="currentColor"></path></svg><button class="ai" type="button"><svg focusable="false" aria-hidden="true" viewBox="0 -960 960 960"><path d="M740-560q-6,0-8-6q-16-61-60.5-105.5T566-732q-6-2-6-8q0-7 6-8q61-16 105.5-60.5T732-914q2-6 8-6q7,0 8,6q17,61 61,105.5T914-748q6,1 6,8q0,6-6,8q-61,16-105.5,60.5T748-566q-1,6-8,6Zm44,440L534-370q-34,25-73,37.5T380-320q-109,0-184.5-75.5T120-580t75.5-184.5T380-840q29,0 57,6.5T491-815l-40,70q-17-8-35-11.5T380-760q-75,0-127.5,52.5T200-580t52.5,127.5T380-400q69,0 120-45.5T559-560h80q-3,36-15,70.5T590-426L840-176l-56,56Z"></path></svg>AI 模式</button></div>
+<div class="actions"><button type="submit">Google 搜索</button><button type="button">手气不错</button></div></form>
+<div class="language">Google 提供：<span>English</span></div></main>
+<footer><div>${spans(['关于 Google','广告','商务','Google 搜索的运作方式'])}</div><div>${spans(['隐私权','条款','设置'])}</div></footer>`;
+        } else {
+          page = `<nav>${spans('新闻 hao123 地图 贴吧 视频 图片 网盘 库库AI 文心 百度搭子 更多'.split(' '))}</nav><aside>设置<button class="login">登录</button></aside>
+<main>${logo}<form><textarea rows="1" aria-label="搜索" placeholder="普京来华前点赞中国经验"></textarea>
+<div class="tools"><svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="5.91621" y="1.63398" width="8.16801" height="11.6845" rx="4.084" stroke="currentColor" stroke-width="1.6"></rect><path d="M3.48096 12.5547C4.64674 14.9817 7.12786 16.6572 10.0003 16.6572C12.8728 16.6572 15.3539 14.9817 16.5197 12.5547" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"></path><path d="M10 16.6582V18.6118" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"></path></svg><svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M9.99994 18.5C14.6944 18.5 18.4999 14.6944 18.4999 10C18.4999 5.30558 14.6944 1.5 9.99994 1.5C5.30552 1.5 1.49994 5.30558 1.49994 10C1.49994 14.6944 5.30552 18.5 9.99994 18.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"></path><path d="M10 6.33301V13.6663" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" stroke-linejoin="round"></path><path d="M6.33325 10H13.6666" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" stroke-linejoin="round"></path></svg><button type="submit">百度一下</button></div></form>
+<div class="guide"><b><i>◩</i> 百度搭子</b>深度调研、搞创作、搭应用，帮你一键搞定<span>〉</span></div></main>
+<div class="side-tools"><span><svg id="qrcode-home" width="16" height="20" fill="none" viewBox="0 0 16 20"><path stroke="currentColor" stroke-width="1.5" d="M.75 5.55c0-1.68 0-2.52.327-3.162a3 3 0 0 1 1.311-1.311C3.03.75 3.87.75 5.55.75h4.4c1.68 0 2.52 0 3.162.327a3 3 0 0 1 1.311 1.311c.327.642.327 1.482.327 3.162v8.4c0 1.68 0 2.52-.327 3.162a3 3 0 0 1-1.311 1.311c-.642.327-1.482.327-3.162.327h-4.4c-1.68 0-2.52 0-3.162-.327a3 3 0 0 1-1.311-1.311C.75 16.47.75 15.63.75 13.95z" clip-rule="evenodd"></path><path fill="currentColor" d="M8.898 15.9a1.15 1.15 0 1 1-2.3 0 1.15 1.15 0 0 1 2.3 0"></path><path stroke="currentColor" stroke-width="1.5" d="M.75 12.75h14"></path></svg>下载</span><span><svg width="17" height="18" fill="none" viewBox="0 0 17 18"><path fill="currentColor" fill-rule="evenodd" d="M6.637.397a2.96 2.96 0 0 1 2.962 0l5.156 2.976a2.96 2.96 0 0 1 1.481 2.566v5.953a2.96 2.96 0 0 1-1.482 2.566L9.6 17.434c-.916.53-2.046.53-2.962 0L1.48 14.458A2.96 2.96 0 0 1 0 11.892V5.939c0-1.058.565-2.037 1.481-2.566zM8.859 1.68a1.48 1.48 0 0 0-1.482 0L2.222 4.656c-.458.265-.74.754-.74 1.283v5.953c0 .529.282 1.018.74 1.283l5.155 2.976a1.48 1.48 0 0 0 1.482 0l5.155-2.976c.458-.265.74-.754.74-1.283V5.939c0-.53-.282-1.018-.74-1.283z" clip-rule="evenodd"></path><path fill="currentColor" fill-rule="evenodd" d="M8.118 7.064a1.852 1.852 0 1 0 0 3.703 1.852 1.852 0 0 0 0-3.703M4.785 8.915a3.333 3.333 0 1 1 6.666 0 3.333 3.333 0 0 1-6.666 0" clip-rule="evenodd"></path></svg>辅助</span></div>
+<footer>${spans(['关于百度','About Baidu','使用百度前必读','帮助中心','企业推广','京公网安备11010802050023号','京ICP证030173号','互联网新闻信息服务许可证11220180008','网络文化经营许可证： 京网文〔2026〕0171-042号','♧','⌃'])}</footer>`;
+        }
+      }
+      return `<style>${coverCSS}</style><section class="page ${style}" aria-label="${disguiseTitles[style]}"><div class="canvas">${page}</div></section>`;
+    }
+    class DisguiseCover {
+      constructor(options) {
+        this.hotkey = options.hotkey;
+        this.title = disguiseTitles[options.style];
+        this.originalTitle = document.title;
+        this.focus = document.activeElement;
+        while (this.focus?.shadowRoot?.activeElement) this.focus = this.focus.shadowRoot.activeElement;
+        this.icons = new Map();
+        this.media = new Map();
+        this.icon = document.createElement('link');
+        this.icon.rel = 'icon';
+        const mark = options.style === 'blank' ? '<path d="M7 2h13l5 5v23H7z" fill="white" stroke="#999"/>' :
+          '<text x="3" y="27" font-family="Arial" font-weight="bold" font-size="30" fill="#425fea">' + (options.style === 'google' ? 'G' : 'B') + '</text>';
+        const fallback = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' + mark + '</svg>');
+        this.icon.addEventListener('error', () => { if (this.icon.href !== fallback) this.icon.href = fallback; });
+        this.icon.href = disguiseImages[options.style]?.[1] || fallback;
+        this.host = document.createElement('div');
+        this.host.id = 'tl-disguise-host';
+        Object.assign(this.host.style, { position: 'fixed', inset: '0', zIndex: '2147482999' });
+        const root = this.host.attachShadow({ mode: 'closed' });
+        root.innerHTML = disguisePage(options.style);
+        const input = root.querySelector('input,textarea'), logo = root.querySelector('img');
+        logo?.addEventListener('error', () => {
+          logo.hidden = true;
+          root.querySelector('.wordmark').hidden = false;
+        });
+        const search = event => {
+          event.preventDefault();
+          const query = input.value.trim();
+          if (query) window.open((options.style === 'google' ? 'https://www.google.com/search?q=' :
+            'https://www.baidu.com/s?wd=') + encodeURIComponent(query), '_blank', 'noopener');
+        };
+        root.querySelector('form').addEventListener('submit', search);
+        root.addEventListener('click', event => {
+          if (event.target.closest('button[type="button"],nav,aside,footer,.guide,.side-tools')) event.preventDefault();
+        });
+        input.addEventListener('keydown', event => {
+          if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) search(event);
+          event.stopPropagation();
+        });
+        document.documentElement.appendChild(this.host);
+        input.focus();
+        this.scrollLock = document.createElement('style');
+        this.scrollLock.textContent = 'html,body{overflow:hidden!important;overscroll-behavior:none!important}';
+        document.documentElement.appendChild(this.scrollLock);
+        this.syncHead();
+        if (options.mute) document.querySelectorAll('audio,video').forEach(el => this.mute(el));
+        this.observer = new MutationObserver(records => {
+          if (records.some(record => document.head?.contains(record.target) ||
+            [...record.addedNodes].some(node => node === document.head))) this.syncHead();
+          if (options.mute) for (const record of records) for (const node of record.addedNodes) {
+            if (node.matches?.('audio,video')) this.mute(node);
+            node.querySelectorAll?.('audio,video').forEach(el => this.mute(el));
+          }
+        });
+        this.observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+      }
+      mute(el) {
+        if (!this.media.has(el)) this.media.set(el, el.muted);
+        el.muted = true;
+      }
+      syncHead() {
+        const head = document.head;
+        if (!head) return;
+        if (document.title !== this.title) {
+          this.originalTitle = document.title;
+          if (!head.querySelector('title')) {
+            this.createdTitle = document.createElement('title');
+            head.appendChild(this.createdTitle);
+          }
+          document.title = this.title;
+        }
+        for (const icon of head.querySelectorAll('link[rel~="icon"]')) {
+          if (icon === this.icon) continue;
+          const marker = document.createComment('');
+          icon.replaceWith(marker);
+          this.icons.set(icon, marker);
+        }
+        if (this.icon.parentNode !== head) head.appendChild(this.icon);
+      }
+      remove() {
+        this.observer.disconnect();
+        if (document.title === this.title) document.title = this.originalTitle;
+        if (this.createdTitle && !this.createdTitle.textContent) this.createdTitle.remove();
+        this.icon.remove();
+        for (const [icon, marker] of this.icons) marker.replaceWith(icon);
+        for (const [el, muted] of this.media) el.muted = muted;
+        this.scrollLock.remove();
+        this.host.remove();
+        if (this.focus?.isConnected) this.focus.focus?.({ preventScroll: true });
+      }
+    }
     class Panel {
       constructor(controller) {
         this.controller = controller;
@@ -7038,13 +7228,83 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         this.previewPlans = [];
         this.roleKey = '';
         this.summaryHTML = null;
+        window.addEventListener('keydown', event => this.disguiseKeydown(event), true);
         this.mount();
+      }
+      disguiseKeydown(event) {
+        if (event.repeat) return;
+        const button = this.captureButton;
+        if (button && event.composedPath().includes(button)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          const key = TLPolicy.eventHotkey(event);
+          const error = button.closest('.field').querySelector('.field-error');
+          if (!key && event.key !== 'Escape') {
+            error.textContent = '需要包含 Ctrl、Alt 或使用功能键';
+            error.hidden = false;
+            button.setAttribute('aria-invalid', 'true');
+            return;
+          }
+          if (key) {
+            this.pending.disguise.hotkey = key;
+            this.dirty = true;
+            this.paintDirty();
+          }
+          this.endCapture();
+          return;
+        }
+        const saved = this.controller.prefs.disguise;
+        if ((this.cover || saved.enabled) && TLPolicy.eventHotkey(event) === (this.cover?.hotkey || saved.hotkey)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          this.toggleDisguise();
+        }
+      }
+      endCapture() {
+        const button = this.captureButton;
+        if (!button) return;
+        this.captureButton = null;
+        button.textContent = this.pending.disguise.hotkey;
+        this.validateInput(button);
+      }
+      toggleDisguise(options = this.controller.prefs.disguise) {
+        if (this.cover) {
+          if (this.reopenWindow && !this.windowOpen) this.setWindow(true);
+          this.cover.remove();
+          this.cover = null;
+          this.hud.classList.remove('compact');
+          this.place('hud', this.hud);
+          try { sessionStorage.removeItem(disguiseSession); } catch {}
+          this.hudAt = -Infinity;
+          this.controller.paint(true);
+        } else if (options.enabled) {
+          this.reopenWindow = this.windowOpen;
+          this.cover = new DisguiseCover(options);
+          if (this.windowOpen) {
+            this.windowOpen = false;
+            this.shell.hidden = true;
+            this.hideTooltip();
+          }
+          this.hud?.classList.toggle('compact', true);
+          try { sessionStorage.setItem(disguiseSession, '1'); } catch {}
+        }
       }
       mount() {
         if (!document.documentElement) {
-          setTimeout(() => this.mount(), 10);
+          const observer = new MutationObserver(() => {
+            if (!document.documentElement) return;
+            observer.disconnect();
+            this.mount();
+          });
+          observer.observe(document, { childList: true });
           return;
         }
+        let restore = false;
+        try {
+          restore = sessionStorage.getItem(disguiseSession) === '1';
+          if (restore && !this.controller.prefs.disguise.enabled) sessionStorage.removeItem(disguiseSession);
+        } catch {}
+        if (restore && this.controller.prefs.disguise.enabled) this.toggleDisguise();
         this.host = document.createElement('div');
         this.host.id = 'tl-autopilot-host';
         this.host.setAttribute?.('data-theme', this.uiState().theme);
@@ -7063,6 +7323,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           <section class="shell" role="dialog" tabindex="-1" aria-label="TL挂机助手设置" hidden><header class="head"><div class="head-title"><strong>TL挂机助手</strong><button type="button" class="version" data-action="showUpdates" disabled>v1.0.2</button></div><button type="button" class="icon-button" data-action="theme" aria-label="切换浅色 / 深色主题" title="${light ? '切换深色主题' : '切换浅色主题'}">${light ? '☀' : '☾'}</button>${icon('close','✕','关闭设置')}</header>
           <div class="main"><aside class="side"><div class="search-box"><input class="search control-input" aria-label="搜索设置" placeholder="搜索设置…">${icon('clearSearch','✕','清除搜索')}</div>${this.navigationHTML()}</aside><div class="content"><header class="page-header"><strong class="page-title"></strong><span class="dirty"></span></header><div class="body"></div><footer class="footer"><button type="button" class="btn subtle" data-action="revert" hidden>撤销</button><button type="button" class="btn" data-action="save">保存策略</button></footer></div></div></section>`;
         this.hud = this.root.querySelector('.hud');
+        if (this.cover) this.hud.classList.toggle('compact', true);
         this.shell = this.root.querySelector('.shell');
         this.root.addEventListener('pointerdown', (event) => {
           if (event.target.closest('.shell') !== this.shell) return;
@@ -7098,6 +7359,13 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           const b = e.target.closest('button');
           if (!b) return;
           const action = b.dataset.action;
+          if (action === 'captureHotkey') {
+            this.captureButton = b;
+            b.textContent = '请按下新的快捷键…';
+            b.focus();
+            return;
+          }
+          if (action === 'tryDisguise') { this.toggleDisguise(this.pending.disguise); return; }
           if (action === 'theme') {
             const state = this.uiState(), light = state.theme !== 'light';
             state.theme = light ? 'light' : 'dark';
@@ -7191,6 +7459,9 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             }
           }
           this.controller.paint();
+        });
+        this.root.addEventListener('focusout', e => {
+          if (this.captureButton === e.target) this.endCapture();
         });
         this.root.addEventListener('input', (e) => {
           if (e.target === this.search) { this.setQuery(this.search.value); return; }
@@ -7317,6 +7588,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         if (!this.windowOpen) this.setWindow(true);
       }
       place(key, element, requested) {
+        if (this.cover && key === 'hud') return;
         const position = requested || this.uiState()[key];
         if (!position || element.hidden || typeof window === 'undefined') return;
         const rect = element.getBoundingClientRect();
@@ -7332,7 +7604,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         globalThis.window?.addEventListener('resize', () => this.place(key, element));
         handle.addEventListener('pointerdown', (event) => {
           suppressClick = false;
-          if (event.button !== 0 || event.target.closest('button')) return;
+          if ((this.cover && key === 'hud') || event.button !== 0 || event.target.closest('button')) return;
           const rect = element.getBoundingClientRect();
           event.target.setPointerCapture?.(event.pointerId);
           drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
@@ -7361,7 +7633,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         handle.addEventListener('pointerup', end);
         handle.addEventListener('pointercancel', end);
         handle.addEventListener('dblclick', (event) => {
-          if (event.target.closest('button')) return;
+          if ((this.cover && key === 'hud') || event.target.closest('button')) return;
           delete this.uiState()[key];
           Object.assign(element.style, { left: '', top: '', right: '' });
           this.savePanelState();
@@ -7594,6 +7866,8 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         let control;
         if (typeof value === 'boolean')
           control = `<input type="checkbox" role="switch" ${attrs} ${value ? 'checked' : ''}${path.endsWith('.enabled') || label.includes('总开关') ? ' data-master="true"' : ''} aria-label="${esc(label)}" aria-describedby="${described}">`;
+        else if (path === 'disguise.hotkey')
+          control = `<button type="button" class="btn" data-action="captureHotkey" ${attrs} aria-label="${esc(label)}" aria-describedby="${described}">${esc(value)}</button>`;
         else if (options.choices)
           control = `<select class="control-select" ${attrs} aria-label="${esc(label)}" aria-describedby="${described}" title="${esc(options.choices.find(([v]) => String(v) === String(value))?.[1] || '')}">${options.choices.map(([v, t]) => `<option value="${esc(v)}" ${String(value) === String(v) ? 'selected' : ''} title="${esc(t)}">${esc(t)}</option>`).join('')}</select>`;
         else
@@ -7716,6 +7990,8 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         if (error.hidden !== !message) error.hidden = !message;
       }
       syncFields() {
+        const preview = this.root.querySelector('[data-action="tryDisguise"]');
+        if (preview) preview.disabled = !this.pending.disguise.enabled;
         this.root.querySelectorAll('.group,.search-field').forEach((section) => {
           const parent = section.dataset?.parent, master = section.querySelector('.master input'), state = section.querySelector('.section-state');
           if (state) {
@@ -8067,7 +8343,15 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             esc(JSON.stringify(this.pending, null, 2)) +
             '</textarea><input class="config-file" type="file" accept=".json" hidden><div class="info-bar tone-err" role="alert"><span aria-hidden="true">!</span><span class="error"></span></div><div class="actions"><button type="button" class="btn" data-action="applyJson">载入JSON配置</button><button type="button" class="btn" data-action="importConfig">导入配置文件</button><button type="button" class="btn" data-action="export">导出配置</button><button type="button" class="btn" data-action="defaults">载入默认策略</button><button type="button" class="btn" data-action="diagnostics">导出诊断</button></div>') +
             g('浏览器数据库', f('使用浏览器数据库保存日志', 'storage.indexedDB') +
-            '<div class="database-data">' + this.databaseHTML() + '</div><button type="button" class="btn" data-action="clearDatabase">清理数据库</button>');
+            '<div class="database-data">' + this.databaseHTML() + '</div><button type="button" class="btn" data-action="clearDatabase">清理数据库</button>') +
+            g('伪装', f('开启伪装', 'disguise.enabled') +
+            f('快捷键', 'disguise.hotkey', { dependsOn: 'disguise.enabled' }) +
+            f('伪装成', 'disguise.style', { choices: [['baidu', '百度'], ['google', '谷歌'], ['blank', '空白页']] }) +
+            f('伪装时静音', 'disguise.mute') +
+            '<button type="button" class="btn" data-action="tryDisguise"' + (this.pending.disguise.enabled ? '' : ' disabled') +
+            '>试一下</button>' + this.help('再按一次快捷键恢复'), false, {
+              help: '按下快捷键，游戏页面立刻变成搜索引擎首页的样子，标签页标题和图标也一起变；再按一次恢复。托管在后台照常运行。地址栏里的网址不会变。',
+            });
         if (this.section === 'logs') {
           this.logKey = null;
           html = g('日志', f('显示等级', 'logs.level', { immediate: true, choices: [['all', '全部'], ['notice', '成功和警告'], ['warning', '仅警告']] }) +
