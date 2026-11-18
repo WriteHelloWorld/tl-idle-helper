@@ -6713,6 +6713,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 button:hover,summary:hover{background-color:var(--hover)}button:active,summary:active{background-color:var(--pressed)}
 button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.4;cursor:default}
 .shell{display:flex;flex-direction:column;position:fixed;left:max(12px,calc((100vw - 760px)/2));top:max(12px,calc((100vh - 660px)/2));width:760px;height:min(660px,calc(100vh - 24px));max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);background:var(--bg);border:1px solid var(--stroke);border-radius:8px;box-shadow:var(--shadow);pointer-events:auto;overflow:hidden}
+.shell:focus{outline:none}
 .head,.footer{flex-shrink:0}.head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--divider)}.head strong{font-size:14px;font-weight:600}
 .head-title{display:flex;align-items:center;flex-wrap:wrap;gap:8px;flex:1;min-width:0}.head .version{height:28px;padding:0 8px;border:1px solid transparent;border-radius:4px;background:transparent;font-size:12px;color:var(--text-2);white-space:nowrap}.head .version:disabled{cursor:default;background:transparent}.head .version.has-update{color:var(--accent-text);background:var(--accent-soft)}.head .version.has-update:hover{background:var(--hover)}.head .version.has-update:active{background:var(--pressed)}
 .btn{height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--stroke);background:var(--control)}.btn:hover{background:var(--hover)}.btn:active{background:var(--pressed)}
@@ -6786,10 +6787,15 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         const light = this.uiState().theme === 'light';
         const icon = (action, glyph, label) => `<button type="button" class="icon-button" data-action="${action}" aria-label="${label}" title="${label}">${glyph}</button>`;
         this.root.innerHTML = `<style>${CSS}</style><div class="hud"><span class="dot"></span><span class="hud-reason" role="button" tabindex="0"></span><button type="button" class="chip hud-update" data-action="showUpdates" hidden></button><span class="sep income-sep" hidden></span><span class="hud-income" hidden></span><span class="sep"></span>${icon('toggleRun','▶','开始托管')}${icon('stopBattle','■','停止战斗')}${icon('settingsWindow','⚙','打开设置')}</div>
-          <section class="shell" role="dialog" aria-label="TL挂机助手设置" hidden><header class="head"><div class="head-title"><strong>TL挂机助手</strong><button type="button" class="version" data-action="showUpdates" disabled>v0.3.2</button></div><button type="button" class="icon-button" data-action="theme" aria-label="切换浅色 / 深色主题" title="${light ? '切换深色主题' : '切换浅色主题'}">${light ? '☀' : '☾'}</button>${icon('close','✕','关闭设置')}</header>
+          <section class="shell" role="dialog" tabindex="-1" aria-label="TL挂机助手设置" hidden><header class="head"><div class="head-title"><strong>TL挂机助手</strong><button type="button" class="version" data-action="showUpdates" disabled>v0.3.2</button></div><button type="button" class="icon-button" data-action="theme" aria-label="切换浅色 / 深色主题" title="${light ? '切换深色主题' : '切换浅色主题'}">${light ? '☀' : '☾'}</button>${icon('close','✕','关闭设置')}</header>
           <div class="main"><aside class="side"><div class="search-box"><input class="search control-input" aria-label="搜索设置" placeholder="搜索设置…">${icon('clearSearch','✕','清除搜索')}</div>${this.navigationHTML()}</aside><div class="content"><header class="page-header"><strong class="page-title"></strong><span class="dirty"></span></header><div class="body"></div><footer class="footer"><button type="button" class="btn subtle" data-action="revert" hidden>撤销</button><button type="button" class="btn" data-action="save">保存策略</button></footer></div></div></section>`;
         this.hud = this.root.querySelector('.hud');
         this.shell = this.root.querySelector('.shell');
+        this.root.addEventListener('pointerdown', (event) => {
+          if (event.target.closest('.shell') !== this.shell) return;
+          const control = event.target.closest('button,input,textarea,select,summary,a[href],[tabindex],[contenteditable]');
+          if (control === this.shell || control?.disabled) this.shell.focus({ preventScroll: true });
+        });
         this.search = this.root.querySelector('.search');
         this.clearSearch = this.root.querySelector('[data-action="clearSearch"]');
         this.clearSearch.hidden = true;
@@ -6831,10 +6837,11 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           if (action === 'showUpdates') { if (!b.disabled) this.openPage('updates'); return; }
           if (action === 'settingsWindow' || action === 'close') { this.setWindow(!this.windowOpen); return; }
           if (action === 'clearSearch') { this.setQuery(''); this.search.focus(); return; }
-          if (action === 'toggleRun') {
-            if (this.controller.enabled ?? this.hudRunning) this.controller.pause(undefined, true);
+          if (action === 'toggleRun' || action === 'start' || action === 'pause') {
+            this.hudAt = -Infinity;
+            if (action === 'pause' || (action === 'toggleRun' && (this.controller.enabled ?? this.hudRunning))) this.controller.pause(undefined, true);
             else this.controller.start();
-            this.controller.paint();
+            this.controller.paint(true);
             return;
           }
           if (b.dataset.result != null) { this.openResult(Number(b.dataset.result)); return; }
@@ -6857,8 +6864,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             return;
           }
           if (['clearLogs', 'clearDatabase', 'clearStats', 'clearGearRejected', 'resetScoring'].includes(action) && !this.confirmAction(b)) return;
-          if (action === 'start') this.controller.start();
-          else if (action === 'clearGearRejected') {
+          if (action === 'clearGearRejected') {
             this.controller.clearGearRejected();
             this.requestBody();
           }
@@ -6870,7 +6876,6 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
             this.controller.stats?.clear();
             this.requestBody();
           }
-          else if (action === 'pause') this.controller.pause(undefined, true);
           else if (action === 'stopBattle') this.controller.stopBattle();
           else if (action === 'save') {
             this.pending = TLPolicy.clone(this.controller.updateConfig(this.pending));
@@ -7094,7 +7099,8 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
       }
       paintHud() {
         const now = Date.now();
-        if (!this.hud || now - (this.hudAt ?? -Infinity) < 1000) return;
+        const enabled = this.controller.enabled ?? this.hudRunning;
+        if (!this.hud || (enabled === this.hudRunning && now - (this.hudAt ?? -Infinity) < 1000)) return;
         this.hudAt = now;
         const s = this.controller.hudStatus();
         this.hudRunning = s.enabled;
@@ -7241,17 +7247,21 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
           const node = event.target.closest?.('[data-tip]');
           return node?.dataset.tip != null ? node : null;
         };
-        this.root.addEventListener('mouseenter', (event) => {
-          if (event.target === anchor(event)) this.showTooltip(event.target);
-        }, true);
+        this.root.addEventListener('mouseover', (event) => {
+          const icon = anchor(event);
+          if (icon && icon !== this.tipAnchor) this.showTooltip(icon);
+        });
+        this.root.addEventListener('mouseout', (event) => {
+          if (this.tipAnchor && !this.tipPinned && anchor(event) === this.tipAnchor &&
+            event.relatedTarget?.closest?.('[data-tip]') !== this.tipAnchor) this.hideTooltip();
+        });
         this.root.addEventListener('focus', (event) => {
           const icon = anchor(event);
           if (icon) this.showTooltip(icon);
         }, true);
-        for (const type of ['mouseleave', 'blur'])
-          this.root.addEventListener(type, (event) => {
-            if (event.target === this.tipAnchor) this.hideTooltip();
-          }, true);
+        this.root.addEventListener('blur', (event) => {
+          if (event.target === this.tipAnchor) this.hideTooltip();
+        }, true);
         this.root.addEventListener('click', (event) => {
           const icon = anchor(event);
           if (!icon) return;
@@ -7318,7 +7328,7 @@ textarea{width:100%;background:var(--control);border:1px solid var(--stroke);bor
         const tag = result ? 'div' : 'label';
         const title = result ? `<div><label class="field-label" for="${id}"><span>${result.marked}</span>${this.help(options.help)}</label>${result.breadcrumb}</div>` :
           `<span class="field-label"><span>${esc(label)}</span>${this.help(options.help)}</span>`;
-        return `<${tag} class="field${result ? ' search-field' : ''}${dependency ? ' dependent' : ''}${disabled ? ' disabled' : ''}" ${result ? `data-parent="${esc(result.parent)}"` : `for="${id}"`}>${title}<span class="field-control">${control}${options.unit ? `<span class="unit">${esc(options.unit)}</span>` : ''}</span>${options.immediate ? '<span class="instant">即时生效</span>' : ''}<span class="field-error" id="${id}-error" aria-live="polite"${message ? '' : ' hidden'}>${esc(message)}</span></${tag}>`;
+        return `<${tag} class="field${result ? ' search-field' : ''}${dependency && !result ? ' dependent' : ''}${disabled ? ' disabled' : ''}" ${result ? `data-parent="${esc(result.parent)}"` : `for="${id}"`}>${title}<span class="field-control">${control}${options.unit ? `<span class="unit">${esc(options.unit)}</span>` : ''}</span>${options.immediate ? '<span class="instant">即时生效</span>' : ''}<span class="field-error" id="${id}-error" aria-live="polite"${message ? '' : ' hidden'}>${esc(message)}</span></${tag}>`;
       }
       buildIndex(status, state) {
         const entries = [], builder = Object.create(this);
