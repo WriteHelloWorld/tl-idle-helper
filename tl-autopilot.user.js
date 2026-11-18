@@ -223,6 +223,7 @@
         reloadAfterSeconds: 120,
         maxReloadsPerHour: 2,
       },
+      roleConfig: 'shared',
       updates: { checkDaily: true, remind: true, autoApply: true },
     };
     const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
@@ -336,6 +337,7 @@
       p.potions.hpThreshold = Math.max(10, Math.min(80, integer(p.potions.hpThreshold, 50)));
       p.potions.mpThreshold = Math.max(10, Math.min(80, integer(p.potions.mpThreshold, 50)));
       if (!['fit', 'weak', 'strong', 'smart'].includes(p.potions.order)) p.potions.order = 'fit';
+      if (!['shared', 'per-role'].includes(p.roleConfig)) p.roleConfig = 'shared';
       return p;
     }
     function logFilter(entries, level) {
@@ -5923,7 +5925,7 @@
       towerEnded() {
         if (this.prefs.gear.profile !== 'tower') return;
         this.prefs.gear.profile = 'auto';
-        writeStorage(CONFIG, this.prefs);
+        writeStorage(this.configKey(), this.prefs);
         if (this.panel?.pending) this.panel.pending.gear.profile = 'auto';
         this.log('无相浮屠结束，装备方案回到自动');
       }
@@ -6320,6 +6322,14 @@
       saveLedger() {
         if (this.ledger) writeStorage(this.ledgerKey(), this.ledger);
       }
+      // 配置存储键：shared=全局一份；per-role=每角色一份。开关 roleConfig 存在
+      // 全局配置上——全局键因此始终是「模式 + 新角色模板」的权威来源，角色键
+      // 只存该角色的差异化配置
+      configKey() {
+        return this.prefs.roleConfig === 'per-role' && this.roleId
+          ? PREFIX + ':config:' + this.roleId
+          : CONFIG;
+      }
       setRole(id) {
         this.ensureGearState(id);
         if (this.roleId !== id || this.ledger?.day !== day()) {
@@ -6328,6 +6338,12 @@
             this.invasionVisit = null;
           }
           this.roleId = id;
+          // 每角色独立配置模式：按角色键装载实际配置（缺失时以全局配置为模板，
+          // roleConfig 开关始终跟随全局值，避免模式被旧角色配置漂移）
+          if (this.prefs.roleConfig === 'per-role') {
+            const roleStored = readStorage(PREFIX + ':config:' + id, null);
+            this.prefs = P.config({ ...this.prefs, ...(roleStored || {}), roleConfig: this.prefs.roleConfig });
+          }
           // Recruiting teams and two-hour rounds can span local midnight.
           const yesterday = new Date();
           yesterday.setDate(yesterday.getDate() - 1);
@@ -6461,11 +6477,25 @@
       updateConfig(value) {
         const previous = this.prefs;
         this.prefs = P.config(value);
+        // 配置作用范围切换的迁移：切「每角色独立」= 全局键保留模式并播种当前
+        // 角色键；切「共用」= 以保存者为准写全局键，并清掉各角色键（防止下次
+        // 切回独立时旧角色配置复活）。其他运行中页签在保存/刷新后跟随新模式
+        if (this.prefs.roleConfig !== previous.roleConfig) {
+          if (this.prefs.roleConfig === 'per-role' && this.roleId)
+            writeStorage(PREFIX + ':config:' + this.roleId, this.prefs);
+          else {
+            writeStorage(CONFIG, this.prefs);
+            for (let i = localStorage.length - 1; i >= 0; i--) {
+              const k = localStorage.key(i);
+              if (k && k.startsWith(PREFIX + ':config:')) localStorage.removeItem(k);
+            }
+          }
+        }
         if (!this.prefs.disguise.enabled && this.panel?.cover) this.panel.toggleDisguise();
         if (previous.storage.indexedDB !== this.prefs.storage.indexedDB) this.logReady = this.syncLogStorage();
         if (previous.logs.keepDays !== this.prefs.logs.keepDays) this.pruneLogs();
         this.filler?.schedule();
-        writeStorage(CONFIG, this.prefs);
+        writeStorage(this.configKey(), this.prefs);
         this.timer.set(this.prefs.tickMs);
         this.lastSettings = 0;
         this.suppressed.clear();
@@ -9447,6 +9477,12 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             f('每小时最多自动刷新', 'reconnect.maxReloadsPerHour', { unit: '次', dependsOn: 'reconnect.autoReload' }) +
             f('策略检查间隔', 'tickMs', { min: 700, unit: '毫秒' }) +
             f('动作响应超时', 'requestTimeoutMs', { min: 6000, unit: '毫秒' }), true) +
+            g('配置保存',
+            f('配置按角色独立保存', 'roleConfig', {
+              choices: [['shared', '所有角色共用一份'], ['per-role', '每个角色独立一份']],
+              help: '多开角色页签时，挂机地图/预算/用药等策略可按角色分别设置。独立模式下保存只影响当前角色；切回共用时以最后保存的角色为准，其他页签刷新后生效。',
+            }) +
+            '<div class="hint">所有角色共用：三个页签的挂机地图、预算、用药等策略保持一致。每角色独立：各页签保存各自的一份策略，互不影响。</div>', false) +
             g('配置', '<label for="tl-config-json">高级配置JSON</label>' + this.help(HELP.json) + '<textarea id="tl-config-json" spellcheck="false" aria-label="高级配置JSON">' +
             esc(JSON.stringify(this.pending, null, 2)) +
             '</textarea><input class="config-file" type="file" accept=".json" hidden><div class="info-bar tone-err" role="alert"><span aria-hidden="true">!</span><span class="error"></span></div><div class="actions"><button type="button" class="btn" data-action="applyJson">载入JSON配置</button><button type="button" class="btn" data-action="importConfig">导入配置文件</button><button type="button" class="btn" data-action="export">导出配置</button><button type="button" class="btn" data-action="defaults">载入默认策略</button><button type="button" class="btn" data-action="diagnostics">导出诊断</button></div>') +
