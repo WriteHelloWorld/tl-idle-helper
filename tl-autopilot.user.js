@@ -167,6 +167,7 @@
       },
       market: { sort: 'off', showScore: true, bagScore: true, tipScore: true, tipBound: true,
         bagFilter: true, setTag: true, tipSet: true, scoreType: 'combat', bagScoreType: 'combat' },
+      convenience: { sortDeposit: true, ctrlDeposit: true },
       sell: {
         enabled: true,
         maxQuality: 1,
@@ -1980,6 +1981,21 @@
         .filter((e) => e.type === 'HEAL' && e.attr === attr)
         .reduce((n, e) => n + num(e.value), 0);
     }
+    function sortDepositPlan(bagItems, warehouseItems) {
+      const known = new Set(array(warehouseItems).filter(item => item?.count >= 1 && item.itemId != null)
+        .map(item => item.itemId));
+      return array(bagItems).filter(item => item?.id != null && item.count >= 1 && known.has(item.itemId) &&
+        [2, 3, 4].includes(item.itemTmpl?.type) && !['HP', 'MP', 'hp', 'mp'].some(attr => potionEffect(item.itemTmpl, attr) > 0))
+        .map(({ id, itemId, count, itemTmpl }) => ({ bagItemId: id, itemId, count, name: itemTmpl.name }));
+    }
+    function bagTabItems(tabText, character) {
+      const types = tabText === '道具' ? [2] : tabText === '材料' ? [3, 4] : [];
+      return array(character?.bagItems).filter(item => types.includes(item?.itemTmpl?.type));
+    }
+    function bagCellItem(tabText, index, character) {
+      if (!Number.isInteger(index) || index < 0 || index >= 72) return null;
+      return bagTabItems(tabText, character)[index] || null;
+    }
     function potionChoices(s, attr) {
       const templates = new Map(array(s.potionTemplates).map((t) => [num(t.id), t]));
       for (const b of array(s.bagItems)) if (b.itemTmpl) templates.set(num(b.itemId), b.itemTmpl);
@@ -3498,6 +3514,7 @@
       gearCheckStart, gearCheckAfter, gearCheckVerdict, gearCheckRestored, gearCheckRollback, gearRejected, gearCheckText,
       normalMap,
       potionEffect,
+      sortDepositPlan, bagCellItem, bagTabItems,
       potionChoices,
       potionSettings,
       potionPick,
@@ -4137,6 +4154,7 @@
         return [...(this.waiter ? [this.waiter] : []), ...(this.queryWaiters?.values() || [])];
       }
       responsePending(action) {
+        if (this.manualDepositResponse && action.type === 'WAREHOUSE_DEPOSIT') return true;
         return this.pendingWaiters().some((waiter) => responseType(waiter) === responseType(action) &&
           (!responseHasId(waiter) || !responseHasId(action) || responseKey(waiter) === responseKey(action)));
       }
@@ -4481,6 +4499,7 @@
             }
           this.recordStats?.(packet);
           this.filler?.response(packet);
+          if (type === 'WAREHOUSE_DEPOSIT_RESPONSE') this.manualDepositResponse?.(packet);
           setTimeout(() => {
             try {
               this.syncState(packet);
@@ -4523,6 +4542,11 @@
       }
       get connected() {
         return this.socket?.readyState === 1;
+      }
+      sendManual(type, payload) {
+        if (!this.connected || !this.sessionReady || this.waiter) return false;
+        this.socket.send(JSON.stringify({ type, payload }));
+        return true;
       }
       invalidateRings() {
         if (this.ringsEpoch === this.ringsConfirmed || this.ringsDirtyAt == null) this.ringsDirtyAt = Date.now();
@@ -4689,6 +4713,7 @@
           combatPower: c.combatPower,
           warehouseEquipCount: Array.isArray(c.warehouseEquips) ? c.warehouseEquips.length : 0,
           warehouseEquips: copy(c.warehouseEquips) || [],
+          warehouseItems: copy(c.warehouseItems) || [],
           equipments: copy(c.equipments) || [],
           bagItems: copy(c.bagItems) || [],
           skills: copy(c.skills) || [],
@@ -5997,12 +6022,14 @@
         this.updateGearCheck(after, now);
       }
       installInteractionPause() {
+        this.warehouseShortcuts ||= new WarehouseShortcuts(this);
+        this.warehouseShortcuts.start();
         for (const type of ['pointerdown', 'keydown'])
           document.addEventListener(
             type,
             (e) => {
               if (e.isTrusted && !e.composedPath().some((el) => el?.id === 'tl-autopilot-host' || el?.id === 'tl-disguise-host'))
-                this.manualUntil = Date.now() + 5000;
+                this.manualUntil = Math.max(this.manualUntil, Date.now() + 5000);
             },
             true,
           );
@@ -7476,6 +7503,135 @@
         location.reload();
       }
     }
+    class WarehouseShortcuts {
+      constructor(controller, doc = document) {
+        this.controller = controller;
+        this.bridge = controller.bridge;
+        this.doc = doc;
+        this.queue = [];
+      }
+      start() {
+        if (this.started) return;
+        this.started = true;
+        for (const [type, handler] of [['click', 'sort'], ['contextmenu', 'ctrl']])
+          this.doc.addEventListener(type, event => this[handler](event).catch(error =>
+            this.controller.log('仓库存入异常：' + safeMessage(error.message), 'warning')), true);
+      }
+      open() {
+        return !!this.doc.querySelector('.warehouse-window');
+      }
+      bagWindow(target) {
+        const win = target?.closest?.('.inventory-window, .warehouse-window');
+        return win?.matches('.inventory-window') ? win : null;
+      }
+      toast(message, level) {
+        this.bridge.stores().get('ui')?.showMessage(message, level);
+      }
+      pause(ms) {
+        this.controller.manualUntil = Math.max(this.controller.manualUntil, Date.now() + ms + 5000);
+      }
+      async sort(event) {
+        if (this.sorting || !this.controller.prefs.convenience.sortDeposit) return;
+        const button = event.target?.closest?.('.btn-sort-bag, .btn-sort-bag-small');
+        if (!this.bagWindow(button) || !this.open()) return;
+        this.sorting = true;
+        try {
+          // The game's click handler sorts the character store before the plan is built.
+          await this.delay(0);
+          if (this.ctrlRun) await this.ctrlRun;
+          const character = this.bridge.character();
+          const plan = P.sortDepositPlan(character?.bagItems, character?.warehouseItems);
+          let count = 0;
+          for (const entry of plan) {
+            const result = await this.deposit(entry.bagItemId);
+            if (result === null) return;
+            if (result) count++;
+          }
+          if (!count || !this.open()) return;
+          this.bridge.character()?.sortBagNow?.();
+          this.toast('已存入仓库 ' + count + ' 种物品', 'success');
+        } finally { this.sorting = false; }
+      }
+      cellItem(target) {
+        const win = this.bagWindow(target), cell = target?.closest?.('.grid-slot');
+        const grid = cell?.parentElement;
+        // The game marks every cell without a quality as empty-slot, which includes all items and materials:
+        // a filled cell is one that holds an icon.
+        const filled = (node) => !!node.querySelector('.v-img, img');
+        if (!win || !grid?.matches('.inventory-grid') || !filled(cell)) return null;
+        const tab = win.querySelector('.game-tab-button.is-active')?.textContent.trim();
+        const cells = Array.from(grid.children).filter(node => node.matches('.grid-slot'));
+        const character = this.bridge.character();
+        if (cells.filter(filled).length !== Math.min(72, P.bagTabItems(tab, character).length)) return null;
+        return P.bagCellItem(tab, cells.indexOf(cell), character);
+      }
+      async ctrl(event) {
+        if (!event.ctrlKey || this.sorting || !this.controller.prefs.convenience.ctrlDeposit || !this.open()) return;
+        const mode = this.bridge.stores().get('interaction')?.mode;
+        if (mode != null && mode !== 'NORMAL') return;
+        const item = this.cellItem(event.target);
+        if (item?.id == null || !(item.count >= 1)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.queue.push(item.id);
+        if (!this.ctrlRun) this.ctrlRun = this.drainCtrl();
+        await this.ctrlRun;
+      }
+      async drainCtrl() {
+        try {
+          while (this.queue.length) {
+            if (await this.deposit(this.queue.shift()) === null) break;
+          }
+        } finally {
+          this.queue.length = 0;
+          this.ctrlRun = null;
+        }
+      }
+      delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+      }
+      async deposit(id) {
+        const until = Date.now() + 5000;
+        while (this.bridge.waiter || Array.from(this.bridge.lateWaiters || []).some(waiter =>
+          waiter.type === 'WAREHOUSE_DEPOSIT' && waiter.socket === this.bridge.socket && waiter.lateUntil > Date.now())) {
+          if (!this.open() || !this.bridge.connected) return null;
+          if (Date.now() >= until) return this.timeout();
+          const ms = Math.min(300, until - Date.now());
+          this.pause(ms);
+          await this.delay(ms);
+        }
+        if (!this.open() || !this.bridge.connected) return null;
+        const stack = this.bridge.character()?.bagItems?.find(item => item?.id === id);
+        if (!(stack?.count >= 1)) return false;
+        this.pause(5000);
+        const packet = await this.send(id, stack.count);
+        if (!this.open() || packet === false) return null;
+        if (!packet) return this.timeout();
+        if (packet.success) return true;
+        this.toast(packet.message, 'warning');
+        return null;
+      }
+      timeout() {
+        this.toast('存入仓库没有回应，已停止', 'warning');
+        return null;
+      }
+      async send(bagItemId, count) {
+        let timer;
+        try {
+          const packet = await new Promise(resolve => {
+            this.bridge.manualDepositResponse = resolve;
+            timer = setTimeout(() => resolve(null), 5000);
+            if (!this.bridge.sendManual('WAREHOUSE_DEPOSIT', { bagItemId, count })) resolve(false);
+          });
+          // Let the client finish applying its character snapshot before reading another stack.
+          if (packet) await this.delay(0);
+          return packet;
+        } finally {
+          clearTimeout(timer);
+          this.bridge.manualDepositResponse = null;
+        }
+      }
+    }
     class Filler {
       constructor(controller, doc = document) {
         this.controller = controller;
@@ -7694,7 +7850,7 @@
     }
     const arraySafe = (v) => (Array.isArray(v) ? v : []);
     return {
-      Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake, createLogStore, showConflictNotice, createPaintScheduler, scoringState, copy,
+      WarehouseShortcuts, Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake, createLogStore, showConflictNotice, createPaintScheduler, scoringState, copy,
     };
   })();
   if (typeof module !== 'undefined' && module.exports) module.exports.TLRuntime = TLRuntime;
@@ -7862,6 +8018,7 @@
       ['overview', '概览', [['status', '状态'], ['stats', '统计'], ['logs', '日志']]],
       ['strategy', '策略', [['battle', '挂机日常'], ['growth', '成长装备'], ['pets', '珍兽'], ['craft', '宝石工艺'], ['economy', '出售补药'], ['budget', '预算']]],
       ['score', '评分', [['score', '评分设置'], ['scoreStatus', '当前状态'], ['scoreStats', '属性分数'], ['scoreFormula', '计算公式']]],
+      ['convenience', '便利性', [['bagTools', '背包仓库'], ['gameTools', '详情与窗口']]],
       ['system', '系统', [['settings', '设置'], ['updates', '更新']]],
     ];
     const PANEL_KEY = 'tl-autopilot-v1:panel';
@@ -9163,12 +9320,29 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             f('喂养后至少保留经验', 'pets.feedKeepExp', { dependsOn: 'pets.feed' }) +
             f('珍兽状态刷新间隔', 'pets.refreshMinutes', { unit: '分钟' }) +
             '<div class="pets-status">' + this.petsHTML(status.pets) + '</div>', true, { help: HELP.pets });
+        if (this.section === 'bagTools')
+          html = g('显示',
+            f('背包和仓库图标显示评分', 'market.bagScore') +
+            f('背包仓库评分类型', 'market.bagScoreType', { dependsOn: 'market.bagScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
+            f('背包和仓库显示部位筛选条', 'market.bagFilter', { help: '筛选条在背包和仓库窗口左侧，只调暗不匹配的装备，不会移动或隐藏；角标是套装名的第一个字，集齐为金色；套装列表里绿点是已穿戴，金点是在背包或仓库，空心是还缺。' }) +
+            f('套装装备显示角标', 'market.setTag'), true) +
+          g('存取',
+            f('打开仓库时，背包“整理”顺便存入仓库已有的物品', 'convenience.sortDeposit', { help: '只存道具和材料里仓库已经有的种类，整组存入；回复气血和内力的药品不存' }) +
+            f('按住 Ctrl 右键道具或材料直接整组存入', 'convenience.ctrlDeposit', { help: '仓库打开时生效，不弹数量窗口' }));
+        if (this.section === 'gameTools')
+          html = g('物品详情',
+            f('详情和人物面板显示实战评分', 'market.tipScore', { help: '装备详情及人物面板' }) +
+            f('物品详情显示绑定状态', 'market.tipBound', { help: '已绑定、未绑定、装备后绑定' }) +
+            f('物品详情显示套装收集情况', 'market.tipSet'), true) +
+          g('逛摊淘宝',
+            f('逛摊淘宝显示装备评分', 'market.showScore') +
+            f('逛摊评分类型', 'market.scoreType', { dependsOn: 'market.showScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
+            f('逛摊按脚本排序', 'market.sort', { immediate: true, choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] })) +
+          g('工坊',
+            f('显示“一键放入”按钮', 'fill.enabled', { help: '在游戏窗口显示' }) +
+            f('完成后补回同种符和材料', 'fill.refill', { dependsOn: 'fill.enabled' }), false, { help: HELP.fill });
         if (this.section === 'craft')
           html =
-            g('一键放入',
-            f('显示“一键放入”按钮', 'fill.enabled', { help: '在游戏窗口显示' }) +
-            f('完成后补回同种符和材料', 'fill.refill', { dependsOn: 'fill.enabled' }) +
-            '', true, { help: HELP.fill }) +
             g('宝石策略',
             f('启用宝石托管', 'gems.enabled') +
             f('自动打孔', 'gems.drill') +
@@ -9179,7 +9353,7 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             f('最低合成成功率', 'gems.minSynthSuccess', { max: 100, unit: '%', dependsOn: 'gems.synth' }) +
             f('智慧/魅力宝石雕琢', 'gems.polish') +
             f('摘除旧宝石后替换', 'gems.replace', { dependsOn: 'gems.inlay' }) +
-            f('每日宝石操作上限', 'gems.maxPerDay', { unit: '次', help: '0 不限' })) +
+            f('每日宝石操作上限', 'gems.maxPerDay', { unit: '次', help: '0 不限' }), true) +
             g('铁匠与神器',
             f('启用铁匠托管', 'smithy.enabled') +
             f('自动鉴定50级以上武器', 'smithy.appraisal') +
@@ -9518,17 +9692,7 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
           f('自动调整生存权重', 'gear.autoDefense', { help: '按实测战况调整' }) +
           f('生存权重', 'gear.defenseWeight', { min: 0, max: 1, step: 0.1, help: '自动关闭或数据不足时使用；0 只看输出，1 输出与生存并重' }) +
           f('攻坚：自动调整生存权重', 'gear.assault.autoDefense', { dependsOn: 'gear.assault.enabled' }) +
-          f('攻坚生存权重', 'gear.assault.defenseWeight', { min: 0, max: 1, step: 0.1, dependsOn: 'gear.assault.enabled', help: '自动关闭或数据不足时使用；默认 1，输出与生存并重' }) +
-          f('逛摊淘宝显示装备评分', 'market.showScore') +
-          f('背包和仓库图标显示评分', 'market.bagScore') +
-          f('逛摊评分类型', 'market.scoreType', { dependsOn: 'market.showScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
-          f('背包仓库评分类型', 'market.bagScoreType', { dependsOn: 'market.bagScore', choices: [['combat', '实战评分'], ['power', '游戏内战力']] }) +
-          f('详情和人物面板显示实战评分', 'market.tipScore', { help: '装备详情及人物面板' }) +
-          f('物品详情显示绑定状态', 'market.tipBound', { help: '已绑定、未绑定、装备后绑定' }) +
-          f('背包和仓库显示部位筛选条', 'market.bagFilter', { help: '筛选条在背包和仓库窗口左侧，只调暗不匹配的装备，不会移动或隐藏；角标是套装名的第一个字，集齐为金色；套装列表里绿点是已穿戴，金点是在背包或仓库，空心是还缺。' }) +
-          f('套装装备显示角标', 'market.setTag') +
-          f('物品详情显示套装收集情况', 'market.tipSet') +
-          f('逛摊按脚本排序', 'market.sort', { immediate: true, choices: [['off', '关'], ['power', '战斗力从高到低'], ['combat', '实战评分从高到低'], ['gain', '实战提升从高到低']] }), true);
+          f('攻坚生存权重', 'gear.assault.defenseWeight', { min: 0, max: 1, step: 0.1, dependsOn: 'gear.assault.enabled', help: '自动关闭或数据不足时使用；默认 1，输出与生存并重' }), true);
       }
       scoreTableHTML(headers, rows, mapTable = false) {
         return '<div class="table-scroll"><table class="income-table"><thead><tr>' + headers.map((v) => '<th>' + esc(v) + '</th>').join('') +
