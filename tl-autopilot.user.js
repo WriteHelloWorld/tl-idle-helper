@@ -81,6 +81,7 @@
     const ATTACK_SLOTS = [1, 6, 8, 7, 11],
       DEFENSE_SLOTS = [3, 10, 2, 9, 4, 5];
     const NPC = {
+      petKeeper: 'npc_pet_keeper',
       arena: 'npc_biwu',
       trial: 'npc_xuefei',
       gem: 'npc_gem_merchant',
@@ -134,6 +135,7 @@
       welfare: { enabled: false, currency: 'GOLD', multiplier: 1, betsPerDraw: 1,
         dailyCost: 1000000, pick: 'random', numbers: '' },
       pets: { enabled: true, summon: true, claim: true, hatch: false, hatchMutant: false,
+        breedClaim: true, breed: false, breedMinAverage: 118, breedPublish: true,
         keepMinAverage: 118, feed: false, feedKeepExp: 0, refreshMinutes: 10 },
       arena: { enabled: true, like: true, claim: true, challenge: true, maxPerDay: 10,
         maxPowerRatio: 1.1, refreshMinutes: 30, rushMinutes: 10 },
@@ -287,6 +289,7 @@
       p.logs.showCount = Math.max(20, Math.min(500, integer(p.logs.showCount, 100)));
       p.sell.batchMin = Math.max(1, Math.min(20, integer(p.sell.batchMin, 5)));
       p.pets.keepMinAverage = Math.max(0, Math.min(200, num(p.pets.keepMinAverage)));
+      p.pets.breedMinAverage = Math.max(80, Math.min(120, p.pets.breedMinAverage));
       p.pets.feedKeepExp = Math.max(0, num(p.pets.feedKeepExp));
       p.pets.refreshMinutes = Math.max(2, Math.min(240, num(p.pets.refreshMinutes)));
       if (!['combat', 'linear'].includes(p.gear.scoring)) p.gear.scoring = 'combat';
@@ -2349,6 +2352,83 @@
         pet.level === 1 && pet.rootRank === 0 && pet.learned === 0 &&
         !pet.locked && pet.id !== state.activePetId && Number.isFinite(entry.average);
     }
+    function breedable(entry, state) {
+      const pet = entry?.pet;
+      return !!pet?.id && !!state && pet.id !== state.activePetId && pet.form === 'BABY' &&
+        pet.level >= 30 && !pet.breedingUsed && !!pet.appraised && (pet.status === 'WAITING' ||
+          (pet.status === 'OWNED' && array(state.pets).length + num(state.reserved) < state.capacity));
+    }
+    function petServerNow(state, now) {
+      return state?.serverTime + (now - state?.at);
+    }
+    function breedingReady(entry, state, now) {
+      return entry?.pet?.status === 'BREEDING' && Number.isFinite(entry.pair?.readyAt) &&
+        entry.pair.readyAt <= petServerNow(state, now);
+    }
+    function breedingPick(listings, minAverage) {
+      if (!Number.isFinite(minAverage)) return null;
+      return array(listings).filter((l) => l?.compatible === true && Array.isArray(l.failures) &&
+        !l.failures.length && Number.isFinite(l.pet?.average) && l.pet.average >= minAverage)
+        .sort((a, b) => b.pet.average - a.pet.average || a.createdAt - b.createdAt)[0] || null;
+    }
+    function breedingStatus(state, now) {
+      const entries = array(state?.pets);
+      return { breedable: entries.filter((e) => breedable(e, state)).length, serverNow: petServerNow(state, now),
+        breeding: entries.filter((e) => ['WAITING', 'BREEDING'].includes(e.pet.status)).map((e) => {
+          const pair = e.pair, snapshots = [pair?.petSnapshotA, pair?.petSnapshotB];
+          const partner = snapshots.find((pet) => pet?.id && pet.id !== e.pet.id);
+          return { name: e.pet.name, status: breedingReady(e, state, now) ? 'READY' : e.pet.status,
+            readyAt: pair?.readyAt ?? null, partner: partner?.name || null };
+        }) };
+    }
+    function hallPage(hall, now, minutes) {
+      if (!Number.isFinite(hall?.at) || now - hall.at > minutes * 60000) return 1;
+      return hall.hasMore && hall.pages < 5 ? hall.pages + 1 : 0;
+    }
+    function breedingWrite(name, pet, extra, label, success) {
+      const a = action('PET_COMMAND', { action: name, petId: pet.id, ...extra }, '珍兽：' + label, 'pet',
+        { requiresTown: true, npc: NPC.petKeeper, responseType: 'PET_RESPONSE', breedSuccess: '珍兽繁殖：' + success });
+      a.key = 'PET_COMMAND:' + name + ':' + pet.id;
+      return a;
+    }
+    function breedingMatch(pet, listing) {
+      const pair = '「' + pet.name + '」与 ' + listing.ownerName + ' 的「' + listing.pet.name + '」';
+      return breedingWrite('startBreeding', pet, { listingId: listing.id, revision: listing.revision },
+        pair + '繁殖（平均资质 ' + listing.pet.average.toFixed(2) + '%）', pair + '开始繁殖，1 小时后领取');
+    }
+    function breedingPublish(pet, minAverage) {
+      return breedingWrite('publishBreeding', pet, { conditions: { minQuality: '不限', minAverage,
+        minRoot: 0, minPercent: {} }, revision: null }, '发布「' + pet.name + '」繁殖（要求平均资质 ≥ ' +
+        minAverage + '%）', '已发布「' + pet.name + '」');
+    }
+    function breedingRead(pet, page) {
+      return action('PET_COMMAND', { action: 'breedingList', petId: pet.id, page, species: pet.species,
+        sex: pet.sex === 'MALE' ? 'FEMALE' : 'MALE', minQuality: '不限', onlyCompatible: true },
+      '珍兽：查询「' + pet.name + '」的繁殖对象', 'pet', { readOnly: true, inBattle: true, responseType: 'PET_RESPONSE' });
+    }
+    function breedingPlans(s, prefs, now) {
+      const p = prefs.pets, state = s.pets, reads = [];
+      if ((!p.breedClaim && !p.breed) || arenaRush(prefs, now) || s.rings?.run ||
+          FARM_MAP_EXCLUDED_IDS.includes(num(s.role.mapId))) return reads;
+      const entries = array(state.pets), ready = p.breedClaim && entries.find((e) => breedingReady(e, state, now));
+      const claim = ready && breedingWrite('claim', ready.pet, {}, '领取「' + ready.pet.name + '」和二代宝宝',
+        '已领取「' + ready.pet.name + '」和二代宝宝');
+      if (!p.breed) return claim ? [claim] : [];
+      let start, publish;
+      for (const entry of entries.filter((e) => breedable(e, state))) {
+        const pet = entry.pet, hall = s.petHall?.[pet.id], page = hallPage(hall, now, p.refreshMinutes);
+        if (page) {
+          reads.push(breedingRead(pet, page));
+          continue;
+        }
+        const pick = breedingPick(hall.listings, p.breedMinAverage);
+        if (pick?.id && pick.revision != null) start ||= breedingMatch(pet, pick);
+        if (!pick && p.breedPublish && pet.status === 'OWNED')
+          publish ||= breedingPublish(pet, p.breedMinAverage);
+      }
+      const write = claim || start || publish;
+      return write ? [...reads, write] : reads;
+    }
     function petEggs(s) {
       return array(s.bagItems).filter((item) => num(item.count) > 0 &&
         String(item.itemTmpl?.useEffect || '').includes('HATCH_PET'));
@@ -2643,9 +2723,13 @@
               entries.length + num(state.reserved) < state.capacity)
             add(action('USE_ITEM', { bagItemId: egg.id, count: 1 },
               '孵化「' + egg.itemTmpl.name + '」', 'pet', { petHatch: true }));
-          else if (p.pets.feed && active && active.pet.level < role.level && cost > 0 &&
-              num(role.currentExp) - cost >= p.pets.feedKeepExp)
-            add(request('feed', { petId: active.pet.id, mode: 'one' }, { expCost: cost }));
+          else {
+            const breeding = breedingPlans(s, p, now);
+            breeding.forEach(add);
+            if (!breeding.length && p.pets.feed && active && active.pet.level < role.level && cost > 0 &&
+                num(role.currentExp) - cost >= p.pets.feedKeepExp)
+              add(request('feed', { petId: active.pet.id, mode: 'one' }, { expCost: cost }));
+          }
         }
       }
       if (num(role.level) >= 30) {
@@ -3523,6 +3607,7 @@
       skillCost,
       synthRate,
       petScreenable,
+      breedable, breedingReady, breedingPick, breedingStatus,
       petEggs,
       freshLedger,
       normalizeLedger,
@@ -4218,7 +4303,7 @@
         this.authFailed = false;
         this.cache.activityStatus = {};
         this.cache.forgePreviews = {};
-        this.cache.pets = null;
+        this.resetPets(this.character()?.role?.id);
         this.cache.lottery = null;
         this.cache.welfare = null;
         this.cache.welfareHistory = null;
@@ -4233,6 +4318,31 @@
         this.ringsCombat = false;
         this.invalidateRings();
         this.cache.viewedPlayers = new Map();
+      }
+      resetPets(roleId) {
+        this.petRole = roleId;
+        this.cache.pets = null;
+        this.cache.petHall = Object.create(null);
+        this.petListRequired = false;
+      }
+      syncPetRole(roleId) {
+        if (this.petRole != null && this.petRole !== roleId) this.resetPets(roleId);
+        this.petRole = roleId;
+        this.cache.petHall ||= Object.create(null);
+      }
+      recordPetResponse(packet, waiter) {
+        const data = packet.data;
+        this.syncPetRole(this.character()?.role?.id);
+        if (waiter?.petSession && waiter.petSession !== this.cache.petHall) return;
+        if (data?.state) this.cache.pets = { state: copy(data.state), at: Date.now() };
+        if (!packet.success || waiter?.petSession !== this.cache.petHall) return;
+        if (data.action === 'list' && data.state && waiter.petAction === 'list') this.petListRequired = false;
+        if (data.action !== 'breedingList' || waiter.petAction !== data.action || waiter.page !== data.page ||
+            !Array.isArray(data.listings) || typeof data.hasMore !== 'boolean') return;
+        const hall = this.cache.petHall[waiter.petId], first = data.page === 1;
+        if (!first && (!hall?.hasMore || data.page !== hall.pages + 1)) return;
+        this.cache.petHall[waiter.petId] = { at: first ? Date.now() : hall.at, pages: data.page,
+          hasMore: data.hasMore, listings: (first ? [] : hall.listings).concat(copy(data.listings)) };
       }
       clearInvasion(roleId = null) {
         this.cache.invasion = null;
@@ -4446,8 +4556,6 @@
                 this.cache.welfareHistory = { list: copy(data.history), at };
             }
           }
-          if (type === 'PET_RESPONSE' && data?.state)
-            this.cache.pets = { state: copy(data.state), at: Date.now() };
           if (type === 'ARENA_RESPONSE' && data) {
             const arena = this.cache.arena || (this.cache.arena = {});
             if (data.board) Object.assign(arena, { board: copy(data.board), at: Date.now() });
@@ -4474,6 +4582,7 @@
           this.packetTypes.push({ type, time: this.lastMessage });
           this.packetTypes = this.packetTypes.slice(-40);
           const pending = this.pendingWaiters(), waiter = pending.find((w) => matchesResponse(w, packet));
+          if (type === 'PET_RESPONSE') this.recordPetResponse(packet, waiter);
           const answered = !!waiter;
           if (answered) waiter.answered = true;
           for (const late of this.lateWaiters || []) {
@@ -4674,6 +4783,7 @@
       }
       state() {
         const c = this.character();
+        this.syncPetRole(c?.role?.id);
         this.syncInvasionRole(c?.role?.id);
         if (!c?.role?.id) return null;
         const r = c.role,
@@ -4697,7 +4807,8 @@
         return {
           role,
           ...(this.noBatchSell ? { batchSell: false } : {}),
-          pets: this.cache.pets ? { ...copy(this.cache.pets.state), at: this.cache.pets.at } : null,
+          pets: this.cache.pets && !this.petListRequired ? { ...copy(this.cache.pets.state), at: this.cache.pets.at } : null,
+          petHall: copy(this.cache.petHall),
           arena: this.cache.arena || null,
           lottery: this.cache.lottery || null,
           welfare: this.cache.welfare || null,
@@ -4857,6 +4968,8 @@
             label: action.label || action.type,
             responseType: responseType(action),
             requestId: action.payload?.requestId,
+            ...(action.type === 'PET_COMMAND' && { petAction: action.payload.action, petId: action.payload.petId,
+              page: action.payload.page, petSession: this.cache.petHall }),
             ...(action.type === 'RINGS_COMMAND' && { ringsAction: action.payload.action, roleId: this.character()?.role?.id }),
             key: responseKey(action),
             petHatch: action.petHatch,
@@ -6652,6 +6765,7 @@
           logs: this.logs.slice(0, this.prefs.logs.showCount),
           ...status,
           pets: { count: s?.pets?.pets.length ?? null, capacity: s?.pets?.capacity ?? null,
+            ...P.breedingStatus(s?.pets, Date.now()),
             active: s?.pets?.pets.find((entry) => entry.pet.id === s.pets.activePetId) || null,
             eggs: s ? P.petEggs(s).reduce((sum, item) => sum + P.num(item.count), 0) : null,
             list: s?.pets?.pets || null },
@@ -6827,7 +6941,15 @@
           .map((key) => this.bridge.cache.pets?.state?.[key]));
         const petBefore = petSignature();
         const snapshot = this.bridge.state(), before = snapshot && { ...snapshot, gearProfile: this.gearProfile };
+        const petSession = this.bridge.cache.petHall;
         if (!before) return;
+        if (a.breedSuccess) {
+          const town = P.townFor(before, P.NPC.petKeeper);
+          if (!this.enabled || !town || P.num(town.id) !== P.num(before.role.mapId)) return;
+          const current = P.plans(before, this.prefs, this.ledger, Date.now()).find((v) => v.key === a.key);
+          if (!current || current.payload.listingId !== a.payload.listingId || current.payload.revision !== a.payload.revision) return;
+          a = current;
+        }
         if (a.family === 'invasion') {
           const current = P.invasionPlan({ ...before, activity: this.activity || this.arenaPending || before.activity,
             invasionVisit: this.invasionVisit, invasionPriorRefused: this.invasionPriorRefused }, this.prefs, this.ledger, Date.now());
@@ -6876,6 +6998,14 @@
         this.paint();
         try {
           const result = await this.bridge.request(a, this.responseTimeout());
+          if (a.breedSuccess) {
+            if (result.success) this.log(a.breedSuccess, 'success');
+            else {
+              this.log(result.data?.message || result.message || '繁殖操作未成功', 'warning');
+              this.suppress(a, 300000);
+            }
+            return;
+          }
           if (a.family === 'invasion') {
             if (this.invasionVisit && this.bridge.state()?.role.id === before.role.id) this.invasionResult(a, before, result);
             return;
@@ -7002,6 +7132,11 @@
             this.pause('金币已低于保留额度，请核对当前资源');
           this.saveLedger();
         } catch (e) {
+          if (a.breedSuccess || a.payload?.action === 'breedingList') {
+            this.log(safeMessage(e.serverMessage || e.message), 'warning');
+            this.suppress(a, 300000);
+            return;
+          }
           if (a.family === 'rings') {
             if (this.bridge.state()?.role.id !== before.role.id) return;
             if (e.code === 'SERVER_ERROR') this.ringsRefused(a, before.rings, safeMessage(e.serverMessage || e.message));
@@ -7095,6 +7230,11 @@
             this.log(safeMessage(e.message), 'warning');
           else this.pause(safeMessage(e.message) + '；请核对角色后重新开始');
         } finally {
+          if (a.breedSuccess && this.bridge.cache.petHall === petSession) {
+            delete this.bridge.cache.petHall[a.payload.petId];
+            this.bridge.cache.pets = null;
+            this.bridge.petListRequired = true;
+          }
           if (!queryBatch) {
             this.action = null;
             this.busy = false;
@@ -9319,7 +9459,14 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             f('用人物经验喂养出战珍兽', 'pets.feed') +
             f('喂养后至少保留经验', 'pets.feedKeepExp', { dependsOn: 'pets.feed' }) +
             f('珍兽状态刷新间隔', 'pets.refreshMinutes', { unit: '分钟' }) +
-            '<div class="pets-status">' + this.petsHTML(status.pets) + '</div>', true, { help: HELP.pets });
+            '<div class="pets-status">' + this.petsHTML(status.pets) + '</div>', true, { help: HELP.pets }) +
+            g('繁殖', f('繁殖完成后自动领取', 'pets.breedClaim', { help: '需回苏州找云飘飘' }) +
+              f('自动到繁殖大厅找对象', 'pets.breed', { help: '宝宝须是 30 级以上、已鉴定、从未繁殖且未出战，并留有一个空栏位。每只宝宝一生只能繁殖一次，开始后不可取消' }) +
+              f('对方宝宝的最低平均资质', 'pets.breedMinAverage', { unit: '%', min: 80, max: 120, step: 0.5,
+                dependsOn: 'pets.breed', help: '也是自己发布时的择偶条件' }) +
+              f('没有合适对象时发布自己的宝宝', 'pets.breedPublish', { dependsOn: 'pets.breed',
+                help: '发布后满足条件的玩家可直接与它繁殖；脚本不会自动撤回' }), false,
+            { help: '繁殖在苏州云飘飘处办理，会中断挂机。' });
         if (this.section === 'bagTools')
           html = g('显示',
             f('背包和仓库图标显示评分', 'market.bagScore') +
@@ -9633,6 +9780,9 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
         return this.statRow('珍兽栏', (pets.count ?? '?') + ' / ' + (pets.capacity ?? '?')) +
           this.statRow('出战', pets.active ? pets.active.pet.name + ' Lv.' + pets.active.pet.level : '未出战') +
           (pets.eggs != null ? this.statRow('珍兽蛋', pets.eggs) : '') +
+          (pets.breeding || []).map((entry) => this.statRow('繁殖 · ' + entry.name,
+            entry.status === 'READY' ? '可领取' : entry.status === 'WAITING' ? '等待配对' :
+              '繁殖中，约 ' + Math.ceil((entry.readyAt - pets.serverNow) / 60000) + ' 分钟后可领取')).join('') +
           this.scoreTableHTML(['名称', '类型', '等级', '资质', '品质', '战力', '状态'], (pets.list || []).map((entry) => [
             entry.pet.name, { BABY: '宝宝', SECOND: '二代', MUTANT: '变异' }[entry.pet.form] || '—',
             entry.pet.level, entry.average, entry.quality, entry.combatPower,
