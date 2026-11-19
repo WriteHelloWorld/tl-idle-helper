@@ -103,6 +103,7 @@
     const EXCHANGE_SETS = ['御赐精纺套', '御赐熟铜套', '御赐精钢套', '御赐黄金套', '御赐混沌套'];
     const DEFAULTS = {
       version: 2,
+      roleConfig: 'shared',
       fill: { enabled: true, refill: true },
       resumeAfterReload: false,
       keepAwake: true,
@@ -282,6 +283,7 @@
       }
       const p = merge(DEFAULTS, value);
       p.version = 2;
+      if (p.roleConfig !== 'per-role') p.roleConfig = 'shared';
       p.disguise.hotkey = canonicalHotkey(p.disguise.hotkey) || DEFAULTS.disguise.hotkey;
       if (!['baidu', 'google', 'blank'].includes(p.disguise.style)) p.disguise.style = DEFAULTS.disguise.style;
       if (!['all', 'notice', 'warning'].includes(p.logs.level)) p.logs.level = 'all';
@@ -3706,6 +3708,47 @@
         localStorage.setItem(key, JSON.stringify(value));
       } catch {}
     };
+    function tabRoleHint() {
+      try {
+        const id = Number(sessionStorage.getItem(PREFIX + ':role'));
+        return Number.isSafeInteger(id) && id > 0 ? id : 0;
+      } catch { return 0; }
+    }
+    function roleConfig(id) {
+      const value = id && readStorage(CONFIG + ':' + id, null);
+      return value && typeof value === 'object' && !Array.isArray(value)
+        ? P.config({ ...value, roleConfig: 'per-role' }) : null;
+    }
+    function saveConfig(prefs, id) {
+      if (prefs.roleConfig !== 'per-role' || !id) return writeStorage(CONFIG, prefs);
+      const { roleConfig, ...values } = prefs;
+      writeStorage(CONFIG + ':' + id, values);
+    }
+    function saveConfigField(controller, group, field, value) {
+      const id = controller.roleId || controller.roleHint;
+      controller.prefs[group][field] = value;
+      const global = P.config(readStorage(CONFIG, controller.prefs));
+      const target = global.roleConfig === 'per-role' && id ? roleConfig(id) || global : global;
+      target[group][field] = value;
+      saveConfig(target, id);
+    }
+    function clearRoleConfigs() {
+      for (let index = localStorage.length - 1; index >= 0; index--) {
+        const key = localStorage.key(index);
+        if (key?.startsWith(CONFIG + ':') && /^\d+$/.test(key.slice(CONFIG.length + 1)))
+          localStorage.removeItem(key);
+      }
+    }
+    function shouldResume(prefs, id) {
+      if (!prefs.resumeAfterReload && !prefs.reconnect.autoReload) return false;
+      const own = id ? readStorage(RUNNING + ':' + id, null) : null;
+      return typeof own === 'boolean' ? own : readStorage(RUNNING, false) === true;
+    }
+    function saveRunning(controller, flag) {
+      const id = controller.roleId || controller.roleHint;
+      if (id) writeStorage(RUNNING + ':' + id, flag);
+      writeStorage(RUNNING, flag);
+    }
     const day = (d = new Date()) => {
       return [
         d.getFullYear(),
@@ -5887,6 +5930,47 @@
         }
       }
     }
+    function applyConfig(controller, next) {
+      const previous = controller.prefs;
+      controller.prefs = next;
+      if (!next.disguise.enabled && controller.panel?.cover) controller.panel.toggleDisguise();
+      if (previous.storage.indexedDB !== next.storage.indexedDB) controller.logReady = controller.syncLogStorage();
+      if (previous.logs.keepDays !== next.logs.keepDays) controller.pruneLogs();
+      controller.filler?.schedule();
+      controller.timer.set(next.tickMs);
+      controller.lastSettings = 0;
+      controller.suppressed.clear();
+      const s = controller.bridge.state();
+      if (s && controller.gearRoleId === P.num(s.role.id)) controller.updateGearCheck(s);
+      if (!controller.updates) return;
+      if (next.updates.checkDaily) {
+        controller.updates.start();
+        controller.updates.check(!previous.updates.checkDaily).catch(() => {});
+      } else controller.updates.stop();
+    }
+    function loadRoleConfig(controller, id) {
+      const panel = controller.panel, previous = controller.prefs;
+      const dirty = panel?.pending && JSON.stringify(panel.pending) !== JSON.stringify(previous);
+      const own = roleConfig(id);
+      controller.configRole = id;
+      if (panel?.pending) panel.dirty = dirty;
+      if (!own && readStorage(CONFIG, {})?.roleConfig === 'per-role') saveConfig(previous, id);
+      applyConfig(controller, own || previous);
+      if (!panel?.pending || dirty) return;
+      panel.pending = P.clone(controller.prefs);
+      panel.bodyDirty = true;
+    }
+    function observeRole(controller, id) {
+      if (!Number.isSafeInteger(id) || id <= 0) return;
+      controller.roleHint = id;
+      try { sessionStorage.setItem(PREFIX + ':role', String(id)); } catch {}
+      if (controller.prefs?.roleConfig === 'per-role' && controller.configRole !== id) loadRoleConfig(controller, id);
+      if (!controller.provisionalResume) return;
+      controller.provisionalResume = false;
+      const enabled = shouldResume(controller.prefs, id);
+      if (enabled && !controller.enabled) controller.log('已恢复上次托管状态');
+      controller.enabled = enabled;
+    }
     class Controller {
       resetScoring() {
         this.stats?.resetPressure();
@@ -5910,12 +5994,14 @@
         this.perf = { lastMs: 0, maxMs: 0, avgMs: 0 };
         this.perfSamples = [];
         this.perfRecent = [];
-        this.prefs = P.config(readStorage(CONFIG, {}));
-        writeStorage(CONFIG, this.prefs);
-        this.enabled = !!(
-          (this.prefs.resumeAfterReload || this.prefs.reconnect.autoReload) &&
-          readStorage(RUNNING, false)
-        );
+        this.roleHint = tabRoleHint();
+        const global = P.config(readStorage(CONFIG, {}));
+        const own = global.roleConfig === 'per-role' && roleConfig(this.roleHint);
+        this.configRole = own ? this.roleHint : 0;
+        this.prefs = own || global;
+        saveConfig(this.prefs, this.configRole);
+        this.provisionalResume = !this.roleHint;
+        this.enabled = shouldResume(this.prefs, this.roleHint);
         this.reason = '等待游戏角色';
         const logs = readStorage(PREFIX + ':log', []);
         this.logs = P.logPrune(Array.isArray(logs) && logs.every((v) => v && ['time', 'level', 'text'].every((k) => typeof v[k] === 'string')) ? logs.slice(0, 60) : [], this.prefs.logs.keepDays);
@@ -6035,8 +6121,7 @@
       }
       towerEnded() {
         if (this.prefs.gear.profile !== 'tower') return;
-        this.prefs.gear.profile = 'auto';
-        writeStorage(CONFIG, this.prefs);
+        saveConfigField(this, 'gear', 'profile', 'auto');
         if (this.panel?.pending) this.panel.pending.gear.profile = 'auto';
         this.log('无相浮屠结束，装备方案回到自动');
       }
@@ -6434,6 +6519,7 @@
         if (this.ledger) writeStorage(this.ledgerKey(), this.ledger);
       }
       setRole(id) {
+        observeRole(this, id);
         this.ensureGearState(id);
         if (this.roleId !== id || this.ledger?.day !== day()) {
           if (this.roleId !== id) {
@@ -6482,12 +6568,13 @@
           this.setRole(P.num(s.role.id));
           this.cleanPetLedger(s.pets);
         }
+        this.provisionalResume = false;
         this.enabled = true;
         this.timeoutPause = null;
         this.timeoutResume = null;
         this.lastPause = null;
         writeStorage(PREFIX + ':lastPause', null);
-        writeStorage(RUNNING, true);
+        saveRunning(this, true);
         this.reason = '正在检查角色与策略';
         // Automatic recovery retains cooldowns so retries do not consume unkeyed late replies.
         if (!wasUncertain && !fromLateResponse) this.suppressed.clear();
@@ -6519,7 +6606,9 @@
         this.lastPause = { at: Date.now(), reason, byUser };
         writeStorage(PREFIX + ':lastPause', this.lastPause);
         this.enabled = false;
-        writeStorage(RUNNING, false);
+        // Any pause is final for this page load: a later role discovery must not switch the autopilot on again.
+        this.provisionalResume = false;
+        saveRunning(this, false);
         this.reason = reason;
         this.releaseLease();
         this.log(reason, 'warning');
@@ -6572,25 +6661,14 @@
         return stopped;
       }
       updateConfig(value) {
-        const previous = this.prefs;
-        this.prefs = P.config(value);
-        if (!this.prefs.disguise.enabled && this.panel?.cover) this.panel.toggleDisguise();
-        if (previous.storage.indexedDB !== this.prefs.storage.indexedDB) this.logReady = this.syncLogStorage();
-        if (previous.logs.keepDays !== this.prefs.logs.keepDays) this.pruneLogs();
-        this.filler?.schedule();
-        writeStorage(CONFIG, this.prefs);
-        this.timer.set(this.prefs.tickMs);
-        this.lastSettings = 0;
-        this.suppressed.clear();
-        const s = this.bridge.state();
-        if (s && this.gearRoleId === P.num(s.role.id)) this.updateGearCheck(s);
+        const next = P.config(value), changed = next.roleConfig !== this.prefs.roleConfig;
+        if (!changed) next.roleConfig = readStorage(CONFIG, {})?.roleConfig === 'per-role' ? 'per-role' : 'shared';
+        this.configRole = next.roleConfig === 'per-role' ? this.roleId || this.roleHint || 0 : 0;
+        if (changed && this.configRole) saveConfig(next, 0);
+        saveConfig(next, this.configRole);
+        if (changed && next.roleConfig === 'shared') clearRoleConfigs();
+        applyConfig(this, next);
         this.log('策略配置已保存');
-        if (this.updates) {
-          if (this.prefs.updates.checkDaily) {
-            this.updates.start();
-            this.updates.check(!previous.updates.checkDaily).catch(() => {});
-          } else this.updates.stop();
-        }
         return copy(this.prefs);
       }
       preview() {
@@ -7297,8 +7375,11 @@
       }
       async tick() {
         if (this.adaptiveUntil) this.responseTimeout();
-        this.syncKeepAwake();
         const statsRole = this.bridge?.character?.()?.role;
+        const id = P.num(statsRole?.id);
+        if (id && this.roleId && id !== this.roleId) this.setRole(id);
+        else observeRole(this, id);
+        this.syncKeepAwake();
         this.ensureStats(statsRole?.id);
         if (statsRole) this.stats?.tick(statsRole.mapId);
         const now = Date.now();
@@ -7619,7 +7700,7 @@
         // Whether Tampermonkey has installed the new version is not visible from here, so a reload is
         // tried once at once, then every 6 hours, 5 times per version.
         this.updates.markApply(now);
-        writeStorage(RUNNING, true);
+        saveRunning(this, true);
         this.log('发现新版本 v' + this.updates.status().latestVersion + '，刷新页面以启用');
         location.reload();
         return true;
@@ -7639,7 +7720,7 @@
         }
         this.reloads.push(now);
         writeStorage(PREFIX + ':reloads', this.reloads);
-        writeStorage(RUNNING, true);
+        saveRunning(this, true);
         location.reload();
       }
     }
@@ -7990,7 +8071,7 @@
     }
     const arraySafe = (v) => (Array.isArray(v) ? v : []);
     return {
-      WarehouseShortcuts, Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, day, safeMessage, createTicker, createKeepAwake, createLogStore, showConflictNotice, createPaintScheduler, scoringState, copy,
+      WarehouseShortcuts, Filler, Stats, statsNumber, statsDuration, requestAllowed, matchesResponse, mergeTargets, Controller, Bridge, MarketScore, ALLOWED, PREFIX, readStorage, writeStorage, saveConfigField, day, safeMessage, createTicker, createKeepAwake, createLogStore, showConflictNotice, createPaintScheduler, scoringState, copy,
     };
   })();
   if (typeof module !== 'undefined' && module.exports) module.exports.TLRuntime = TLRuntime;
@@ -8701,8 +8782,7 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
           this.syncFields();
           this.validateInput(e.target);
           if (path === 'logs.level') {
-            this.controller.prefs.logs.level = TLPolicy.config(this.pending).logs.level;
-            TLRuntime.writeStorage(TLRuntime.PREFIX + ':config', this.controller.prefs);
+            TLRuntime.saveConfigField(this.controller, 'logs', 'level', TLPolicy.config(this.pending).logs.level);
             this.paintLogs();
             this.paintDirty();
             return;
@@ -9594,6 +9674,10 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             f('每小时最多自动刷新', 'reconnect.maxReloadsPerHour', { unit: '次', dependsOn: 'reconnect.autoReload' }) +
             f('策略检查间隔', 'tickMs', { min: 700, unit: '毫秒' }) +
             f('动作响应超时', 'requestTimeoutMs', { min: 6000, unit: '毫秒' }), true) +
+            g('配置保存', f('配置保存方式', 'roleConfig', {
+              choices: [['shared', '所有角色共用一份'], ['per-role', '每个角色各存一份']],
+              help: '同一个站点多开角色时，选“每个角色各存一份”后，保存只影响当前角色；改回共用时以这次保存的内容为准，并删除各角色单独的配置。其他已打开的页签刷新后生效',
+            })) +
             g('配置', '<label for="tl-config-json">高级配置JSON</label>' + this.help(HELP.json) + '<textarea id="tl-config-json" spellcheck="false" aria-label="高级配置JSON">' +
             esc(JSON.stringify(this.pending, null, 2)) +
             '</textarea><input class="config-file" type="file" accept=".json" hidden><div class="info-bar tone-err" role="alert"><span aria-hidden="true">!</span><span class="error"></span></div><div class="actions"><button type="button" class="btn" data-action="applyJson">载入JSON配置</button><button type="button" class="btn" data-action="importConfig">导入配置文件</button><button type="button" class="btn" data-action="export">导出配置</button><button type="button" class="btn" data-action="defaults">载入默认策略</button><button type="button" class="btn" data-action="diagnostics">导出诊断</button></div>') +
