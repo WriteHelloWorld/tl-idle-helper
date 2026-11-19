@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TL挂机助手
 // @namespace    https://github.com/YatsukiRenka/tl-idle-helper
-// @version      1.1.0
+// @version      1.2.0
 // @author       YatsukiRenka（基于 doai 的原作与 JimChan 的衍生版）
 // @description  日常、挂机、成长、装备回收、宝石与工艺；串行动作、资源预算、原页面战斗及每日版本检查。
 // @match        https://tl.jayczee.top/*
@@ -6655,7 +6655,7 @@
             active: s?.pets?.pets.find((entry) => entry.pet.id === s.pets.activePetId) || null,
             eggs: s ? P.petEggs(s).reduce((sum, item) => sum + P.num(item.count), 0) : null,
             list: s?.pets?.pets || null },
-          version: '1.1.0',
+          version: '1.2.0',
         };
       }
       received(type, packet) {
@@ -7892,7 +7892,7 @@
     class Checker {
       constructor(controller) {
         this.controller = controller;
-        this.currentVersion = '1.1.0';
+        this.currentVersion = '1.2.0';
         this.busy = false;
         this.onChange = () => {};
         this.timer = null;
@@ -8390,7 +8390,7 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
         const light = this.uiState().theme === 'light';
         const icon = (action, glyph, label) => `<button type="button" class="icon-button" data-action="${action}" aria-label="${label}" title="${label}">${glyph}</button>`;
         this.root.innerHTML = `<style>${CSS}</style><div class="hud"><span class="dot"></span><span class="hud-reason" role="button" tabindex="0"></span><button type="button" class="chip hud-update" data-action="showUpdates" hidden></button><span class="sep income-sep" hidden></span><span class="hud-income" hidden></span><span class="sep"></span>${icon('toggleRun','▶','开始托管')}${icon('stopBattle','■','停止战斗')}${icon('settingsWindow','⚙','打开设置')}</div>
-          <section class="shell" role="dialog" tabindex="-1" aria-label="TL挂机助手设置" hidden><header class="head"><div class="head-title"><strong>TL挂机助手</strong><button type="button" class="version" data-action="showUpdates" disabled>v1.1.0</button></div><button type="button" class="icon-button" data-action="theme" aria-label="切换浅色 / 深色主题" title="${light ? '切换深色主题' : '切换浅色主题'}">${light ? '☀' : '☾'}</button>${icon('close','✕','关闭设置')}</header>
+          <section class="shell" role="dialog" tabindex="-1" aria-label="TL挂机助手设置" hidden><header class="head"><div class="head-title"><strong>TL挂机助手</strong><button type="button" class="version" data-action="showUpdates" disabled>v1.2.0</button></div><button type="button" class="icon-button" data-action="theme" aria-label="切换浅色 / 深色主题" title="${light ? '切换深色主题' : '切换浅色主题'}">${light ? '☀' : '☾'}</button>${icon('close','✕','关闭设置')}</header>
           <div class="main"><aside class="side"><div class="search-box"><input class="search control-input" aria-label="搜索设置" placeholder="搜索设置…">${icon('clearSearch','✕','清除搜索')}</div>${this.navigationHTML()}</aside><div class="content"><header class="page-header"><strong class="page-title"></strong><span class="dirty"></span></header><div class="body"></div><footer class="footer"><button type="button" class="btn subtle" data-action="revert" hidden>撤销</button><button type="button" class="btn" data-action="save">保存策略</button></footer></div></div></section>`;
         this.hud = this.root.querySelector('.hud');
         if (this.cover) this.hud.classList.toggle('compact', true);
@@ -9886,7 +9886,7 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
       paintUpdates(u) {
         const chip = this.versionChip, newer = !!u?.newer;
         if (chip) {
-          const text = newer ? '可更新 v' + u.latestVersion : 'v' + (u?.currentVersion || '1.1.0'),
+          const text = newer ? '可更新 v' + u.latestVersion : 'v' + (u?.currentVersion || '1.2.0'),
             title = newer ? '点击查看更新内容' : '';
           if (chip.textContent !== text) chip.textContent = text;
           if (chip.classList.contains('has-update') !== newer) chip.classList.toggle('has-update', newer);
