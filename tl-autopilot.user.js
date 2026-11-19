@@ -117,7 +117,7 @@
         skillExpPerDay: 1000000,
         smeltExpPerDay: 1000000,
       },
-      battle: { enabled: true, mapId: 0, levelOffset: 5, recoverDeath: true, maxDeathsPerHour: 3 },
+      battle: { enabled: true, mapId: 0, levelOffset: 5, recoverDeath: true, deathDowngrade: true, maxDeathsPerHour: 3 },
       activities: {
         enabled: true,
         zl: true,
@@ -1621,8 +1621,24 @@
     }
     const RING_NAMES = ['黄金之链', '玄佛珠', '熔岩之地'];
     const ringStage = (stage) => '第' + (stage + 1) + '环「' + RING_NAMES[stage] + '」';
-    function ringsStatus(s, prefs, daily) {
+    const expMemo = { text: '', until: 0 };
+    function doubleExpUntil(role) {
+      const text = role?.settings;
+      if (typeof text !== 'string') return num(text?.doubleExp?.buffExpireTime);
+      // The settings text also holds the warehouse, so it is parsed once per change.
+      if (text !== expMemo.text)
+        Object.assign(expMemo, { text, until: num(parse(text, null)?.doubleExp?.buffExpireTime) });
+      return expMemo.until;
+    }
+    function ringsStatus(s, prefs, daily, now = Date.now()) {
       if (!s?.role?.id) return null;
+      const status = ringsCounts(s, prefs, daily);
+      status.open = !status.done && !status.stopped && (!status.roundOpen || status.retries < status.maxRetries);
+      // The rings give no experience: no round starts while the double experience buff runs.
+      status.doubleExp = status.open && !status.run && doubleExpUntil(s.role) > now;
+      return status;
+    }
+    function ringsCounts(s, prefs, daily) {
       const r = s.rings, counts = array(r?.counts), failures = num(daily?.failures);
       return { enabled: prefs.rings.enabled, level56: num(s.role.level) >= 56, counts,
         run: r?.run ? { stage: r.run.stage } : null, bound: num(r?.bound), unbound: num(r?.unbound),
@@ -1646,7 +1662,7 @@
     function ringsPlan(s, p, daily, now, { ignoreRefresh = false, hasGearAction } = {}) {
       if (!p.rings?.enabled || !num(s.role?.id) || num(s.role.level) < 56 || s.activity || s.arenaMatch?.active ||
           s.trial?.run || [20050, 20051, 20052, 20070].includes(num(s.role.mapId))) return null;
-      const r = s.rings, status = ringsStatus(s, p, daily);
+      const r = s.rings, status = ringsStatus(s, p, daily, now);
       const request = (name, label, itemId = 0) => ({
         ...action('RINGS_COMMAND', { action: name, itemId, ...(r ? { revision: r.revision } : {}) },
           '新三环：' + label, 'rings', { readOnly: name === 'status', requiresTown: name !== 'status',
@@ -1676,8 +1692,7 @@
           const id = order[p.rings.exchange].find((id) => !owned.has(id));
           if (id) next = request('exchange', id === 98011 ? '兑换重楼戒' : '兑换重楼玉', id);
         }
-        if (!next && !status.done && !status.stopped &&
-            (!status.roundOpen || status.retries < status.maxRetries)) next = request('enter', '从第一环开始');
+        if (!next && status.open && !status.doubleExp) next = request('enter', '从第一环开始');
       }
       if (!ignoreRefresh && next && now - r.at > 60000) return query();
       if (!ignoreRefresh && next?.payload.action === 'enter' && gearProfileTarget(s, p, { rings: daily }, now) === 'rings' &&
@@ -2322,9 +2337,10 @@
       return array(s.bagItems).filter((item) => num(item.count) > 0 &&
         String(item.itemTmpl?.useEffect || '').includes('HATCH_PET'));
     }
+    // The game day ends at 00:00 UTC+8: ranks settle and the daily counts restart.
+    const dayLeft = (now) => 86400000 - (now + 28800000) % 86400000;
     function arenaRush(prefs, now = Date.now()) {
-      // Ranks settle at 00:00 UTC+8.
-      const left = 86400000 - (now + 28800000) % 86400000;
+      const left = dayLeft(now);
       const arena = prefs?.arena;
       return !!(arena && arena.enabled && arena.challenge && arena.rushMinutes > 0 &&
         left <= arena.rushMinutes * 60000);
@@ -2388,7 +2404,8 @@
       };
       const role = s.role,
         equipped = array(s.equipments).filter((e) => !!e.isEquipped);
-      const ring = ringsPlan(s, p, ledger.rings?.day === s.rings?.day ? ledger.rings : null, now);
+      const ringsDaily = ledger.rings?.day === s.rings?.day ? ledger.rings : null;
+      const ring = ringsPlan(s, p, ringsDaily, now);
       if (p.rings?.enabled && num(role.level) >= 56 && s.rings?.run) return ring ? [ring] : [];
       const protection = loadoutProtection(s), pending = array(s.gearProfile?.pending);
       const rejected = new Set(materials ? gearRejected(s.gearRejected, now).map((e) => e.id) : []),
@@ -2454,6 +2471,10 @@
       if (p.activities.enabled) {
         const state = s.activityStatus || {},
           doubleExp = parse(role.settings, null)?.doubleExp;
+        // An unread rings status counts as open: the query is on its way.
+        const ringsFirst = p.rings?.enabled && num(role.level) >= 56 && (!Number.isFinite(s.rings?.at) ||
+          (num(s.rings.townId) > 0 && ringsStatus(s, p, ringsDaily, now).open));
+        let holdDungeons = false;
         // doubleExp.lastClaim is the date of the last claim; once it is today nothing is asked.
         if (p.activities.tianlingClaim && doubleExp?.lastClaim !== ledger.day) {
           if (!state.wushuang)
@@ -2469,7 +2490,10 @@
             now - num(ledger.tianlingUsedAt) >= 7200000) {
           const stacks = array(s.bagItems).filter((item) => materialId(item) === 51003 && bagUsable(s, item));
           const pill = stacks.find((item) => !!item.isBound) || stacks[0];
-          if (pill)
+          // Order of a day: the rings (no experience), then the pill, then the dungeons under the buff.
+          // Near the end of the day the dungeons no longer wait, so that none of them is lost.
+          if (pill && ringsFirst) holdDungeons = dayLeft(now) > 10800000;
+          else if (pill)
             add(action('USE_ITEM', { bagItemId: pill.id, count: 1 },
               '使用天灵丹（双倍经验 2 小时）', 'activity', { doubleExp: true }));
         }
@@ -2505,7 +2529,7 @@
                   npc: NPC.zl,
                 }),
               );
-            if (num(state.zl.tokenCount) > 0)
+            if (num(state.zl.tokenCount) > 0 && !holdDungeons)
               add(
                 action('ZL_ENTER', {}, '进入珍珑棋局', 'activity', {
                   requiresTown: true,
@@ -2522,7 +2546,7 @@
         ) {
           if (!state.camp)
             add(action('CAMP_STATUS', {}, '查询伪宋军挑战次数', 'read', { readOnly: true }));
-          else if (num(state.camp.remainingToday) > 0)
+          else if (num(state.camp.remainingToday) > 0 && !holdDungeons)
             add(
               action('CAMP_ENTER', {}, '进入伪宋军领地', 'activity', {
                 requiresTown: true,
@@ -2535,7 +2559,7 @@
           p.activities.bear &&
           num(role.level) >= 30 &&
           num(ledger.activities.bear) < p.activities.bearRuns &&
-          countItem(s, 51002) > 0
+          countItem(s, 51002) > 0 && !holdDungeons
         )
           add(
             action('BEAR_ENTER', {}, '消耗除熊害令牌进入熊林', 'activity', {
@@ -7253,12 +7277,13 @@
             this.lastDeathKey = key;
             this.deaths = this.deaths.filter((t) => now - t < 3600000);
             this.deaths.push(now);
-            this.penalty += 5;
+            if (this.prefs.battle.deathDowngrade) this.penalty += 5;
             this.log('检测到阵亡，准备按游戏入口返城', 'warning');
           }
+          // A limit of 0 means no limit.
           if (
             !this.prefs.battle.recoverDeath ||
-            this.deaths.length >= this.prefs.battle.maxDeathsPerHour
+            (this.prefs.battle.maxDeathsPerHour > 0 && this.deaths.length >= this.prefs.battle.maxDeathsPerHour)
           ) {
             this.pause('阵亡次数达到策略限制');
             return;
@@ -7385,7 +7410,8 @@
           this.paint();
           return;
         }
-        const target = special ? map : P.normalMap(s, this.prefs, this.penalty);
+        const target = special ? map
+          : P.normalMap(s, this.prefs, this.prefs.battle.deathDowngrade ? this.penalty : 0);
         if (!target) {
           this.reason = '没有符合等级与地图策略的免费挂机地图';
           this.paint();
@@ -9030,7 +9056,8 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
             f('挂机地图', 'battle.mapId', { choices: TLPolicy.mapChoices(s?.maps) }) +
             f('选图等级差', 'battle.levelOffset', { unit: '级', help: '比角色低多少级选图', dependsOn: { path: 'battle.mapId', value: 0 } }) +
             f('阵亡后返城重新选择', 'battle.recoverDeath') +
-            f('每小时阵亡上限', 'battle.maxDeathsPerHour', { unit: '次', dependsOn: 'battle.recoverDeath' }), true) +
+            f('阵亡后降低选图等级', 'battle.deathDowngrade', { help: '每次阵亡把自动选图的等级再降 5 级，刷新页面后恢复；关闭后一直打能进的最高等级地图', dependsOn: 'battle.recoverDeath' }) +
+            f('每小时阵亡上限', 'battle.maxDeathsPerHour', { unit: '次', help: '达到后暂停托管，0 不限', dependsOn: 'battle.recoverDeath' }), true) +
             g('日常活动',
             f('自动完成日常', 'activities.enabled') +
             f('珍珑棋局', 'activities.zl') +
@@ -9075,7 +9102,7 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
               help: '已有的那件不会重复兑换；兑换的装备获得即绑定' }) +
             f('状态刷新间隔', 'rings.refreshMinutes', { unit: '分钟', min: 1, max: 120, dependsOn: 'rings.enabled' }) +
             '<div class="rings-status">' + this.ringsHTML(status.rings) + '</div>', false, {
-              help: '56 级开放。在楼兰何悦处从第一环打起，每环 5 枚神兵符，每环每天最多领 2 次；失败后从第一环重开。' }) +
+              help: '56 级开放。在楼兰何悦处从第一环打起，每环 5 枚神兵符，每环每天最多领 2 次；失败后从第一环重开。三环没有经验，双倍经验期间不开新一轮；自动使用天灵丹会等当天的三环打完。' }) +
             g('宵小入侵',
             f('自动参加宵小入侵', 'invasion.enabled') +
             f('加入招募中的队伍', 'invasion.join', { dependsOn: 'invasion.enabled' }) +
@@ -9349,7 +9376,8 @@ footer{position:absolute;bottom:0;width:100%;flex-wrap:wrap;justify-content:cent
           this.statRow('本轮', r.run ? '第 ' + (r.run.stage + 1) + ' 环「' + names[r.run.stage] + '」' : '未进入',
             { chip: r.run ? this.chip('进行中', 'ok') : '' }) +
           this.statRow('今日轮数', (r.rounds ? '第 ' + r.rounds + ' 轮' : '未开始') + ' / 共 ' + r.roundsPerDay + ' 轮', {
-            chip: r.done ? this.chip('今日已完成', 'ok') : r.stopped ? this.chip('今日轮数已用完', 'warn') : '' }) +
+            chip: r.done ? this.chip('今日已完成', 'ok') : r.stopped ? this.chip('今日轮数已用完', 'warn') :
+              r.doubleExp ? this.chip('双倍经验结束后再打') : '' }) +
           (r.roundOpen ? this.statRow('本轮重试', r.retries + ' / ' + r.maxRetries + ' 次') : '') +
           this.statRow('最近结算', last ? names[last.stage] + ' · ' + last.reason + ' · ' +
             TLPolicy.num(last.bound) + ' 绑定 + ' + TLPolicy.num(last.unbound) + ' 不绑定' : '暂无');
